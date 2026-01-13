@@ -192,8 +192,8 @@ def extract_simulation_row(
 
     # ============== Extract features ================
     # TODO: check this
-    M_agg = np.mean(np.concatenate([ss.GENROU.M.v, ss.REGCV1.M.v])) * ss.config.mva / np.concatenate([ss.GENROU.Sn.v, ss.REGCV1.Sn.v]).sum()
-    D_agg = np.mean(np.concatenate([ss.GENROU.D.v, ss.REGCV1.D.v])) * ss.config.mva / np.concatenate([ss.GENROU.Sn.v, ss.REGCV1.Sn.v]).sum()
+    M_agg = np.mean(np.concatenate([ss.GENROU.M.v, ss.REGCV1.M.v])).sum()
+    D_agg = np.mean(np.concatenate([ss.GENROU.D.v, ss.REGCV1.D.v])).sum()
 
     features = build_feature_row(
         base_load_scale=base_load_scale,

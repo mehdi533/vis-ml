@@ -74,6 +74,7 @@ def run_single_sim(cfg: Dict, sim_id: int, rng: np.random.Generator, case_path: 
     D_vec = rng.uniform(cfg["ibr"]["D_range"][0], cfg["ibr"]["D_range"][1], size=len(regcv1_ids))
 
     ss = andes.load(case_path, setup=False)
+    ss.config.freq = float(50)
 
     # Apply base load scale
     for uid in range(ss.PQ.n):
@@ -148,8 +149,9 @@ def main() -> None:
     parser.add_argument("--config", default="data_generation/generation.yaml", help="Path to YAML config.")
     args = parser.parse_args()
 
+    print("Loading config from ", args.config)
     cfg = load_config(args.config)
-    andes.config_logger(stream_level=int(cfg.get("stream_level", 50)))
+    andes.config_logger(stream_level=int(cfg.get("stream_level", 30)))
 
     rng = np.random.default_rng(int(cfg["seed"]))
     case_path = _resolve_case_path(cfg["case"])
@@ -182,6 +184,9 @@ def main() -> None:
     with open(csv_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
+
+    with open(csv_path, "a", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
 
         for sim_id in range(int(cfg["n_sims"])):
             row = run_single_sim(cfg, sim_id, rng, case_path, pq_names, regcv1_ids, plotter_dir)
