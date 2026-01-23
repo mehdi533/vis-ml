@@ -194,6 +194,17 @@ RECOMMENDED_SCALER_FACTORY = {
     "constant (skip)": IdentityScaler,
 }
 
+SCALER_CATALOG = sorted(SCALER_FACTORY.keys())
+RECOMMENDED_SCALER_CATALOG = sorted(RECOMMENDED_SCALER_FACTORY.keys())
+
+
+def list_scalers():
+    return list(SCALER_CATALOG)
+
+
+def list_recommended_scalers():
+    return list(RECOMMENDED_SCALER_CATALOG)
+
 
 def load_dataset(
     csv_path: str,

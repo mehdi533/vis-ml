@@ -1,8 +1,9 @@
 import argparse
+import csv
 import os
 from itertools import product
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, Optional, Sequence
 
 import numpy as np
 import yaml
@@ -11,17 +12,17 @@ import torch
 import sys as _sys
 
 _sys.path.insert(0, str(Path(__file__).resolve().parent))
-from data_utils_local import (
+from data_utils import (
     load_dataset,
     split_data,
     scale_data,
     scale_data_with_recommendations,
     make_dataloaders,
 )
-from models_local import create_model
-from training_local import train_model, save_model
-from testing_local import evaluate_model
-from plotting_local import plot_losses, plot_scatter_per_target
+from models import create_model
+from training import train_model, save_model
+from testing import evaluate_model
+from plotting import plot_losses, plot_scatter_per_target
 
 
 def _normalize_arg_list(values, default=None):
@@ -76,6 +77,22 @@ def _set_seed(seed: int) -> None:
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+
+
+def _write_csv_header(path: Path, fieldnames: Sequence[str]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+
+
+def _append_csv_rows(path: Path, fieldnames: Sequence[str], rows: Sequence[Dict]) -> None:
+    if not rows:
+        return
+    with open(path, "a", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        for row in rows:
+            writer.writerow({key: row.get(key, "") for key in fieldnames})
 
 
 def train_one(
@@ -185,7 +202,7 @@ def train_one(
         lr_scheduler_min_lr=float(train_cfg.get("lr_scheduler_min_lr", 1e-6)),
     )
 
-    y_true, y_pred, y_true_norm, y_pred_norm = evaluate_model(
+    y_true, y_pred, y_true_norm, y_pred_norm, rmse, rmse_norm = evaluate_model(
         model, device, test_loader, y_scaler, target_cols, str(run_dir)
     )
     test_mse = float(np.mean((y_pred_norm - y_true_norm) ** 2))
@@ -200,18 +217,24 @@ def train_one(
     plot_scatter_per_target(y_true, y_pred, target_cols, out_dir=str(run_dir))
     save_model(model, path=str(run_dir / "vis_mlp_state_dict.pt"))
 
-    result = {
-        "run_dir": str(run_dir),
-        "model_type": model_type,
-        "loss_type": loss_type,
-        "scaler_type": scaler_type,
-        "seed": seed,
-        "test_mse": test_mse,
-    }
-    if train_overrides:
-        for key, val in train_overrides.items():
-            result[f"train_{key}"] = val
-    return result
+    rmse_rows = []
+    for label, rmse_val, norm_val in zip(target_cols, rmse, rmse_norm):
+        row = {
+            "model": model_type,
+            "loss": loss_type,
+            "scaler": scaler_type,
+            "seed": seed,
+            "label": label,
+            "rmse": float(rmse_val),
+            "norm": float(norm_val),
+            "test_mse": test_mse,
+        }
+        if train_overrides:
+            for key, val in train_overrides.items():
+                row[f"train_{key}"] = val
+        rmse_rows.append(row)
+
+    return rmse_rows
 
 
 def main() -> None:
@@ -237,7 +260,21 @@ def main() -> None:
     else:
         train_overrides_list = [{}]
 
-    results: List[Dict] = []
+    summary_path = output_root / "sweep_results.csv"
+    base_fields = [
+        "model",
+        "loss",
+        "scaler",
+        "seed",
+        "label",
+        "rmse",
+        "norm",
+        "test_mse",
+    ]
+    override_fields = [f"train_{key}" for key in sorted(train_grid_cfg.keys())]
+    fieldnames = base_fields + override_fields
+    _write_csv_header(summary_path, fieldnames)
+
     for model_type in models:
         for loss_type in losses:
             for scaler_type in scalers:
@@ -257,23 +294,16 @@ def main() -> None:
                         if run_dir.exists() and cfg.get("skip_if_exists", True):
                             continue
                         run_dir.mkdir(parents=True, exist_ok=True)
-                        results.append(
-                            train_one(
-                                cfg,
-                                run_dir,
-                                model_type=model_type,
-                                loss_type=loss_type,
-                                scaler_type=scaler_type,
-                                seed=int(seed),
-                                train_overrides=train_overrides,
-                            )
+                        rmse_rows = train_one(
+                            cfg,
+                            run_dir,
+                            model_type=model_type,
+                            loss_type=loss_type,
+                            scaler_type=scaler_type,
+                            seed=int(seed),
+                            train_overrides=train_overrides,
                         )
-
-    summary_path = output_root / "sweep_results.csv"
-    if results:
-        import pandas as pd
-
-        pd.DataFrame(results).to_csv(summary_path, index=False)
+                        _append_csv_rows(summary_path, fieldnames, rmse_rows)
 
 
 if __name__ == "__main__":

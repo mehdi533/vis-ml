@@ -32,4 +32,4 @@ def evaluate_model(model, device, test_loader, y_scaler, target_cols, output_dir
 
     print(f"Saved RMSE results to {rmse_path}")
 
-    return y_true, y_pred, y_true_norm, y_pred_norm
+    return y_true, y_pred, y_true_norm, y_pred_norm, rmse, rmse_norm

@@ -35,6 +35,12 @@ LOSS_FACTORY = {
     "kendall": KendallMTLoss,
 }
 
+LOSS_CATALOG = sorted(LOSS_FACTORY.keys())
+
+
+def list_losses():
+    return list(LOSS_CATALOG)
+
 
 def build_loss(
     loss_type: str,

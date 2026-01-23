@@ -597,6 +597,12 @@ MODEL_FACTORY = {
     "MTLGSH_KAN": MTLGroupedSharedHeadsKAN,
 }
 
+MODEL_CATALOG = {name: cls.__name__ for name, cls in MODEL_FACTORY.items()}
+
+
+def list_models():
+    return sorted(MODEL_CATALOG.keys())
+
 
 def create_model(
     model_type: str,

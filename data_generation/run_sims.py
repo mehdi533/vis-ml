@@ -1,8 +1,9 @@
 import argparse
 import csv
+import multiprocessing as mp
 import os
 from pathlib import Path
-from typing import Dict, List, Sequence
+from typing import Dict, Iterable, List, Optional, Sequence
 import numpy as np
 import yaml
 import andes
@@ -65,6 +66,63 @@ def _build_fieldnames(pq_names: Sequence[str], n_ibr: int, include_plotter: bool
 def load_config(path: str) -> Dict:
     with open(path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
+
+
+def _rng_for_sim(seed: int, sim_id: int) -> np.random.Generator:
+    sim_seed = np.random.SeedSequence([seed, sim_id])
+    return np.random.default_rng(sim_seed)
+
+
+def _chunk_sim_ids(n_sims: int, workers: int) -> List[List[int]]:
+    if workers <= 1:
+        return [list(range(n_sims))]
+    chunk_size = (n_sims + workers - 1) // workers
+    return [list(range(i, min(i + chunk_size, n_sims))) for i in range(0, n_sims, chunk_size)]
+
+
+def _worker_output_path(output_dir: Path, output_csv: str, worker_id: int) -> Path:
+    base = Path(output_csv)
+    suffix = base.suffix if base.suffix else ".csv"
+    return output_dir / f"{base.stem}_worker_{worker_id:02d}{suffix}"
+
+
+def _run_worker(
+    worker_id: int,
+    sim_ids: Sequence[int],
+    cfg: Dict,
+    case_path: str,
+    pq_names: Sequence[str],
+    regcv1_ids: Sequence[str],
+    plotter_dir: Optional[Path],
+    fieldnames: Sequence[str],
+    output_dir: Path,
+) -> Optional[str]:
+    if not sim_ids:
+        return None
+    if plotter_dir is not None:
+        plotter_dir.mkdir(parents=True, exist_ok=True)
+    worker_csv = _worker_output_path(output_dir, cfg.get("output_csv", "simulation_results.csv"), worker_id)
+    with open(worker_csv, "w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        for sim_id in sim_ids:
+            rng = _rng_for_sim(int(cfg["seed"]), sim_id)
+            row = run_single_sim(cfg, sim_id, rng, case_path, pq_names, regcv1_ids, plotter_dir)
+            for name in fieldnames:
+                row.setdefault(name, np.nan)
+            writer.writerow(row)
+    return str(worker_csv)
+
+
+def _merge_worker_csvs(csv_path: Path, worker_paths: Iterable[Path], fieldnames: Sequence[str]) -> None:
+    with open(csv_path, "w", newline="", encoding="utf-8") as f_out:
+        writer = csv.DictWriter(f_out, fieldnames=fieldnames)
+        writer.writeheader()
+        for worker_path in worker_paths:
+            with open(worker_path, "r", newline="", encoding="utf-8") as f_in:
+                reader = csv.DictReader(f_in)
+                for row in reader:
+                    writer.writerow(row)
 
 
 def run_single_sim(cfg: Dict, sim_id: int, rng: np.random.Generator, case_path: str, pq_names: Sequence[str], regcv1_ids: Sequence[str], plotter_dir: Path):
@@ -166,7 +224,6 @@ def main() -> None:
     cfg = load_config(args.config)
     andes.config_logger(stream_level=int(cfg.get("stream_level", 30)))
 
-    rng = np.random.default_rng(int(cfg["seed"]))
     case_path = _resolve_case_path(cfg["case"])
 
     output_dir = Path(cfg["output_dir"])
@@ -194,18 +251,44 @@ def main() -> None:
 
     fieldnames = _build_fieldnames(pq_names, len(regcv1_ids), export_plotter)
 
-    with open(csv_path, "w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
+    n_sims = int(cfg["n_sims"])
+    workers = max(1, int(cfg.get("workers", 1)))
+    if workers <= 1 or n_sims <= 1:
+        with open(csv_path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            for sim_id in range(n_sims):
+                sim_rng = _rng_for_sim(int(cfg["seed"]), sim_id)
+                row = run_single_sim(cfg, sim_id, sim_rng, case_path, pq_names, regcv1_ids, plotter_dir)
+                for name in fieldnames:
+                    row.setdefault(name, np.nan)
+                writer.writerow(row)
+        return
 
-    with open(csv_path, "a", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
+    sim_chunks = _chunk_sim_ids(n_sims, workers)
+    worker_args = []
+    for worker_id, sim_ids in enumerate(sim_chunks):
+        if sim_ids:
+            worker_args.append(
+                (
+                    worker_id,
+                    sim_ids,
+                    cfg,
+                    case_path,
+                    pq_names,
+                    regcv1_ids,
+                    plotter_dir,
+                    fieldnames,
+                    output_dir,
+                )
+            )
 
-        for sim_id in range(int(cfg["n_sims"])):
-            row = run_single_sim(cfg, sim_id, rng, case_path, pq_names, regcv1_ids, plotter_dir)
-            for name in fieldnames:
-                row.setdefault(name, np.nan)
-            writer.writerow(row)
+    ctx = mp.get_context("spawn")
+    with ctx.Pool(processes=min(workers, len(worker_args))) as pool:
+        worker_paths = pool.starmap(_run_worker, worker_args)
+
+    merge_paths = [Path(path) for path in worker_paths if path]
+    _merge_worker_csvs(csv_path, merge_paths, fieldnames)
 
 
 if __name__ == "__main__":
