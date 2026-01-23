@@ -1,4 +1,5 @@
 venv
 ieee39_full_ibrs_*
 results/
+outputs/
 *__pycache__

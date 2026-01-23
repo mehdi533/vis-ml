@@ -87,13 +87,16 @@ def run_single_sim(cfg: Dict, sim_id: int, rng: np.random.Generator, case_path: 
     ss.REGCV1.M.v, ss.REGCV1.D.v = M_vec, D_vec
 
     ss.PQ.config.p2p = 1
-    ss.PQ.config.p2z = 0
     ss.PQ.config.q2q = 1
+    ss.PQ.config.p2z = 0
     ss.PQ.config.q2z = 0
+    ss.PQ.config.p2i = 0
+    ss.PQ.config.q2i = 0
     ss.PQ.config.pq2z = 0
 
     pq_p_before, pq_q_before = ss.PQ.p0.v, ss.PQ.q0.v  
     
+    # TODO: test with changing the step by just doing Ppf bcs p0 q0 isn't changed here, does it matter? Test locally? 
     for dev in _as_list(cfg["load"].get("pq_names")):
         ss.add(model='Alter', param_dict=dict(t=cfg["tds"]["load_step_time"], model='PQ', dev=dev, src='Ppf', attr='v', method='*', amount=step_scale))
         ss.add(model='Alter', param_dict=dict(t=cfg["tds"]["load_step_time"], model='PQ', dev=dev, src='Qpf', attr='v', method='*', amount=step_scale))
@@ -113,6 +116,16 @@ def run_single_sim(cfg: Dict, sim_id: int, rng: np.random.Generator, case_path: 
     ss.TDS.config.shrinkt = int(cfg["tds"].get("shrinkt", 1))
 
     ss.TDS.init()
+
+    # for uid in range(ss.PQ.n):
+    # # for dev in _as_list(cfg["load"].get("pq_names")):
+    #     p = ss.PQ.p0.v[uid] * step_scale
+    #     q = ss.PQ.q0.v[uid] * step_scale
+    #     ss.PQ.p0.v[uid], ss.PQ.Ppf.v[uid] = p, p
+    #     ss.PQ.q0.v[uid], ss.PQ.Qpf.v[uid] = q, q
+    #     # ss.add(model='Alter', param_dict=dict(t=cfg["tds"]["load_step_time"], model='PQ', dev=dev, src='Ppf', attr='v', method='*', amount=step_scale))
+    #     # ss.add(model='Alter', param_dict=dict(t=cfg["tds"]["load_step_time"], model='PQ', dev=dev, src='Qpf', attr='v', method='*', amount=step_scale))
+
     success = bool(ss.TDS.run())
     ss.TDS.load_plotter()
 

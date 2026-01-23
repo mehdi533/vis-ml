@@ -1,0 +1,280 @@
+import argparse
+import os
+from itertools import product
+from pathlib import Path
+from typing import Dict, List, Optional, Sequence
+
+import numpy as np
+import yaml
+import torch
+
+import sys as _sys
+
+_sys.path.insert(0, str(Path(__file__).resolve().parent))
+from data_utils_local import (
+    load_dataset,
+    split_data,
+    scale_data,
+    scale_data_with_recommendations,
+    make_dataloaders,
+)
+from models_local import create_model
+from training_local import train_model, save_model
+from testing_local import evaluate_model
+from plotting_local import plot_losses, plot_scatter_per_target
+
+
+def _normalize_arg_list(values, default=None):
+    if values is None:
+        return default
+    items = []
+    for v in values:
+        if isinstance(v, str):
+            items.extend([p.strip() for p in v.split(",") if p.strip()])
+        else:
+            items.append(v)
+    return items
+
+
+def _parse_head_indices(values):
+    if values is None:
+        return None
+    groups = []
+    current = []
+    for v in values:
+        end_group = False
+        if isinstance(v, str) and v.endswith(","):
+            v = v[:-1]
+            end_group = True
+        if v != "":
+            current.append(int(v))
+        if end_group and current:
+            groups.append(current)
+            current = []
+    if current:
+        groups.append(current)
+    return groups if groups else None
+
+
+def _listify(value):
+    if isinstance(value, list):
+        return value
+    return [value]
+
+
+def _sanitize_name(name: str) -> str:
+    return "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in name)
+
+
+def _load_yaml(path: str) -> Dict:
+    with open(path, "r", encoding="utf-8") as f:
+        return yaml.safe_load(f)
+
+
+def _set_seed(seed: int) -> None:
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
+
+def train_one(
+    cfg: Dict,
+    run_dir: Path,
+    *,
+    model_type: str,
+    loss_type: str,
+    scaler_type: str,
+    seed: int,
+    train_overrides: Optional[Dict] = None,
+):
+    _set_seed(seed)
+
+    data_cfg = cfg["data"]
+    targets = _normalize_arg_list(data_cfg.get("target_cols"))
+    drops = _normalize_arg_list(data_cfg.get("drop_cols"))
+
+    X, y, feature_cols, target_cols = load_dataset(
+        data_cfg["csv_path"],
+        target_cols=targets,
+        remove_cols=drops,
+    )
+
+    split_cfg = cfg.get("split", {})
+    X_train, X_val, X_test, y_train, y_val, y_test = split_data(
+        X,
+        y,
+        test_size=float(split_cfg.get("test_size", 0.3)),
+        val_fraction=float(split_cfg.get("val_fraction", 0.5)),
+        random_state=int(split_cfg.get("random_state", 42)),
+    )
+
+    use_reco = bool(data_cfg.get("use_recommended_scalers", False))
+    if use_reco:
+        csv_dir = os.path.dirname(data_cfg["csv_path"])
+        x_scaler_csv = data_cfg.get("x_scaler_csv") or os.path.join(csv_dir, "scaler_recommendations.csv")
+        y_scaler_csv = data_cfg.get("y_scaler_csv") or os.path.join(csv_dir, "label_scaler_recommendations.csv")
+        (
+            X_train_n, X_val_n, X_test_n,
+            y_train_n, y_val_n, y_test_n,
+            y_scaler,
+        ) = scale_data_with_recommendations(
+            X_train, X_val, X_test,
+            y_train, y_val, y_test,
+            feature_cols=feature_cols,
+            target_cols=target_cols,
+            x_scaler_csv=x_scaler_csv,
+            y_scaler_csv=y_scaler_csv,
+            x_scaler_path=str(run_dir / "x_scaler.pkl"),
+            y_scaler_path=str(run_dir / "y_scaler.pkl"),
+            default_scaler_type=scaler_type,
+        )
+    else:
+        (
+            X_train_n, X_val_n, X_test_n,
+            y_train_n, y_val_n, y_test_n,
+            y_scaler,
+        ) = scale_data(
+            X_train, X_val, X_test,
+            y_train, y_val, y_test,
+            x_scaler_path=str(run_dir / "x_scaler.pkl"),
+            y_scaler_path=str(run_dir / "y_scaler.pkl"),
+            scaler_type=scaler_type,
+        )
+
+    train_cfg = dict(cfg["training"])
+    if train_overrides:
+        train_cfg.update(train_overrides)
+    (
+        train_loader, val_loader, test_loader,
+        train_ds, val_ds, test_ds
+    ) = make_dataloaders(
+        X_train_n, X_val_n, X_test_n,
+        y_train_n, y_val_n, y_test_n,
+        batch_size_train=int(train_cfg.get("batch_train", 64)),
+        batch_size_eval=int(train_cfg.get("batch_eval", 128)),
+    )
+
+    group_head_indices = _parse_head_indices(train_cfg.get("head_indices"))
+    model, device = create_model(
+        model_type,
+        in_dim=len(feature_cols),
+        out_dim=len(target_cols),
+        group_head_indices=group_head_indices,
+        kan_grid_size=int(train_cfg.get("kan_grid_size", 8)),
+        kan_grid_min=float(train_cfg.get("kan_grid_min", -1.0)),
+        kan_grid_max=float(train_cfg.get("kan_grid_max", 1.0)),
+    )
+
+    model_txt = run_dir / "model.txt"
+    model_txt.write_text(str(model), encoding="utf-8")
+
+    model, train_losses, train_eval_losses, val_losses = train_model(
+        model, device,
+        train_loader, val_loader,
+        train_ds, val_ds,
+        str(run_dir),
+        n_epochs=int(train_cfg.get("epochs", 200)),
+        lr=float(train_cfg.get("lr", 5e-4)),
+        weight_decay=float(train_cfg.get("weight_decay", 1e-5)),
+        loss_type=loss_type,
+        ce_weights=list(train_cfg.get("loss_weights", [])),
+        use_lr_scheduler=bool(train_cfg.get("use_lr_scheduler", False)),
+        lr_scheduler_patience=int(train_cfg.get("lr_scheduler_patience", 10)),
+        lr_scheduler_factor=float(train_cfg.get("lr_scheduler_factor", 0.1)),
+        lr_scheduler_min_lr=float(train_cfg.get("lr_scheduler_min_lr", 1e-6)),
+    )
+
+    y_true, y_pred, y_true_norm, y_pred_norm = evaluate_model(
+        model, device, test_loader, y_scaler, target_cols, str(run_dir)
+    )
+    test_mse = float(np.mean((y_pred_norm - y_true_norm) ** 2))
+
+    plot_losses(
+        train_losses,
+        val_losses,
+        test_mse,
+        train_eval_losses=train_eval_losses,
+        out_path=str(run_dir / "loss_curve.png"),
+    )
+    plot_scatter_per_target(y_true, y_pred, target_cols, out_dir=str(run_dir))
+    save_model(model, path=str(run_dir / "vis_mlp_state_dict.pt"))
+
+    result = {
+        "run_dir": str(run_dir),
+        "model_type": model_type,
+        "loss_type": loss_type,
+        "scaler_type": scaler_type,
+        "seed": seed,
+        "test_mse": test_mse,
+    }
+    if train_overrides:
+        for key, val in train_overrides.items():
+            result[f"train_{key}"] = val
+    return result
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Train multiple models from a YAML sweep.")
+    parser.add_argument("--config", default="to_export/train_sweep.yaml", help="Path to sweep config.")
+    args = parser.parse_args()
+
+    cfg = _load_yaml(args.config)
+    output_root = Path(cfg["output_dir"])
+    output_root.mkdir(parents=True, exist_ok=True)
+
+    sweep = cfg["sweep"]
+    models = sweep.get("models", [])
+    losses = sweep.get("losses", [])
+    scalers = sweep.get("scalers", [])
+    seeds = sweep.get("seeds", [int(cfg.get("seed", 42))])
+    train_grid_cfg = sweep.get("training", {})
+
+    if train_grid_cfg:
+        keys = list(train_grid_cfg.keys())
+        values = [_listify(train_grid_cfg[k]) for k in keys]
+        train_overrides_list = [dict(zip(keys, combo)) for combo in product(*values)]
+    else:
+        train_overrides_list = [{}]
+
+    results: List[Dict] = []
+    for model_type in models:
+        for loss_type in losses:
+            for scaler_type in scalers:
+                for seed in seeds:
+                    for train_overrides in train_overrides_list:
+                        run_name_parts = [
+                            _sanitize_name(model_type),
+                            _sanitize_name(loss_type),
+                            _sanitize_name(scaler_type),
+                            f"seed{seed}",
+                        ]
+                        for key in sorted(train_overrides.keys()):
+                            val = train_overrides[key]
+                            run_name_parts.append(f"{key}{val}")
+                        run_name = "__".join(run_name_parts)
+                        run_dir = output_root / run_name
+                        if run_dir.exists() and cfg.get("skip_if_exists", True):
+                            continue
+                        run_dir.mkdir(parents=True, exist_ok=True)
+                        results.append(
+                            train_one(
+                                cfg,
+                                run_dir,
+                                model_type=model_type,
+                                loss_type=loss_type,
+                                scaler_type=scaler_type,
+                                seed=int(seed),
+                                train_overrides=train_overrides,
+                            )
+                        )
+
+    summary_path = output_root / "sweep_results.csv"
+    if results:
+        import pandas as pd
+
+        pd.DataFrame(results).to_csv(summary_path, index=False)
+
+
+if __name__ == "__main__":
+    main()
