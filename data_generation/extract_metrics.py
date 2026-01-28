@@ -146,8 +146,8 @@ def build_feature_row(
         "DELTA_PQ_tot": 0.0,
         "M_agg": float(M_agg),
         "D_agg": float(D_agg),
-        "base_load_p_total": float(np.sum(pq_p_before)) if pq_p_before else 0.0,
-        "base_load_q_total": float(np.sum(pq_q_before)) if pq_q_before else 0.0,
+        "base_load_p_total": float(np.sum(pq_p_before)) if pq_p_before.any() else 0.0,
+        "base_load_q_total": float(np.sum(pq_q_before)) if pq_q_before.any() else 0.0,
     }
 
     for i, (m_val, d_val) in enumerate(zip(M_vec, D_vec), start=1):

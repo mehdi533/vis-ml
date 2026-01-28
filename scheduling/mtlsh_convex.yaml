@@ -1,0 +1,30 @@
+model:
+  state_dict: /Users/cloud9/Desktop/ETH Project/Working folder/03_Code/vis-ml/MTLSH__mse__robust__seed42__batch_eval128__batch_train128__epochs200__lr0.0005__use_lr_schedulerFalse__weight_decay1e-05
+  in_dim: 53
+  n_tasks: 8
+  shared_sizes: [256, 128]
+  head_sizes: [128, 64]
+  dropout: 0.0
+
+features:
+  x_features: []
+  y_features: []
+
+scalers:
+  x_scaler_path: /path/to/x_scaler.pkl
+  y_scaler_path: /path/to/y_scaler.pkl
+
+bounds:
+  training_data: /path/to/training.csv
+  drop_cols: []
+  use_scaler_for_bounds: true
+  x_min: []
+  x_max: []
+  y_min: [-0.05, -0.5, -0.2, -0.02, -0.5, -0.5, -0.5, -0.5]
+  y_max: [0.5, 0.05, 0.02, 0.2, 0.5, 0.5, 0.5, 0.5]
+
+# Economic dispatch costs (length must match number of GENROU units).
+ed_costs:
+  a: [1.0, 10.0, 10.0, 10.0, 10.0, 1.0, 10.0, 1.0, 1.0, 10.0]
+  b: [1.0, 10.0, 10.0, 10.0, 10.0, 1.0, 10.0, 1.0, 1.0, 10.0]
+  c: [1.0, 10.0, 10.0, 10.0, 10.0, 1.0, 10.0, 1.0, 1.0, 10.0]

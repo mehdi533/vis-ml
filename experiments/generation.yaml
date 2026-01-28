@@ -1,4 +1,4 @@
-case: "/home/abdallah/vis-ml/data_generation/andes_cases/ieee39_full_ibrs.xlsx"
+case: "data_generation/andes_cases/ieee39_full_ibrs.xlsx"
 output_dir: "experiments/"
 output_csv: "simulation_results.csv"
 seed: 42
@@ -7,11 +7,11 @@ stream_level: 30
 
 base_load_scale:
   low: 0.3
-  high: 1.2
+  high: 1.0
 
 load_step_scale:
   low: 0.6
-  high: 1.2
+  high: 1.0
 
 ibr:
   model: "REGCV1"
@@ -27,11 +27,11 @@ load:
 
 tds:
   t_end: 15.0
-  t_step: 0.1
+  t_step: 0.01
   load_step_time: .2
   method: "backeuler"
   max_iter: 35
-  tol: 1.0e-3
+  tol: 1.0e-6
   honest: 0
   fixt: 0
   shrinkt: 1
