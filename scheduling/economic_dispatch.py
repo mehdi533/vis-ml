@@ -75,7 +75,7 @@ def economic_dispatch_quad(
     ]
     if extra_constraints:
         constraints += list(extra_constraints)
-
+    
     prob = cp.Problem(objective, constraints)
     solve_kwargs = solver_kwargs or {}
     if solver is None:
@@ -105,7 +105,7 @@ def ed_calculation(
     c: np.ndarray,
     *,
     extra_constraints: Optional[Sequence[cp.Constraint]] = None,
-    solver: Optional[str] = "OSQP",
+    solver: Optional[str] = "GUROBI",
     solver_kwargs: Optional[dict] = None,
 ):
     """

@@ -105,35 +105,50 @@ def build_mtlsh_convex_constraints(cfg: dict):
     ]
 
     in_dim = int(model_cfg["in_dim"])
-    x = cp.Variable(in_dim)
+    x = cp.Variable(in_dim, name="features")
     constraints = []
 
     h = x
-    for w, b in shared_layers:
+    for idx, (w, b) in enumerate(shared_layers):
         z = w @ h + b
-        y = cp.Variable(b.shape[0])
+        y = cp.Variable(b.shape[0], name=f"layer{idx} (shared)")
         constraints += _relu_epigraph(z, y)
         h = y
 
     outputs = []
-    for layers in head_layers:
+    for i, layers in enumerate(head_layers):
         h_head = h
         for idx, (w, b) in enumerate(layers):
             z = w @ h_head + b
             if idx < len(layers) - 1:
-                y = cp.Variable(b.shape[0])
+                y = cp.Variable(b.shape[0], name=f"layer{idx} n{i} (head)")
                 constraints += _relu_epigraph(z, y)
                 h_head = y
             else:
-                y_out = cp.Variable(1)
+                y_out = cp.Variable(1, name=f"{i} end (output)")
                 constraints.append(y_out == z)
                 outputs.append(y_out)
 
     y = cp.hstack(outputs)
-    if "y_min" in bounds_cfg:
-        constraints.append(y >= np.asarray(bounds_cfg["y_min"], dtype=float))
-    if "y_max" in bounds_cfg:
-        constraints.append(y <= np.asarray(bounds_cfg["y_max"], dtype=float))
+
+    use_scaler = bool(bounds_cfg.get("use_scaler_for_bounds", True))
+    y_scaler_path = cfg.get("scalers", {}).get("y_scaler_path")
+    if use_scaler and y_scaler_path:
+        scaler = joblib.load(y_scaler_path)
+    
+    y_min = np.asarray(bounds_cfg["y_min"], dtype=float).reshape(1, -1)
+    y_max = np.asarray(bounds_cfg["y_max"], dtype=float).reshape(1, -1)
+
+    if scaler is not None:
+        y_min = scaler.transform(y_min)
+        y_max = scaler.transform(y_max)
+
+    y_min = y_min.reshape(-1)
+    y_max = y_max.reshape(-1)
+
+    constraints.append(y >= y_min)
+    constraints.append(y <= y_max)
+
 
     return x, y, constraints
 

@@ -7,24 +7,25 @@ model:
   dropout: 0.0
 
 features:
-  x_features: []
-  y_features: []
+  x_features: ["base_load_scale","load_step_scale","base_load_p_total","base_load_q_total","DELTA_PQ_tot","M_agg","D_agg","M_1","D_1","M_2","D_2","M_3","D_3","M_4","D_4","DELTA_P_PQ_1","DELTA_Q_PQ_1","DELTA_P_PQ_2","DELTA_Q_PQ_2","DELTA_P_PQ_3","DELTA_Q_PQ_3","DELTA_P_PQ_4","DELTA_Q_PQ_4","DELTA_P_PQ_5","DELTA_Q_PQ_5","DELTA_P_PQ_6","DELTA_Q_PQ_6","DELTA_P_PQ_7","DELTA_Q_PQ_7","DELTA_P_PQ_8","DELTA_Q_PQ_8","DELTA_P_PQ_9","DELTA_Q_PQ_9","DELTA_P_PQ_10","DELTA_Q_PQ_10","DELTA_P_PQ_11","DELTA_Q_PQ_11","DELTA_P_PQ_12","DELTA_Q_PQ_12","DELTA_P_PQ_13","DELTA_Q_PQ_13","DELTA_P_PQ_14","DELTA_Q_PQ_14","DELTA_P_PQ_15","DELTA_Q_PQ_15","DELTA_P_PQ_16","DELTA_Q_PQ_16","DELTA_P_PQ_17","DELTA_Q_PQ_17","DELTA_P_PQ_18","DELTA_Q_PQ_18","DELTA_P_PQ_19","DELTA_Q_PQ_19"]
+  y_features: ["rocof_max_COI","rocof_min_COI","devdown_COI","devup_COI","Delta_P_IBR_1","Delta_P_IBR_2","Delta_P_IBR_3","Delta_P_IBR_4"]
 
 scalers:
-  x_scaler_path: /path/to/x_scaler.pkl
-  y_scaler_path: /path/to/y_scaler.pkl
+  x_scaler_path: MTLSH__mse__robust__seed42__batch_eval128__batch_train128__epochs200__lr0.0005__use_lr_schedulerFalse__weight_decay1e-05/x_scaler.pkl
+  y_scaler_path: MTLSH__mse__robust__seed42__batch_eval128__batch_train128__epochs200__lr0.0005__use_lr_schedulerFalse__weight_decay1e-05/y_scaler.pkl
 
 bounds:
-  training_data: /path/to/training.csv
+  training_data: simulation_results.csv
   drop_cols: []
   use_scaler_for_bounds: true
   x_min: []
   x_max: []
-  y_min: [-0.05, -0.5, -0.2, -0.02, -0.5, -0.5, -0.5, -0.5]
+  y_min: [-0.05, -0.5, -0.2, -0.02, -0.05, -0.05, -0.05, -0.05]
   y_max: [0.5, 0.05, 0.02, 0.2, 0.5, 0.5, 0.5, 0.5]
 
-# Economic dispatch costs (length must match number of GENROU units).
+# Economic dispatch costs (length must match number of PV units).
 ed_costs:
-  a: [1.0, 10.0, 10.0, 10.0, 10.0, 1.0, 10.0, 1.0, 1.0, 10.0]
-  b: [1.0, 10.0, 10.0, 10.0, 10.0, 1.0, 10.0, 1.0, 1.0, 10.0]
-  c: [1.0, 10.0, 10.0, 10.0, 10.0, 1.0, 10.0, 1.0, 1.0, 10.0]
+  a: [1.0, 10.0, 10.0, 10.0, 10.0, 1.0, 10.0, 1.0, 1.0, 100.0]
+  b: [0.5, 5, 5, 5, 5, 0.5, 5, 0.5, 0.5, 5]
+  c: [0.01, 0.2, 0.2, 0.2, 0.2, 0.01, 0.2, 0.01, 0.01, 0.2]
+
