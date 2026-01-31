@@ -5,3 +5,5 @@ outputs/
 *__pycache__
 MTLSH__mse__robust__seed42__batch_eval128__batch_train128__epochs200__lr0.0005__use_lr_schedulerFalse__weight_decay1e-05
 *.csv
+models_trained
+convex_opt
