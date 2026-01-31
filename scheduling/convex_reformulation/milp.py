@@ -1,27 +1,9 @@
 from __future__ import annotations
 
-from typing import Iterable, List, Tuple
-
 import cvxpy as cp
 import numpy as np
-import torch
 
-# TODO; everything that is more logical to be in utils shoul dbe in there
-# from scheduling.convex_reformulation.utils import _apply_relu_stack, _extract_linear_layers, _linear_layers, _relu_epigraph, _interval_bounds
-
-def _linear_layers(module: Iterable[torch.nn.Module]) -> List[torch.nn.Linear]:
-    return [m for m in module if isinstance(m, torch.nn.Linear)]
-
-
-def _extract_linear_layers(seq: Iterable[torch.nn.Module]):
-    return [
-        (m.weight.detach().cpu().numpy(), m.bias.detach().cpu().numpy())
-        for m in _linear_layers(seq)
-    ]
-
-
-def _relu_epigraph(z, y):
-    return [y >= 0, y >= z]
+from scheduling.convex_reformulation.utils import _extract_linear_layers, _relu_epigraph
 
 
 def _relu_big_m(z, y, a, z_min, z_max):

@@ -1,48 +1,16 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import List, Sequence, Tuple
+from typing import Sequence
 
 import matplotlib.pyplot as plt
 import numpy as np
-import torch
+
+from scheduling.convex_reformulation.utils import activation_masks_mtlshared
 
 
 def relu_activation_pattern_mtlshared(model, x_np: np.ndarray):
-    with torch.no_grad():
-        x = torch.tensor(x_np, dtype=torch.float32)
-        h = x
-        shared_masks = []
-        last_z = None
-        for layer in model.shared:
-            if isinstance(layer, torch.nn.Linear):
-                last_z = layer(h)
-                h = last_z
-            elif isinstance(layer, torch.nn.ReLU):
-                if last_z is None:
-                    continue
-                shared_masks.append((last_z > 0).cpu().numpy().reshape(-1))
-                h = layer(last_z)
-            elif isinstance(layer, torch.nn.Dropout):
-                h = layer(h)
-
-        head_masks = []
-        for head in model.heads:
-            h_head = h
-            last_z = None
-            for layer in head:
-                if isinstance(layer, torch.nn.Linear):
-                    last_z = layer(h_head)
-                    h_head = last_z
-                elif isinstance(layer, torch.nn.ReLU):
-                    if last_z is None:
-                        continue
-                    head_masks.append((last_z > 0).cpu().numpy().reshape(-1))
-                    h_head = layer(last_z)
-                elif isinstance(layer, torch.nn.Dropout):
-                    h_head = layer(h_head)
-
-    return shared_masks, head_masks
+    return activation_masks_mtlshared(model, x_np)
 
 
 def plot_diff_norm(steps: np.ndarray, diffs: np.ndarray, plot_dir: Path):

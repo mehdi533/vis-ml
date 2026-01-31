@@ -17,6 +17,15 @@ def load_yaml(path: Path) -> Dict:
         return yaml.safe_load(f)
 
 
+def load_scaler(path: str | Path | None, *, name: str):
+    if not path:
+        return None
+    path = Path(path)
+    if not path.exists():
+        raise FileNotFoundError(f"{name} not found at {path}")
+    return joblib.load(path)
+
+
 def parse_steps(args) -> np.ndarray:
     if args.steps:
         return np.asarray([float(x) for x in args.steps.split(",")], dtype=float)
@@ -116,7 +125,7 @@ def load_csv_features(
     return X, list(feature_cols)
 
 
-def compute_feature_bounds_from_training_data(cfg: dict):
+def compute_feature_bounds_from_training_data(cfg: dict, *, x_scaler=None):
     bounds_cfg = cfg.get("bounds", {})
     training_data = bounds_cfg.get("training_data")
     if not training_data:
@@ -132,14 +141,72 @@ def compute_feature_bounds_from_training_data(cfg: dict):
     )
 
     use_scaler = bool(bounds_cfg.get("use_scaler_for_bounds", True))
-    x_scaler_path = cfg.get("scalers", {}).get("x_scaler_path")
-    if use_scaler and x_scaler_path:
-        scaler = joblib.load(x_scaler_path)
-        X = scaler.transform(X)
+    if use_scaler:
+        scaler = x_scaler
+        if scaler is None:
+            x_scaler_path = cfg.get("scalers", {}).get("x_scaler_path")
+            if x_scaler_path:
+                scaler = load_scaler(x_scaler_path, name="x_scaler")
+        if scaler is not None:
+            X = scaler.transform(X)
 
     x_min = np.nanmin(X, axis=0)
     x_max = np.nanmax(X, axis=0)
     return x_min, x_max, feature_cols
+
+
+def compute_x_bounds(
+    cfg: dict,
+    *,
+    x_scaler=None,
+    x_features: Sequence[str] | None = None,
+):
+    bounds_cfg = cfg.get("bounds", {})
+    x_min_cfg = bounds_cfg.get("x_min", [])
+    x_max_cfg = bounds_cfg.get("x_max", [])
+    x_min = None
+    x_max = None
+    if x_min_cfg and x_max_cfg:
+        x_bounds = np.vstack([np.asarray(x_min_cfg, dtype=float), np.asarray(x_max_cfg, dtype=float)])
+        if bounds_cfg.get("use_scaler_for_bounds", True):
+            scaler = x_scaler
+            if scaler is None:
+                scaler_path = cfg.get("scalers", {}).get("x_scaler_path")
+                if scaler_path:
+                    scaler = load_scaler(scaler_path, name="x_scaler")
+            if scaler is not None:
+                x_bounds = scaler.transform(x_bounds)
+        x_min = x_bounds[0]
+        x_max = x_bounds[1]
+    elif bounds_cfg.get("training_data"):
+        x_min, x_max, feat_cols = compute_feature_bounds_from_training_data(cfg, x_scaler=x_scaler)
+        if x_features and feat_cols != list(x_features):
+            name_to_pos = {name: i for i, name in enumerate(feat_cols)}
+            try:
+                reorder = [name_to_pos[name] for name in x_features]
+            except KeyError as exc:
+                raise KeyError(f"Missing feature {exc} in bounds training data.") from exc
+            x_min = x_min[reorder]
+            x_max = x_max[reorder]
+    return x_min, x_max
+
+
+def compute_y_bounds(cfg: dict, *, y_scaler=None):
+    bounds_cfg = cfg.get("bounds", {})
+    y_min_raw = np.asarray(bounds_cfg.get("y_min", []), dtype=float).reshape(1, -1)
+    y_max_raw = np.asarray(bounds_cfg.get("y_max", []), dtype=float).reshape(1, -1)
+    scaler = y_scaler
+    if scaler is None:
+        y_scaler_path = cfg.get("scalers", {}).get("y_scaler_path")
+        if y_scaler_path:
+            scaler = load_scaler(y_scaler_path, name="y_scaler")
+    if scaler is not None and y_min_raw.size:
+        y_min = scaler.transform(y_min_raw).reshape(-1)
+        y_max = scaler.transform(y_max_raw).reshape(-1)
+    else:
+        y_min = y_min_raw.reshape(-1)
+        y_max = y_max_raw.reshape(-1)
+    return y_min, y_max
 
 
 def scale_values_with_scaler(scaler, values: np.ndarray, idx: Sequence[int] | None = None) -> np.ndarray:
@@ -177,6 +244,23 @@ def unscale_values_with_scaler(scaler, values: np.ndarray, idx: Sequence[int] | 
         return vals * scaler.scale_ + scaler.center_
     if hasattr(scaler, "min_"):
         return (vals - scaler.min_) / scaler.scale_
+    raise AttributeError("Unsupported scaler; expected center_/scale_ or min_/scale_.")
+
+
+def scale_cvxpy_values_with_scaler(scaler, values, idx: Sequence[int] | None = None):
+    if scaler is None:
+        return values
+    if idx is None:
+        raise ValueError("idx is required when scaling cvxpy expressions with a subset.")
+    idx = np.asarray(idx, dtype=int)
+    if hasattr(scaler, "center_"):
+        center = scaler.center_[idx]
+        scale = scaler.scale_[idx]
+        return (values - center) / scale
+    if hasattr(scaler, "min_"):
+        scale = scaler.scale_[idx]
+        min_ = scaler.min_[idx]
+        return cp.multiply(values, scale) + min_
     raise AttributeError("Unsupported scaler; expected center_/scale_ or min_/scale_.")
 
 
@@ -250,6 +334,43 @@ def _extract_linear_layers(seq):
     ]
 
 
+def activation_masks_mtlshared(model, x_np: np.ndarray):
+    with torch.no_grad():
+        x = torch.tensor(x_np, dtype=torch.float32)
+        h = x
+        shared_masks = []
+        last_z = None
+        for layer in model.shared:
+            if isinstance(layer, torch.nn.Linear):
+                last_z = layer(h)
+                h = last_z
+            elif isinstance(layer, torch.nn.ReLU):
+                if last_z is None:
+                    continue
+                shared_masks.append((last_z > 0).cpu().numpy().reshape(-1))
+                h = layer(last_z)
+            elif isinstance(layer, torch.nn.Dropout):
+                h = layer(h)
+
+        head_masks = []
+        for head in model.heads:
+            h_head = h
+            last_z = None
+            for layer in head:
+                if isinstance(layer, torch.nn.Linear):
+                    last_z = layer(h_head)
+                    h_head = last_z
+                elif isinstance(layer, torch.nn.ReLU):
+                    if last_z is None:
+                        continue
+                    head_masks.append((last_z > 0).cpu().numpy().reshape(-1))
+                    h_head = layer(last_z)
+                elif isinstance(layer, torch.nn.Dropout):
+                    h_head = layer(h_head)
+
+    return shared_masks, head_masks
+
+
 def setup_system(cfg: Dict, base_scale: float, rng: np.random.Generator):
     import andes
 
@@ -317,7 +438,19 @@ def build_features(
     return row
 
 
-def solve_ed(Pd, Pg_min, Pg_max, a, b, c, constraints, solver: str):
+def solve_ed(
+    Pd,
+    Pg_min,
+    Pg_max,
+    a,
+    b,
+    c,
+    constraints,
+    solver: str,
+    *,
+    verbose: bool = False,
+    solver_opts: dict | None = None,
+):
     Pg = cp.Variable(len(Pg_min))
     cost_expr = a + cp.multiply(b, Pg) + cp.multiply(c, cp.square(Pg))
     objective = cp.Minimize(cp.sum(cost_expr))
@@ -327,5 +460,8 @@ def solve_ed(Pd, Pg_min, Pg_max, a, b, c, constraints, solver: str):
         Pg <= Pg_max,
     ]
     prob = cp.Problem(objective, constraints)
-    prob.solve(solver=solver)
+    solve_kwargs = {"solver": solver, "verbose": verbose}
+    if solver_opts:
+        solve_kwargs.update(solver_opts)
+    prob.solve(**solve_kwargs)
     return prob, Pg

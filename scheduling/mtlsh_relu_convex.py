@@ -25,6 +25,7 @@ def _linear_layers(module):
 def _relu_epigraph(z, y):
     return [y >= 0, y >= z]
 
+
 def _apply_relu_stack(h, layers, constraints, *, prefix: str):
     for idx, (w, b) in enumerate(layers):
         z = w @ h + b
@@ -33,11 +34,13 @@ def _apply_relu_stack(h, layers, constraints, *, prefix: str):
         h = y
     return h
 
+
 def _extract_linear_layers(seq):
     return [
         (m.weight.detach().cpu().numpy(), m.bias.detach().cpu().numpy())
         for m in _linear_layers(seq)
     ]
+
 
 def _load_csv_features(
     csv_path: Path,

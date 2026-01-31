@@ -9,7 +9,7 @@ from .diagnostics import (
     plot_pg_delta_bars,
     save_scan_results,
 )
-from .run_scan import main
+from .run_scan import main, run_scan
 
 __all__ = [
     "build_milp_constraints_mtlshared",
@@ -20,4 +20,5 @@ __all__ = [
     "plot_pg_delta_bars",
     "save_scan_results",
     "main",
+    "run_scan",
 ]
