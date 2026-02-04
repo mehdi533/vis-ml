@@ -448,10 +448,13 @@ def solve_ed(
     constraints,
     solver: str,
     *,
+    Pg_var: cp.Variable | None = None,
     verbose: bool = False,
     solver_opts: dict | None = None,
 ):
-    Pg = cp.Variable(len(Pg_min))
+    Pg = Pg_var if Pg_var is not None else cp.Variable(len(Pg_min))
+    if Pg.shape[0] != len(Pg_min):
+        raise ValueError("Pg_var length does not match Pg_min/Pg_max.")
     cost_expr = a + cp.multiply(b, Pg) + cp.multiply(c, cp.square(Pg))
     objective = cp.Minimize(cp.sum(cost_expr))
     constraints = list(constraints) + [

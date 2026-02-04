@@ -5,7 +5,7 @@ from pathlib import Path
 import cvxpy as cp
 import torch
 
-from scheduling.convex_reformulation.utils import (
+from scheduling.utils import (
     _apply_relu_stack,
     _extract_linear_layers,
     build_torch_model,

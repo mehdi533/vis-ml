@@ -3,7 +3,7 @@ from __future__ import annotations
 import cvxpy as cp
 import numpy as np
 
-from scheduling.convex_reformulation.utils import _extract_linear_layers, _relu_epigraph
+from scheduling.utils import _extract_linear_layers, _relu_epigraph
 
 
 def _relu_big_m(z, y, a, z_min, z_max):

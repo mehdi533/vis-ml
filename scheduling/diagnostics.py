@@ -6,7 +6,7 @@ from typing import Sequence
 import matplotlib.pyplot as plt
 import numpy as np
 
-from scheduling.convex_reformulation.utils import activation_masks_mtlshared
+from scheduling.utils import activation_masks_mtlshared
 
 
 def relu_activation_pattern_mtlshared(model, x_np: np.ndarray):

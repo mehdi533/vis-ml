@@ -3,7 +3,7 @@ from __future__ import annotations
 import cvxpy as cp
 import numpy as np
 
-from scheduling.convex_reformulation.utils import (
+from scheduling.utils import (
     _extract_linear_layers,
     activation_masks_mtlshared,
 )

@@ -22,6 +22,11 @@ scalers:
 
 ibr_idx: [0,5,7,8]
 
+line_flow:
+  enable: true
+  source: pandapower
+  line_limits:
+
 bounds:
   training_data: simulation_results.csv
   drop_cols: []
@@ -30,8 +35,8 @@ bounds:
   D_bounds: [0,4]
   x_min: []
   x_max: []
-  y_min: [0.0,-0.2,-2.50,-0.01,-5,-5,-5,-5] # [-0.5, -0.5, -0.2, -0.2, -5, -5, -5, -5]
-  y_max: [0.2,0.01,0.01,1.5,  5,5,5,5] #[0.5, 0.5, 0.2, 0.2, 5, 5, 5, 5]
+  y_min: [0.0,-1,-2.50,-0.01,-5,-5,-5,-5] # [-0.5, -0.5, -0.2, -0.2, -5, -5, -5, -5]
+  y_max: [1,0.01,0.01,1.5,  5,5,5,5] #[0.5, 0.5, 0.2, 0.2, 5, 5, 5, 5]
 
 # Economic dispatch costs (length must match number of PV units).
 ed_costs:

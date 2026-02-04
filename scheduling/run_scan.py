@@ -15,10 +15,10 @@ import numpy as np
 import torch
 import andes
 
-from scheduling.convex_reformulation.epigraph import build_epigraph_constraints
-from scheduling.convex_reformulation.milp import build_milp_constraints_mtlshared
-from scheduling.convex_reformulation.fixed_pattern import build_fixed_pattern_constraints_mtlshared
-from scheduling.convex_reformulation.diagnostics import (
+from scheduling.epigraph import build_epigraph_constraints
+from scheduling.milp import build_milp_constraints_mtlshared
+from scheduling.fixed_pattern import build_fixed_pattern_constraints_mtlshared
+from scheduling.diagnostics import (
     plot_diff_norm,
     plot_pg_delta_per_gen,
     plot_pg_delta_bars,
@@ -26,7 +26,7 @@ from scheduling.convex_reformulation.diagnostics import (
     plot_m_d_ibrs,
     plot_pred_vs_opt,
 )
-from scheduling.convex_reformulation.utils import (
+from scheduling.utils import (
     load_yaml,
     repeat_or_validate,
     build_torch_model,
@@ -39,6 +39,15 @@ from scheduling.convex_reformulation.utils import (
     compute_y_bounds,
     load_scaler,
     scale_cvxpy_values_with_scaler,
+)
+from scheduling.line_flow_constraints import (
+    build_pandapower_net,
+    compute_ptdf,
+    extract_fmax_from_pandapower,
+    build_injection_matrices,
+    compute_net_injections,
+    compute_line_flows,
+    build_line_flow_constraints,
 )
 
 os.environ.setdefault("OMP_NUM_THREADS", "1")
@@ -90,7 +99,7 @@ def _parse_args() -> ScanArgs:
     parser.add_argument("--config", default="experiments/generation.yaml", help="Path to sim YAML.")
     parser.add_argument("--cost-config", default="scheduling/mtlsh_convex.yaml", help="Path to cost YAML.")
     parser.add_argument("--base-scale", type=float, default=1.0, help="Base load scale.")
-    parser.add_argument("--step-scale", type=float, default=0.9, help="Load step scale.")
+    parser.add_argument("--step-scale", type=float, default=0.8, help="Load step scale.")
     parser.add_argument("--solver", type=str, default="GUROBI", help="CVXPY solver for convex ED.")
     parser.add_argument("--diff-tol", type=float, default=1e-3, help="Norm threshold for Pg diff.")
     parser.add_argument("--plot-dir", type=str, default="experiments", help="Directory to save plots.")
@@ -203,7 +212,11 @@ def _build_feature_data(
 def _predict_scaled(torch_model, feat_scaled: np.ndarray) -> np.ndarray:
     with torch.no_grad():
         feat_tensor = torch.tensor(feat_scaled, dtype=torch.float32)
-        return torch_model(feat_tensor).cpu().numpy().reshape(-1)
+        out = torch_model(feat_tensor).cpu()
+        try:
+            return out.numpy().reshape(-1)
+        except RuntimeError:
+            return np.asarray(out.tolist(), dtype=float).reshape(-1)
 
 
 def _relax_y_bounds(y_min: np.ndarray, y_max: np.ndarray, pred_scaled: np.ndarray):
@@ -480,9 +493,48 @@ def run_scan(args: ScanArgs) -> None:
 
     Pd = float(np.sum(ss.PQ.p0.v)) * float(args.step_scale)
 
+    line_flow_cfg = cost_cfg.get("line_flow", {})
+    line_flow_builder = None
+    line_flows_ed = None
+    line_flows_nn = None
+    if line_flow_cfg.get("enable", False):
+        source = str(line_flow_cfg.get("source", "pandapower")).lower()
+        if source != "pandapower":
+            raise ValueError(f"Unsupported line_flow.source='{source}' (expected 'pandapower').")
+
+        pp_net = build_pandapower_net(ss)
+        ptdf, bus_ids, _line_ids = compute_ptdf(pp_net)
+
+        fmax = line_flow_cfg.get("line_limits")
+        if fmax is None or (hasattr(fmax, "__len__") and len(fmax) == 0):
+            fmax = extract_fmax_from_pandapower(pp_net)
+        fmax = np.asarray(fmax, dtype=float)
+        if not np.any(fmax > 0):
+            raise ValueError(
+                "No valid fmax found. Set line_flow.line_limits or define limits in pandapower net."
+            )
+
+        print("FMAX:", fmax)
+
+        Cg, Cd = build_injection_matrices(ss, bus_ids=bus_ids)
+        Pd_vec = np.asarray(ss.PQ.p0.v, dtype=float) * float(args.step_scale)
+
+        def _build_line_flow_constraints(Pg_var: cp.Expression):
+            injections = compute_net_injections(Cg, Pg_var, Cd, Pd_vec)
+            flows = compute_line_flows(ptdf, injections)
+            cons = build_line_flow_constraints(flows, fmax=fmax)
+            return cons, flows
+
+        line_flow_builder = _build_line_flow_constraints
+
     with log_path.open("a", encoding="utf-8") as f:
         _log_solver_header(f, "baseline_ed")
         with redirect_stdout(f), redirect_stderr(f):
+            line_constraints_ed = []
+            Pg_ed_var = None
+            if line_flow_builder is not None:
+                Pg_ed_var = cp.Variable(ng)
+                line_constraints_ed, line_flows_ed = line_flow_builder(Pg_ed_var)
             prob_ed, Pg_ed = solve_ed(
                 Pd=Pd,
                 Pg_min=Pg_min,
@@ -490,8 +542,9 @@ def run_scan(args: ScanArgs) -> None:
                 a=a,
                 b=b,
                 c=c,
-                constraints=[],
+                constraints=line_constraints_ed,
                 solver=args.solver,
+                Pg_var=Pg_ed_var,
                 verbose=True,
             )
     if prob_ed.status not in ("optimal", "optimal_inaccurate"):
@@ -540,6 +593,10 @@ def run_scan(args: ScanArgs) -> None:
     cost_expr_nn = a + cp.multiply(b, Pg_nn) + cp.multiply(c, cp.square(Pg_nn))
     objective_nn = cp.Minimize(cp.sum(cost_expr_nn))
 
+    line_constraints_nn = []
+    if line_flow_builder is not None:
+        line_constraints_nn, line_flows_nn = line_flow_builder(Pg_nn)
+
     Pg = np.array(ss.PV.p0.v.tolist() + ss.Slack.p0.v.tolist())
     p_raw = Pg_nn[ibr_idx] - Pg[ibr_idx]
     if y_scaler is not None:
@@ -548,7 +605,7 @@ def run_scan(args: ScanArgs) -> None:
     else:
         p_scaled = p_raw
 
-    constraints_combined = list(constraint_data.constraints) + [
+    constraints_combined = list(constraint_data.constraints) +  line_constraints_nn + [
         cp.sum(Pg_nn) == Pd,
         Pg_nn >= Pg_min,
         Pg_nn <= Pg_max,
@@ -576,7 +633,8 @@ def run_scan(args: ScanArgs) -> None:
             cp.sum(Pg_nn) == Pd,
             Pg_nn >= Pg_min,
             Pg_nn <= Pg_max,
-        ],
+        ]
+        + line_constraints_nn,
         solver=args.milp_solver if args.use_milp else args.solver,
         label="ed_only",
         log_path=log_path,
@@ -589,6 +647,7 @@ def run_scan(args: ScanArgs) -> None:
         log_path=log_path,
         verbose=True,
     )
+
     if status_combined not in ("optimal", "optimal_inaccurate"):
         raise RuntimeError(f"combined status={status_combined}")
 
@@ -645,6 +704,13 @@ def run_scan(args: ScanArgs) -> None:
 
     LOGGER.info("y_pred (scaled)=%s", pred_scaled)
     LOGGER.info("y_pred (unscaled)=%s", pred_unscaled)
+
+    if line_flows_nn is not None:
+        LOGGER.info("line flows (nn)=%s", line_flows_nn.value)
+    if line_flows_ed is not None:
+        LOGGER.info("line flows (baseline)=%s", line_flows_ed.value)
+    else:
+        LOGGER.info("No line flow constraints were applied.")
 
     plot_m_d_ibrs(m, d, ibr_idx, plot_dir)
     plot_pred_vs_opt(y_nn_scaled, y_nn_unscaled, pred_scaled, pred_unscaled, plot_dir)

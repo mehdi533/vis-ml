@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from scheduling.convex_reformulation.utils import (
+from scheduling.utils import (
     activation_masks_mtlshared,
     compute_x_bounds,
     scale_values_with_scaler,
