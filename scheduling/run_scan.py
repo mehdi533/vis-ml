@@ -16,7 +16,7 @@ import torch
 import andes
 
 from scheduling.epigraph import build_epigraph_constraints
-from scheduling.milp import build_milp_constraints_mtlshared
+from scheduling.milp import build_milp_constraints_mtlshared, build_milp_constraints_mlp
 from scheduling.fixed_pattern import build_fixed_pattern_constraints_mtlshared
 from scheduling.diagnostics import (
     plot_diff_norm,
@@ -260,7 +260,7 @@ def _build_nn_constraints(
     milp_mode: str,
     fixed_pattern: bool,
 ) -> NNConstraintData:
-    if cost_cfg.get("model", {}).get("type", "MTLSharedHeads") != "MTLSharedHeads":
+    if cost_cfg.get("model", {}).get("type", "MTLSharedHeads") != "MTLSharedHeads" and fixed_pattern:
         raise NotImplementedError("Fixed pattern only supports MTLSharedHeads for now.")
 
     x_nn = cp.Variable(len(x_features), name="features")
@@ -282,12 +282,17 @@ def _build_nn_constraints(
         x_max[m_idx] = m_max_scaled
         x_min[d_idx] = d_min_scaled
         x_max[d_idx] = d_max_scaled
+        # Fixed features are not decision variables; tighten bounds to their exact values
+        exclude = sorted(set(m_idx) | set(d_idx))
+        keep_idx = [i for i in range(x_min.shape[0]) if i not in set(exclude)]
+        x_min[keep_idx] = x_val[keep_idx]
+        x_max[keep_idx] = x_val[keep_idx]
         y_nn, constraints_nn = build_milp_constraints_mtlshared(
             torch_model,
             x_nn,
             x_min,
             x_max,
-            binary_last_shared_and_head=use_partial,
+            # binary_last_shared_and_head=use_partial,
         )
         constraints_nn = list(constraints_nn)
     else:

@@ -24,12 +24,58 @@ def _interval_bounds(W, b, h_min, h_max):
 
 
 def _relu_with_pruning(z, y, z_min, z_max, *, name: str):
-    if np.all(z_min >= 0):
-        return [y == z, z >= 0]
-    if np.all(z_max <= 0):
-        return [y == 0, z <= 0]
-    a = cp.Variable(z.shape[0], boolean=True, name=f"{name}_bin")
-    return _relu_big_m(z, y, a, z_min, z_max)
+    constraints = []
+    active_mask = z_min >= 0
+    inactive_mask = z_max <= 0
+    undecided_mask = ~(active_mask | inactive_mask)
+
+    if np.any(active_mask):
+        idx = np.flatnonzero(active_mask)
+        constraints += [y[idx] == z[idx], z[idx] >= 0]
+    if np.any(inactive_mask):
+        idx = np.flatnonzero(inactive_mask)
+        constraints += [y[idx] == 0, z[idx] <= 0]
+    if np.any(undecided_mask):
+        idx = np.flatnonzero(undecided_mask)
+        a = cp.Variable(idx.shape[0], boolean=True, name=f"{name}_bin")
+        constraints += _relu_big_m(z[idx], y[idx], a, z_min[idx], z_max[idx])
+
+    return constraints
+
+
+def build_milp_constraints_mlp(
+    model,
+    x,
+    x_min,
+    x_max,
+    *,
+    binary_last_relu_only: bool = False,
+):
+    constraints = []
+    h = x
+    h_min = x_min.copy()
+    h_max = x_max.copy()
+
+    layers = _extract_linear_layers(model.net)
+    last_relu_idx = len(layers) - 2
+    for idx, (W, b) in enumerate(layers):
+        z = W @ h + b
+        if idx < len(layers) - 1:
+            z_min, z_max = _interval_bounds(W, b, h_min, h_max)
+            y = cp.Variable(b.shape[0], name=f"mlp_{idx}")
+            use_binary = idx == last_relu_idx if binary_last_relu_only else True
+            if use_binary:
+                constraints += _relu_with_pruning(z, y, z_min, z_max, name=f"mlp_{idx}")
+            else:
+                constraints += _relu_epigraph(z, y)
+            h = y
+            h_min = np.maximum(0, z_min)
+            h_max = np.maximum(0, z_max)
+        else:
+            y_out = cp.Variable(b.shape[0], name="mlp_out")
+            constraints.append(y_out == z)
+
+    return y_out, constraints
 
 
 def build_milp_constraints_mtlshared(
