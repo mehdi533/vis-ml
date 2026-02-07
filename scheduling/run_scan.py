@@ -15,7 +15,6 @@ import numpy as np
 import torch
 import andes
 
-from scheduling.epigraph import build_epigraph_constraints
 from scheduling.milp import build_milp_constraints_mtlshared, build_milp_constraints_mlp
 from scheduling.fixed_pattern import build_fixed_pattern_constraints_mtlshared
 from scheduling.diagnostics import (
@@ -39,6 +38,7 @@ from scheduling.utils import (
     compute_y_bounds,
     load_scaler,
     scale_cvxpy_values_with_scaler,
+    _extract_linear_layers,
 )
 from scheduling.line_flow_constraints import (
     build_pandapower_net,
@@ -57,6 +57,36 @@ os.environ.setdefault("KMP_AFFINITY", "disabled")
 os.environ.setdefault("KMP_INIT_AT_FORK", "FALSE")
 
 LOGGER = logging.getLogger(__name__)
+
+
+def _relu_sign_patterns(model, x_np: np.ndarray) -> dict[str, np.ndarray]:
+    patterns: dict[str, np.ndarray] = {}
+    if hasattr(model, "shared") and hasattr(model, "heads"):
+        h = x_np
+        shared_layers = _extract_linear_layers(model.shared)
+        for idx, (W, b) in enumerate(shared_layers):
+            z = W @ h + b
+            patterns[f"shared_{idx}"] = z >= 0
+            h = np.maximum(0, z)
+        for i, head in enumerate(model.heads):
+            h_head = h
+            head_layers = _extract_linear_layers(head)
+            for idx, (W, b) in enumerate(head_layers[:-1]):
+                z = W @ h_head + b
+                patterns[f"head{i}_{idx}"] = z >= 0
+                h_head = np.maximum(0, z)
+        return patterns
+
+    if hasattr(model, "net"):
+        h = x_np
+        layers = _extract_linear_layers(model.net)
+        for idx, (W, b) in enumerate(layers[:-1]):
+            z = W @ h + b
+            patterns[f"mlp_{idx}"] = z >= 0
+            h = np.maximum(0, z)
+        return patterns
+
+    raise NotImplementedError("Unsupported model type for relu sign patterns.")
 
 
 @dataclass(frozen=True)
@@ -292,12 +322,11 @@ def _build_nn_constraints(
             x_nn,
             x_min,
             x_max,
-            # binary_last_shared_and_head=use_partial,
+            binary_last_shared_and_head=use_partial,
         )
         constraints_nn = list(constraints_nn)
-    else:
-        x_nn, y_nn, constraints_nn = build_epigraph_constraints(cost_cfg, apply_x_bounds=False, apply_y_bounds=False)
-        constraints_nn = list(constraints_nn)
+    else: 
+        raise SyntaxError("Only MILP or fixed pattern constraints are supported currently.")
 
     if y_min_scaled.size and y_max_scaled.size:
         constraints_nn += [y_nn >= y_min_scaled, y_nn <= y_max_scaled]
@@ -610,7 +639,7 @@ def run_scan(args: ScanArgs) -> None:
     else:
         p_scaled = p_raw
 
-    constraints_combined = list(constraint_data.constraints) +  line_constraints_nn + [
+    constraints_combined = list(constraint_data.constraints) + line_constraints_nn + [
         cp.sum(Pg_nn) == Pd,
         Pg_nn >= Pg_min,
         Pg_nn <= Pg_max,
@@ -700,6 +729,23 @@ def run_scan(args: ScanArgs) -> None:
     feat_scaled_flat[constraint_data.m_idx] = x_nn_val[constraint_data.m_idx]
     feat_scaled_flat[constraint_data.d_idx] = x_nn_val[constraint_data.d_idx]
     feat_scaled = feat_scaled_flat.reshape(1, -1)
+
+    base_scaled = feature_data.feat_scaled.reshape(-1)
+    opt_scaled = feat_scaled.reshape(-1)
+    try:
+        base_patterns = _relu_sign_patterns(torch_model, base_scaled)
+        opt_patterns = _relu_sign_patterns(torch_model, opt_scaled)
+        for name in sorted(base_patterns.keys()):
+            flips = int(np.sum(base_patterns[name] != opt_patterns[name]))
+            total = int(base_patterns[name].size)
+            if flips:
+                LOGGER.info("ReLU flips %s: %d/%d", name, flips, total)
+        if all(
+            np.array_equal(base_patterns[k], opt_patterns[k]) for k in base_patterns
+        ):
+            LOGGER.info("ReLU flips: none")
+    except Exception as exc:
+        LOGGER.warning("ReLU flip check failed: %s", exc)
 
     pred_scaled = _predict_scaled(torch_model, feat_scaled)
     if y_scaler is not None:

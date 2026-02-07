@@ -1,10 +1,17 @@
+# TODO: prepare proof it works 
+
 from __future__ import annotations
 
 from typing import Iterable, Sequence
-
 import numpy as np
 import cvxpy as cp
 import andes
+
+
+from pandapower.pd2ppc import _pd2ppc
+from pandapower.pypower.makePTDF import makePTDF
+from pandapower.pd2ppc import _pd2ppc
+from pandapower import auxiliary as aux
 
 
 def build_pandapower_net(ss: andes.System):
@@ -26,9 +33,6 @@ def compute_ptdf(pp_net, *, use_sparse: bool = False) -> tuple[np.ndarray, np.nd
     bus_ids : bus indices in PP order
     line_ids : line indices in PP order
     """
-    from pandapower.pypower.makePTDF import makePTDF
-    from pandapower.pd2ppc import _pd2ppc
-    from pandapower import auxiliary as aux
 
     if not hasattr(pp_net, "_options") or not isinstance(pp_net._options, dict):
         pp_net._options = {}
@@ -61,7 +65,6 @@ def extract_fmax_from_pandapower(pp_net) -> np.ndarray:
     fmax : np.ndarray
         RATE_A values from ppci branch (MVA or MW-equivalent).
     """
-    from pandapower.pd2ppc import _pd2ppc
 
     _, ppci = _pd2ppc(pp_net)
     branch = ppci["branch"]

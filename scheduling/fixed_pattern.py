@@ -1,3 +1,5 @@
+# TODO: refactor
+
 from __future__ import annotations
 
 import cvxpy as cp
