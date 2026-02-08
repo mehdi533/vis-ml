@@ -31,6 +31,7 @@ from pandapower import auxiliary as aux
 
 from models.models import MTLSharedHeads
 
+from scheduling.diagnostics import plot_m_d_ibrs, plot_pred_vs_opt
 from scheduling.utils import (
     build_features,
     compute_y_bounds,
@@ -64,7 +65,9 @@ def input_features_constraints(x_val_sc: np.ndarray,
 
 def output_features_constraints(y_min_sc: np.ndarray, 
                                 y_max_sc: np.ndarray,
-                                dp_ibr_sc: np.ndarray): # TODO not sure if p_scaled is np.darray
+                                p_min_sc: np.ndarray,
+                                p_max_sc: np.ndarray,
+                                dp_sc: np.ndarray,): # TODO not sure if p_scaled is np.darray
     
     y = cp.Variable(len(y_min_sc), name="output_features")
 
@@ -74,8 +77,12 @@ def output_features_constraints(y_min_sc: np.ndarray,
     constraints += [y >= y_min_sc]
     constraints += [y <= y_max_sc]
 
-    # Constraints on (/\P_IBR)_sc == y[4:8]
-    constraints += [y[4:8] == dp_ibr_sc]
+    # Constraints on (/\P_IBR)_sc <= y[4:8]
+    # constraints += [y[4:8] >= dp_ibr_sc]
+    # TODO: need to fix this bcs we actually do not put the delta p ibr max but the delta p ibr, the extra prod. of the ibr doesn't go back down, are we actually predicting delta p ibr? 
+    constraints += [y[4:8] >= dp_sc]
+    constraints += [y[4:8] >= p_min_sc] # the negative difference cannot be greater than the difference between power output and 
+    constraints += [y[4:8] <= p_max_sc]
 
     return y, constraints
 
@@ -202,8 +209,6 @@ def surrogate_constraints_fixed_activation(
         model, 
         x,
         x_val_sc,
-        # x_min_sc,
-        # x_max_sc,
         y, # TODO: add type
         masks=None,
         ):
@@ -356,7 +361,7 @@ def define_rted_vis(ss: andes.System, model,
                     d_min_sc: float | np.ndarray, d_max_sc: float | np.ndarray,
                     x_min_sc: np.ndarray, x_max_sc: np.ndarray,
                     y_min_sc: np.ndarray, y_max_sc: np.ndarray,
-                    p_scaled: np.ndarray,
+                    p_min_sc: np.ndarray, p_max_sc: np.ndarray, dp_sc: np.ndarray,
                     a: np.ndarray, b: np.ndarray, c: np.ndarray,
                     pg: cp.Variable, pg_min: np.ndarray, pg_max: np.ndarray,
                     pd: np.ndarray):
@@ -375,7 +380,7 @@ def define_rted_vis(ss: andes.System, model,
     constraints = []
 
     x, constraints_x = input_features_constraints(x_val_sc, np.arange(len(x_val_sc)), m_idx, d_idx, m_min_sc, m_max_sc, d_min_sc, d_max_sc)
-    y, constraints_y = output_features_constraints(y_min_sc, y_max_sc, p_scaled)
+    y, constraints_y = output_features_constraints(y_min_sc, y_max_sc, p_min_sc, p_max_sc, dp_sc)
     # constraints_nn = surrogate_constraints_milp(model, x, x_min_sc, x_max_sc, y)
     flows, constraints_line = inequality_line_flows(ss, pg, pd)
     constraints_ed = [pg >= pg_min, pg <= pg_max, cp.sum(pg) == float(np.sum(pd))]
@@ -539,8 +544,12 @@ def main():
     pg_base = np.array(ss.PV.p0.v.tolist() + ss.Slack.p0.v.tolist())
     
     ibr_idx = np.asarray(cost_cfg.get("ibr_idx", []), dtype=int)
-    dp_ibr = pg[ibr_idx] - pg_base[ibr_idx]
+    p_ibr_min = pg_min[ibr_idx] - pg_base[ibr_idx] # pg[ibr_idx]
+    p_ibr_max = pg_max[ibr_idx] - pg_base[ibr_idx] # pg[ibr_idx]
+    dp_ibr = pg[ibr_idx] - pg_base[ibr_idx] # - pg_base[ibr_idx]
     ibr_out_idx = np.arange(4,8)
+    p_ibr_sc_min = cp.multiply(p_ibr_min, y_scaler.scale_[ibr_out_idx]) + y_scaler.min_[ibr_out_idx] 
+    p_ibr_sc_max = cp.multiply(p_ibr_max, y_scaler.scale_[ibr_out_idx]) + y_scaler.min_[ibr_out_idx] 
     dp_ibr_sc = cp.multiply(dp_ibr, y_scaler.scale_[ibr_out_idx]) + y_scaler.min_[ibr_out_idx] 
 
     pd = np.asarray(ss.PQ.p0.v, dtype=float) * args.step_scale
@@ -569,9 +578,17 @@ def main():
     prob, values = define_rted_vis(
         ss, model, x_val_sc,
         m_idx, d_idx, m_min_sc, m_max_sc, d_min_sc, d_max_sc,
-        x_min_sc, x_max_sc, y_min_sc, y_max_sc, dp_ibr_sc,
+        x_min_sc, x_max_sc, y_min_sc, y_max_sc,
+        p_ibr_sc_min, p_ibr_sc_max, dp_ibr_sc,
         a, b, c, pg, pg_min, pg_max, pd
-    )
+    )  
+
+
+    x_unscaled = (values["x"].value - x_scaler.min_) / x_scaler.scale_
+    y_unscaled = (values["y"].value - y_scaler.min_) / y_scaler.scale_
+    values["x_unscaled"] = x_unscaled
+    values["y_unscaled"] = y_unscaled
+    values["delta_pg"] = values["pg"] - pg_base
 
     for key, val in values.items():
         if hasattr(val, "value"):
@@ -584,6 +601,20 @@ def main():
     print("m: ", unscale_minmax(values["x"][m_idx].value, x_scaler, m_idx))
     print("d: ", unscale_minmax(values["x"][d_idx].value, x_scaler, d_idx))
 
+    plot_dir = Path("experiments")
+    plot_dir.mkdir(parents=True, exist_ok=True)
+
+    x_opt_sc = np.asarray(values["x"].value, dtype=float).reshape(-1)
+    m_opt = unscale_minmax(x_opt_sc[m_idx], x_scaler, m_idx)
+    d_opt = unscale_minmax(x_opt_sc[d_idx], x_scaler, d_idx)
+    plot_m_d_ibrs(m_opt, d_opt, ibr_idx, plot_dir)
+
+    y_nn_scaled = np.asarray(values["y"].value, dtype=float).reshape(-1)
+    y_nn_unscaled = unscale_minmax(y_nn_scaled, y_scaler, np.arange(len(y_nn_scaled)))
+    with torch.no_grad():
+        y_pred_scaled = model(torch.tensor(x_opt_sc, dtype=torch.float32).unsqueeze(0)).cpu().numpy().reshape(-1)
+    y_pred_unscaled = unscale_minmax(y_pred_scaled, y_scaler, np.arange(len(y_pred_scaled)))
+    plot_pred_vs_opt(y_nn_scaled, y_nn_unscaled, y_pred_scaled, y_pred_unscaled, plot_dir)
 
     return prob, values
 

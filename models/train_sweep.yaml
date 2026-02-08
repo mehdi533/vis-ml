@@ -1,0 +1,54 @@
+output_dir: models_trained
+skip_if_exists: true
+seed: 42
+
+model:
+  shared_sizes: [256, 128]
+  head_sizes: [128, 64]
+  hidden_sizes: [256, 128, 64, 64]
+  dropout: 0.0
+  group_shared_sizes: [128, 64]
+
+data:
+  csv_path: simulation_results.csv
+  target_cols:
+    - rocof_max_COI
+    - rocof_min_COI
+    - devdown_COI
+    - devup_COI
+    - Delta_P_IBR_1
+    - Delta_P_IBR_2
+    - Delta_P_IBR_3
+    - Delta_P_IBR_4
+  drop_cols:
+    - sim_id
+    - seed
+    - success
+    - load_step_time
+    - time_max_dev
+    - plotter_csv
+  use_recommended_scalers: false
+
+split:
+  test_size: 0.3
+  val_fraction: 0.5
+  random_state: 42
+
+training:
+  epochs: 200
+  lr: 0.0005
+  weight_decay: 0.00001
+  batch_train: 128
+  batch_eval: 128
+  loss_weights: []
+  use_lr_scheduler: true
+  lr_scheduler_patience: 10
+  lr_scheduler_factor: 0.1
+  lr_scheduler_min_lr: 0.000001
+
+sweep:
+  models: ["MLP"]
+  losses: ["mse"]
+  scalers: ["minmax"]
+  seeds: [42]
+  training: {}

@@ -609,7 +609,12 @@ def create_model(
     in_dim: int,
     out_dim: int,
     device=None,
+    hidden_sizes: Optional[Sequence[int]] = None,
+    shared_sizes: Optional[Sequence[int]] = None,
+    head_sizes: Optional[Sequence[int]] = None,
+    dropout: float = 0.0,
     group_head_indices: Optional[Sequence[Sequence[int]]] = None,
+    group_shared_sizes: Optional[Sequence[Sequence[int]] | Sequence[int]] = None,
     kan_grid_size: int = 8,
     kan_grid_min: float = -1.0,
     kan_grid_max: float = 1.0,
@@ -618,33 +623,63 @@ def create_model(
     attention_dropout: float = 0.0,
 ):
     if model_type not in {"MTLGSH", "MTLGSH_ATT", "MTLGSH_KAN_SHARED", "MTLGSH_KAN"}:
-        model = MODEL_FACTORY[model_type](in_dim, out_dim)
+        if model_type == "MLP":
+            model = MLP(
+                in_dim,
+                out_dim,
+                hidden_sizes=hidden_sizes,
+                dropout=dropout,
+            )
+        elif model_type == "MTLSH":
+            model = MTLSharedHeads(
+                in_dim=in_dim,
+                n_tasks=out_dim,
+                shared_sizes=shared_sizes,
+                head_sizes=head_sizes,
+                dropout=dropout,
+            )
+        else:
+            model = MODEL_FACTORY[model_type](in_dim, out_dim)
     else:
         if group_head_indices is None:
             group_head_indices = [
                 [0, 1, 2, 3],
                 [4, 5, 6, 7],
             ]
+        if group_shared_sizes is None:
+            group_shared_sizes = [128, 64]
+        if group_shared_sizes and all(isinstance(s, (list, tuple)) for s in group_shared_sizes):
+            if len(group_shared_sizes) == 1:
+                group_sizes = list(group_shared_sizes) * len(group_head_indices)
+            elif len(group_shared_sizes) != len(group_head_indices):
+                raise ValueError("group_shared_sizes must be 1 group or match group_head_indices.")
+            else:
+                group_sizes = list(group_shared_sizes)
+        else:
+            group_sizes = [list(group_shared_sizes)] * len(group_head_indices)
+
         group_shared_configs = [
-            SharedGroupSpec(head_indices=indices, hidden_sizes=[128, 64])
-            for indices in group_head_indices
+            SharedGroupSpec(head_indices=indices, hidden_sizes=list(group_sizes[i]))
+            for i, indices in enumerate(group_head_indices)
         ]
+        group_head_sizes = head_sizes if head_sizes is not None else [64, 32]
+        group_shared_sizes = shared_sizes if shared_sizes is not None else [256, 128]
         if model_type == "MTLGSH":
             model = MTLGroupedSharedHeads(
                 in_dim=in_dim,
                 n_tasks=out_dim,
-                shared_sizes=[256, 128],
-                head_sizes=[64, 32],
-                dropout=0,
+                shared_sizes=group_shared_sizes,
+                head_sizes=group_head_sizes,
+                dropout=dropout,
                 group_shared_configs=group_shared_configs,
             )
         elif model_type == "MTLGSH_ATT":
             model = MTLGroupedSharedHeadsAttn(
                 in_dim=in_dim,
                 n_tasks=out_dim,
-                shared_sizes=[256, 128],
-                head_sizes=[64, 32],
-                dropout=0,
+                shared_sizes=group_shared_sizes,
+                head_sizes=group_head_sizes,
+                dropout=dropout,
                 group_shared_configs=group_shared_configs,
                 attention_hidden_dim=attention_hidden_dim,
                 attention_temperature=attention_temperature,
@@ -654,9 +689,9 @@ def create_model(
             model = MODEL_FACTORY[model_type](
                 in_dim=in_dim,
                 n_tasks=out_dim,
-                shared_sizes=[256, 128],
-                head_sizes=[64, 32],
-                dropout=0,
+                shared_sizes=group_shared_sizes,
+                head_sizes=group_head_sizes,
+                dropout=dropout,
                 group_shared_configs=group_shared_configs,
                 kan_grid_size=kan_grid_size,
                 kan_grid_min=kan_grid_min,

@@ -63,6 +63,19 @@ def _listify(value):
     return [value]
 
 
+def _parse_size_list(value):
+    if value is None:
+        return None
+    if isinstance(value, str):
+        items = [v.strip() for v in value.split(",") if v.strip()]
+        return [int(v) for v in items] if items else None
+    if isinstance(value, (list, tuple)):
+        if value and all(isinstance(v, (list, tuple)) for v in value):
+            return [[int(x) for x in group] for group in value]
+        return [int(v) for v in value]
+    return [int(value)]
+
+
 def _sanitize_name(name: str) -> str:
     return "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in name)
 
@@ -173,11 +186,22 @@ def train_one(
     )
 
     group_head_indices = _parse_head_indices(train_cfg.get("head_indices"))
+    model_cfg = cfg.get("model", {})
+    shared_sizes = _parse_size_list(model_cfg.get("shared_sizes"))
+    head_sizes = _parse_size_list(model_cfg.get("head_sizes"))
+    hidden_sizes = _parse_size_list(model_cfg.get("hidden_sizes"))
+    group_shared_sizes = _parse_size_list(model_cfg.get("group_shared_sizes"))
+    dropout = float(model_cfg.get("dropout", 0.0))
     model, device = create_model(
         model_type,
         in_dim=len(feature_cols),
         out_dim=len(target_cols),
         group_head_indices=group_head_indices,
+        shared_sizes=shared_sizes,
+        head_sizes=head_sizes,
+        hidden_sizes=hidden_sizes,
+        group_shared_sizes=group_shared_sizes,
+        dropout=dropout,
         kan_grid_size=int(train_cfg.get("kan_grid_size", 8)),
         kan_grid_min=float(train_cfg.get("kan_grid_min", -1.0)),
         kan_grid_max=float(train_cfg.get("kan_grid_max", 1.0)),
@@ -200,6 +224,7 @@ def train_one(
         lr_scheduler_patience=int(train_cfg.get("lr_scheduler_patience", 10)),
         lr_scheduler_factor=float(train_cfg.get("lr_scheduler_factor", 0.1)),
         lr_scheduler_min_lr=float(train_cfg.get("lr_scheduler_min_lr", 1e-6)),
+        best_model_path=str(run_dir / "vis_mlp_state_dict_best.pt"),
     )
 
     y_true, y_pred, y_true_norm, y_pred_norm, rmse, rmse_norm = evaluate_model(

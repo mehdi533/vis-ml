@@ -31,8 +31,8 @@ bounds:
   training_data: simulation_results.csv
   drop_cols: []
   use_scaler_for_bounds: true
-  M_bounds: [2,8]
-  D_bounds: [0,4]
+  M_bounds: [0,20]
+  D_bounds: [0,20]
   x_min: []
   x_max: []
   y_min: [-1,-1,-2.50,-1.5,-5,-5,-5,-5] # [-0.5, -0.5, -0.2, -0.2, -5, -5, -5, -5]
@@ -41,5 +41,5 @@ bounds:
 # Economic dispatch costs (length must match number of PV units).
 ed_costs:
   a: [1.0, 10.0, 10.0, 10.0, 10.0, 1.0, 10.0, 1.0, 1.0, 10.0]
-  b: [0.5, 5, 5, 5, 5, 0.5, 5, 0.5, 0.5, 5]
+  b: [50, 5, 5, 5, 5, 50, 5, 0.5, 50, 5]
   c: [0.01, 0.2, 0.2, 0.2, 0.2, 0.01, 0.2, 0.01, 0.01, 0.2]

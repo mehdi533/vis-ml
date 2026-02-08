@@ -26,6 +26,7 @@ def train_model(
     lr_scheduler_patience: int = 10,
     lr_scheduler_factor: float = 0.5,
     lr_scheduler_min_lr: float = 1e-6,
+    best_model_path: str | None = None,
 ):
     ce_weights = ce_weights or []
     out_dim = train_ds[0][1].shape[0]
@@ -66,7 +67,7 @@ def train_model(
         log(f"val/train std ratio={np.round(std_ratio, 4)}")
 
     loss_fn, extra_params = build_loss(loss_type, ce_weights, device, out_dim)
-    optimizer = torch.optim.Adam(
+    optimizer = torch.optim.AdamW(
         list(model.parameters()) + extra_params,
         lr=lr,
         weight_decay=weight_decay,
@@ -163,7 +164,12 @@ def train_model(
 
         if val_loss < best_val_loss:
             best_val_loss = val_loss
-            best_state = model.state_dict().copy()
+            best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
+            if best_model_path:
+                best_path = _Path(best_model_path)
+                best_path.parent.mkdir(parents=True, exist_ok=True)
+                torch.save(best_state, best_model_path)
+                log(f"Saved best model to {best_model_path}")
 
     log(f"Saved training logs to {logs_path}")
 
