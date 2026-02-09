@@ -420,8 +420,15 @@ def build_features(
     pq_p_after = pq_p_before * step_scale
     pq_q_after = pq_q_before * step_scale
 
-    M_agg = np.mean(np.concatenate([ss.GENROU.M.v, ss.REGCV1.M.v])).sum()
-    D_agg = np.mean(np.concatenate([ss.GENROU.D.v, ss.REGCV1.D.v])).sum()
+    gen_m = np.asarray(ss.GENROU.M.v, dtype=float) if getattr(ss.GENROU, "n", 0) > 0 else np.zeros(0, dtype=float)
+    gen_d = np.asarray(ss.GENROU.D.v, dtype=float) if getattr(ss.GENROU, "n", 0) > 0 else np.zeros(0, dtype=float)
+    ibr_m = np.asarray(ss.REGCV1.M.v, dtype=float) if getattr(ss.REGCV1, "n", 0) > 0 else np.zeros(0, dtype=float)
+    ibr_d = np.asarray(ss.REGCV1.D.v, dtype=float) if getattr(ss.REGCV1, "n", 0) > 0 else np.zeros(0, dtype=float)
+
+    m_all = np.concatenate([gen_m, ibr_m]) if (gen_m.size or ibr_m.size) else np.array([0.0], dtype=float)
+    d_all = np.concatenate([gen_d, ibr_d]) if (gen_d.size or ibr_d.size) else np.array([0.0], dtype=float)
+    M_agg = float(np.mean(m_all))
+    D_agg = float(np.mean(d_all))
 
     row = build_feature_row(
         base_load_scale=base_scale,
