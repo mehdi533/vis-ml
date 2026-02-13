@@ -51,4 +51,5 @@ sweep:
   losses: ["mse"]
   scalers: ["minmax"]
   seeds: [42]
+  convex: [false, true]
   training: {}

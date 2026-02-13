@@ -117,6 +117,7 @@ def train_one(
     scaler_type: str,
     seed: int,
     train_overrides: Optional[Dict] = None,
+    convex_override: Optional[bool] = None,
 ):
     _set_seed(seed)
 
@@ -187,11 +188,14 @@ def train_one(
 
     group_head_indices = _parse_head_indices(train_cfg.get("head_indices"))
     model_cfg = cfg.get("model", {})
+    if convex_override is not None:
+        model_cfg = {**model_cfg, "convex": bool(convex_override)}
     shared_sizes = _parse_size_list(model_cfg.get("shared_sizes"))
     head_sizes = _parse_size_list(model_cfg.get("head_sizes"))
     hidden_sizes = _parse_size_list(model_cfg.get("hidden_sizes"))
     group_shared_sizes = _parse_size_list(model_cfg.get("group_shared_sizes"))
     dropout = float(model_cfg.get("dropout", 0.0))
+    convex = bool(model_cfg.get("convex", False))
     model, device = create_model(
         model_type,
         in_dim=len(feature_cols),
@@ -205,6 +209,7 @@ def train_one(
         kan_grid_size=int(train_cfg.get("kan_grid_size", 8)),
         kan_grid_min=float(train_cfg.get("kan_grid_min", -1.0)),
         kan_grid_max=float(train_cfg.get("kan_grid_max", 1.0)),
+        convex=convex,
     )
 
     model_txt = run_dir / "model.txt"
@@ -249,6 +254,7 @@ def train_one(
             "loss": loss_type,
             "scaler": scaler_type,
             "seed": seed,
+            "convex": convex,
             "label": label,
             "rmse": float(rmse_val),
             "norm": float(norm_val),
@@ -276,6 +282,10 @@ def main() -> None:
     losses = sweep.get("losses", [])
     scalers = sweep.get("scalers", [])
     seeds = sweep.get("seeds", [int(cfg.get("seed", 42))])
+    convex_list = sweep.get(
+        "convex",
+        [cfg.get("model", {}).get("convex", False)],
+    )
     train_grid_cfg = sweep.get("training", {})
 
     if train_grid_cfg:
@@ -291,6 +301,7 @@ def main() -> None:
         "loss",
         "scaler",
         "seed",
+        "convex",
         "label",
         "rmse",
         "norm",
@@ -304,17 +315,19 @@ def main() -> None:
         for loss_type in losses:
             for scaler_type in scalers:
                 for seed in seeds:
-                    for train_overrides in train_overrides_list:
-                        run_name_parts = [
-                            _sanitize_name(model_type),
-                            _sanitize_name(loss_type),
-                            _sanitize_name(scaler_type),
-                            f"seed{seed}",
-                        ]
-                        for key in sorted(train_overrides.keys()):
-                            val = train_overrides[key]
-                            run_name_parts.append(f"{key}{val}")
-                        run_name = "__".join(run_name_parts)
+                    for convex in convex_list:
+                        for train_overrides in train_overrides_list:
+                            run_name_parts = [
+                                _sanitize_name(model_type),
+                                _sanitize_name(loss_type),
+                                _sanitize_name(scaler_type),
+                                f"seed{seed}",
+                                f"convex{int(bool(convex))}",
+                            ]
+                            for key in sorted(train_overrides.keys()):
+                                val = train_overrides[key]
+                                run_name_parts.append(f"{key}{val}")
+                            run_name = "__".join(run_name_parts)
                         run_dir = output_root / run_name
                         if run_dir.exists() and cfg.get("skip_if_exists", True):
                             continue
@@ -327,6 +340,7 @@ def main() -> None:
                             scaler_type=scaler_type,
                             seed=int(seed),
                             train_overrides=train_overrides,
+                            convex_override=bool(convex),
                         )
                         _append_csv_rows(summary_path, fieldnames, rmse_rows)
 
