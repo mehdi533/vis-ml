@@ -127,18 +127,21 @@ def build_feature_row(
     load_step_scale: float,
     load_step_time: float,
     pq_names: Sequence[str],
+    pq_owners: Sequence[str],
     pq_p_before: np.ndarray,
-    pq_q_before: np.ndarray,
     pq_p_after: np.ndarray,
-    pq_q_after: np.ndarray,
+    base_load_q_total: float,
     M_vec: Sequence[float],
     D_vec: Sequence[float],
     M_agg: float,
     D_agg: float,
+    genrou_pg: np.ndarray,
+    regcv1_pg: np.ndarray,
 ) -> Dict[str, float]:
     """
-    Assemble feature dictionary from inputs and PQ deltas.
+    Assemble feature dictionary from inputs, PQ deltas, owner aggregates, and dispatch setpoints.
     """
+    
     features: Dict[str, float] = {
         "base_load_scale": float(base_load_scale),
         "load_step_scale": float(load_step_scale),
@@ -146,8 +149,8 @@ def build_feature_row(
         "DELTA_PQ_tot": 0.0,
         "M_agg": float(M_agg),
         "D_agg": float(D_agg),
-        "base_load_p_total": float(np.sum(pq_p_before)) if pq_p_before.any() else 0.0,
-        "base_load_q_total": float(np.sum(pq_q_before)) if pq_q_before.any() else 0.0,
+        "base_load_p_total": float(np.sum(pq_p_before)) if pq_p_before else 0.0,
+        "base_load_q_total": float(base_load_q_total),
     }
 
     for i, (m_val, d_val) in enumerate(zip(M_vec, D_vec), start=1):
@@ -155,18 +158,25 @@ def build_feature_row(
         features[f"D_{i}"] = float(d_val)
 
     delta_p_total = 0.0
-    delta_q_total = 0.0
-    for name, p_before, p_after, q_before, q_after in zip(
-        pq_names, pq_p_before, pq_p_after, pq_q_before, pq_q_after
+    owner_totals: Dict[str, float] = {}
+    for name, owner, p_before, p_after in zip(
+        pq_names, pq_owners, pq_p_before, pq_p_after
     ):
         dp = float(p_after - p_before)
-        dq = float(q_after - q_before)
         features[f"DELTA_P_{name}"] = dp
-        features[f"DELTA_Q_{name}"] = dq
         delta_p_total += dp
-        delta_q_total += dq
+        owner_totals[owner] = owner_totals.get(owner, 0.0) + dp
 
-    features["DELTA_PQ_tot"] = float(delta_p_total + delta_q_total)
+    for owner, total in owner_totals.items():
+        features[f"DELTA_P_OWNER_{owner}"] = float(total)
+
+    features["DELTA_PQ_tot"] = float(delta_p_total)
+
+    for i, val in enumerate(genrou_pg, start=1):
+        features[f"P_GENROU_{i}"] = float(val)
+    for i, val in enumerate(regcv1_pg, start=1):
+        features[f"P_REGCV1_{i}"] = float(val)
+
     return features
 
 
@@ -177,12 +187,14 @@ def extract_simulation_row(
     load_step_scale: float,
     load_step_time: float,
     pq_names: Sequence[str],
+    pq_owners: Sequence[str],
     pq_p_before: np.ndarray,
-    pq_q_before: np.ndarray,
     pq_p_after: np.ndarray,
-    pq_q_after: np.ndarray,
+    base_load_q_total: float,
     M_vec: Sequence[float],
     D_vec: Sequence[float],
+    genrou_pg: np.ndarray,
+    regcv1_pg: np.ndarray,
     success: bool,
     plotter_csv: Optional[str] = None,
 ) -> Dict[str, float]:
@@ -207,14 +219,16 @@ def extract_simulation_row(
         load_step_scale=load_step_scale,
         load_step_time=load_step_time,
         pq_names=pq_names,
+        pq_owners=pq_owners,
         pq_p_before=pq_p_before,
-        pq_q_before=pq_q_before,
         pq_p_after=pq_p_after,
-        pq_q_after=pq_q_after,
+        base_load_q_total=base_load_q_total,
         M_vec=M_vec,
         D_vec=D_vec,
         M_agg=M_agg,
         D_agg=D_agg,
+        genrou_pg=genrou_pg,
+        regcv1_pg=regcv1_pg,
     )
 
     # ============== Extract labels ================
@@ -231,26 +245,34 @@ def extract_simulation_row(
 
     assert metrics, "COI metrics dictionary is empty."
     
-    labels: Dict[str, float] = {
-        "rocof_max_COI": np.nan,
-        "rocof_min_COI": np.nan,
-        "devdown_COI": np.nan,
-        "devup_COI": np.nan,
-    }
+    labels: Dict[str, float] = {}
     time_of_max_dev = np.nan
 
-    dev_down = metrics.get("dev_down", np.nan)
-    dev_up = metrics.get("dev_up", np.nan)
+    dev_down = float(metrics.get("dev_down", np.nan))  # f0 - f_min (>=0)
+    dev_up = float(metrics.get("dev_up", np.nan))      # f_max - f0 (>=0)
+    f_min = float(metrics.get("f_min", np.nan))
+    f_max = float(metrics.get("f_max", np.nan))
+
+    # Pick the deviation with largest magnitude and keep the sign
     if np.isfinite(dev_down) and np.isfinite(dev_up):
         if dev_down >= dev_up:
+            dev_signed = f_min - f0  # negative or zero
             time_of_max_dev = float(metrics.get("t_min", np.nan))
         else:
+            dev_signed = f_max - f0  # positive or zero
             time_of_max_dev = float(metrics.get("t_max", np.nan))
+    else:
+        dev_signed = np.nan
 
-    labels["rocof_max_COI"] = float(metrics.get("rocof_max", np.nan))
-    labels["rocof_min_COI"] = float(metrics.get("rocof_min", np.nan))
-    labels["devdown_COI"] = float(metrics.get("dev_down", np.nan))
-    labels["devup_COI"] = float(metrics.get("dev_up", np.nan))
+    rocof_min = float(metrics.get("rocof_min", np.nan))
+    rocof_max = float(metrics.get("rocof_max", np.nan))
+    if np.isfinite(rocof_min) and np.isfinite(rocof_max):
+        rocof_signed = rocof_min if abs(rocof_min) >= abs(rocof_max) else rocof_max
+    else:
+        rocof_signed = np.nan
+
+    labels["rocof_COI"] = rocof_signed
+    labels["dev_COI"] = dev_signed
     ibr_peaks = extract_ibr_peaks(ss.TDS.plotter)
     labels.update(ibr_peaks)
 
