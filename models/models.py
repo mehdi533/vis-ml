@@ -3,7 +3,10 @@ from typing import List, Optional, Sequence, Tuple
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
+try:
+    from .convex_models import FICNN, PICNN, PICNN_MTLSH, NonNegLinear
+except ImportError:  # script/module import fallback
+    from convex_models import FICNN, PICNN, PICNN_MTLSH, NonNegLinear
 
 
 class MLP(nn.Module):
@@ -15,69 +18,23 @@ class MLP(nn.Module):
         out_dim: int,
         hidden_sizes: Optional[Sequence[int]] = None,
         dropout: float = 0.0,
-        convex: bool = False,
     ):
         super().__init__()
         hidden_sizes = hidden_sizes or [256, 128, 64, 64]
-        self.convex = bool(convex)
-        self.hidden_sizes = hidden_sizes
+        layers = []
+        last_dim = in_dim
 
-        if not self.convex:
-            layers = []
-            last_dim = in_dim
-            unconstrained_first = False
+        for h in hidden_sizes:
+            layers.append(nn.Linear(last_dim, h))
+            layers.append(nn.ReLU())
+            layers.append(nn.Dropout(dropout))
+            last_dim = h
 
-            for h in hidden_sizes:
-                lin = _make_linear(last_dim, h, convex=False, unconstrained=unconstrained_first)
-                unconstrained_first = False
-                layers.append(lin)
-                layers.append(nn.ReLU())
-                layers.append(nn.Dropout(dropout))
-                last_dim = h
-
-            layers.append(_make_linear(last_dim, out_dim, convex=False, unconstrained=False))
-            self.net = nn.Sequential(*layers)
-            return
-
-        # Convex branch: build an ICNN-style architecture with input skips.
-        # Dropout is disabled to preserve convexity per forward pass.
-        self.in_dim = in_dim
-
-        # First layer: only input skip (no constraint needed).
-        if hidden_sizes:
-            self.first_wx = nn.Linear(in_dim, hidden_sizes[0])
-        else:
-            self.first_wx = None
-
-        # Hidden ICNN layers: z_{k+1} = ReLU(Wz z_k + Wx x + b) with Wz >= 0.
-        self.Wz_layers = nn.ModuleList()
-        self.Wx_layers = nn.ModuleList()
-        for i in range(1, len(hidden_sizes)):
-            self.Wz_layers.append(NonNegLinear(hidden_sizes[i - 1], hidden_sizes[i]))
-            self.Wx_layers.append(nn.Linear(in_dim, hidden_sizes[i]))
-
-        # Output: affine in x plus non-negative map of last z.
-        if hidden_sizes:
-            self.out_wz = NonNegLinear(hidden_sizes[-1], out_dim)
-        else:
-            self.out_wz = None
-        self.out_wx = nn.Linear(in_dim, out_dim)
+        layers.append(nn.Linear(last_dim, out_dim))
+        self.net = nn.Sequential(*layers)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if not self.convex:
-            return self.net(x)
-
-        # Convex forward (ICNN)
-        if self.first_wx is None:
-            # No hidden layers: purely affine, still convex.
-            return self.out_wx(x)
-
-        z = F.relu(self.first_wx(x))
-        for Wz, Wx in zip(self.Wz_layers, self.Wx_layers):
-            z = F.relu(Wz(z) + Wx(x))
-
-        out = self.out_wz(z) + self.out_wx(x)
-        return out
+        return self.net(x)
 
 
 class FeatureAttention(nn.Module):
@@ -110,21 +67,6 @@ class FeatureAttention(nn.Module):
         self.last_attn = attn.detach()
         self.last_logits = logits.detach()
         return x * attn, attn
-
-
-class NonNegLinear(nn.Linear):
-    """Linear layer with non-negative effective weights via softplus reparam."""
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        weight_pos = F.softplus(self.weight)
-        return F.linear(x, weight_pos, self.bias)
-
-
-def _make_linear(in_dim: int, out_dim: int, *, convex: bool, unconstrained: bool):
-    """Factory for linear layers with optional non-negative constraint."""
-    if convex and not unconstrained:
-        return NonNegLinear(in_dim, out_dim)
-    return nn.Linear(in_dim, out_dim)
 
 
 class KANLinear(nn.Module):
@@ -220,7 +162,6 @@ class MTLSharedHeads(nn.Module):
         shared_sizes: Optional[Sequence[int]] = None,
         head_sizes: Optional[Sequence[int]] = None,
         dropout: float = 0.0,
-        convex: bool = False,
     ):
         super().__init__()
         shared_sizes = shared_sizes or [256, 128]
@@ -228,36 +169,23 @@ class MTLSharedHeads(nn.Module):
 
         shared_layers = []
         last = in_dim
-        unconstrained_first = convex
         for h in shared_sizes:
-            shared_layers += [
-                _make_linear(last, h, convex=convex, unconstrained=unconstrained_first),
-                nn.ReLU(),
-                nn.Dropout(dropout),
-            ]
-            unconstrained_first = False
+            shared_layers += [nn.Linear(last, h), nn.ReLU(), nn.Dropout(dropout)]
             last = h
         self.shared = nn.Sequential(*shared_layers)
 
         heads = []
         for _ in range(n_tasks):
-            heads.append(self._make_head(last, head_sizes, dropout, convex=convex))
+            layers = []
+            last_h = last
+            for h in head_sizes:
+                layers += [nn.Linear(last_h, h), nn.ReLU(), nn.Dropout(dropout)]
+                last_h = h
+            layers.append(nn.Linear(last_h, 1))
+            heads.append(nn.Sequential(*layers))
 
         self.heads = nn.ModuleList(heads)
         self.n_tasks = n_tasks
-
-    def _make_head(self, in_dim: int, head_sizes: Sequence[int], dropout: float, convex: bool):
-        layers = []
-        last = in_dim
-        for h in head_sizes:
-            layers += [
-                _make_linear(last, h, convex=convex, unconstrained=False),
-                nn.ReLU(),
-                nn.Dropout(dropout),
-            ]
-            last = h
-        layers.append(_make_linear(last, 1, convex=convex, unconstrained=False))
-        return nn.Sequential(*layers)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         h = self.shared(x)
@@ -284,7 +212,6 @@ class MTLGroupedSharedHeads(nn.Module):
         head_sizes: Optional[Sequence[int]] = None,
         dropout: float = 0.0,
         group_shared_configs: Optional[Sequence[SharedGroupSpec]] = None,
-        convex: bool = False,
     ):
         super().__init__()
         shared_sizes = shared_sizes or [256, 128]
@@ -292,14 +219,8 @@ class MTLGroupedSharedHeads(nn.Module):
 
         shared_layers = []
         last = in_dim
-        unconstrained_first = convex
         for h in shared_sizes:
-            shared_layers += [
-                _make_linear(last, h, convex=convex, unconstrained=unconstrained_first),
-                nn.ReLU(),
-                nn.Dropout(dropout),
-            ]
-            unconstrained_first = False
+            shared_layers += [nn.Linear(last, h), nn.ReLU(), nn.Dropout(dropout)]
             last = h
         self.shared = nn.Sequential(*shared_layers)
 
@@ -322,13 +243,7 @@ class MTLGroupedSharedHeads(nn.Module):
                 if any(head_input_dims[idx] != current_dim for idx in indices):
                     raise ValueError("Heads sharing extra layers must have the same input dimension.")
 
-                block, out_dim = self._build_shared_block(
-                    current_dim,
-                    config.hidden_sizes,
-                    dropout,
-                    convex=convex,
-                    allow_unconstrained_first=False,
-                )
+                block, out_dim = self._build_shared_block(current_dim, config.hidden_sizes, dropout)
                 self.group_blocks.append(block)
                 self.group_block_indices.append(indices)
                 for idx in indices:
@@ -336,43 +251,25 @@ class MTLGroupedSharedHeads(nn.Module):
 
         self.heads = nn.ModuleList()
         for dim in head_input_dims:
-            self.heads.append(self._make_head(dim, head_sizes, 0.1, convex=convex))
+            self.heads.append(self._make_head(dim, head_sizes, 0.1))
 
         self.n_tasks = n_tasks
 
-    def _build_shared_block(
-        self,
-        in_dim: int,
-        hidden_sizes: Sequence[int],
-        dropout: float,
-        *,
-        convex: bool,
-        allow_unconstrained_first: bool = False,
-    ):
+    def _build_shared_block(self, in_dim: int, hidden_sizes: Sequence[int], dropout: float):
         layers = []
         last = in_dim
-        unconstrained_first = convex and allow_unconstrained_first
         for size in hidden_sizes:
-            layers += [
-                _make_linear(last, size, convex=convex, unconstrained=unconstrained_first),
-                nn.ReLU(),
-                nn.Dropout(dropout),
-            ]
-            unconstrained_first = False
+            layers += [nn.Linear(last, size), nn.ReLU(), nn.Dropout(dropout)]
             last = size
         return nn.Sequential(*layers), last
 
-    def _make_head(self, in_dim: int, head_sizes: Sequence[int], dropout: float, convex: bool):
+    def _make_head(self, in_dim: int, head_sizes: Sequence[int], dropout: float):
         layers = []
         last = in_dim
         for h in head_sizes:
-            layers += [
-                _make_linear(last, h, convex=convex, unconstrained=False),
-                nn.ReLU(),
-                nn.Dropout(dropout),
-            ]
+            layers += [nn.Linear(last, h), nn.ReLU(), nn.Dropout(dropout)]
             last = h
-        layers.append(_make_linear(last, 1, convex=convex, unconstrained=False))
+        layers.append(nn.Linear(last, 1))
         return nn.Sequential(*layers)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -401,7 +298,6 @@ class MTLGroupedSharedHeadsAttn(nn.Module):
         attention_hidden_dim: Optional[int] = None,
         attention_temperature: float = 1.0,
         attention_dropout: float = 0.0,
-        convex: bool = False,
     ):
         super().__init__()
         shared_sizes = shared_sizes or [256, 128]
@@ -417,14 +313,8 @@ class MTLGroupedSharedHeadsAttn(nn.Module):
 
         shared_layers = []
         last = in_dim
-        unconstrained_first = convex
         for h in shared_sizes:
-            shared_layers += [
-                _make_linear(last, h, convex=convex, unconstrained=unconstrained_first),
-                nn.ReLU(),
-                nn.Dropout(dropout),
-            ]
-            unconstrained_first = False
+            shared_layers += [nn.Linear(last, h), nn.ReLU(), nn.Dropout(dropout)]
             last = h
         self.shared = nn.Sequential(*shared_layers)
 
@@ -447,13 +337,7 @@ class MTLGroupedSharedHeadsAttn(nn.Module):
                 if any(head_input_dims[idx] != current_dim for idx in indices):
                     raise ValueError("Heads sharing extra layers must have the same input dimension.")
 
-                block, out_dim = self._build_shared_block(
-                    current_dim,
-                    config.hidden_sizes,
-                    dropout,
-                    convex=convex,
-                    allow_unconstrained_first=False,
-                )
+                block, out_dim = self._build_shared_block(current_dim, config.hidden_sizes, dropout)
                 self.group_blocks.append(block)
                 self.group_block_indices.append(indices)
                 for idx in indices:
@@ -461,43 +345,25 @@ class MTLGroupedSharedHeadsAttn(nn.Module):
 
         self.heads = nn.ModuleList()
         for dim in head_input_dims:
-            self.heads.append(self._make_head(dim, head_sizes, 0.1, convex=convex))
+            self.heads.append(self._make_head(dim, head_sizes, 0.1))
 
         self.n_tasks = n_tasks
 
-    def _build_shared_block(
-        self,
-        in_dim: int,
-        hidden_sizes: Sequence[int],
-        dropout: float,
-        *,
-        convex: bool,
-        allow_unconstrained_first: bool = False,
-    ):
+    def _build_shared_block(self, in_dim: int, hidden_sizes: Sequence[int], dropout: float):
         layers = []
         last = in_dim
-        unconstrained_first = convex and allow_unconstrained_first
         for size in hidden_sizes:
-            layers += [
-                _make_linear(last, size, convex=convex, unconstrained=unconstrained_first),
-                nn.ReLU(),
-                nn.Dropout(dropout),
-            ]
-            unconstrained_first = False
+            layers += [nn.Linear(last, size), nn.ReLU(), nn.Dropout(dropout)]
             last = size
         return nn.Sequential(*layers), last
 
-    def _make_head(self, in_dim: int, head_sizes: Sequence[int], dropout: float, convex: bool):
+    def _make_head(self, in_dim: int, head_sizes: Sequence[int], dropout: float):
         layers = []
         last = in_dim
         for h in head_sizes:
-            layers += [
-                _make_linear(last, h, convex=convex, unconstrained=False),
-                nn.ReLU(),
-                nn.Dropout(dropout),
-            ]
+            layers += [nn.Linear(last, h), nn.ReLU(), nn.Dropout(dropout)]
             last = h
-        layers.append(_make_linear(last, 1, convex=convex, unconstrained=False))
+        layers.append(nn.Linear(last, 1))
         return nn.Sequential(*layers)
 
     def forward(self, x: torch.Tensor, return_attn: bool = False):
@@ -726,6 +592,78 @@ class MTLGroupedSharedHeadsKAN(nn.Module):
         return torch.cat(outs, dim=1)
 
 
+class TabularPICNN(nn.Module):
+    """Adapter: PICNN(u, v) model with tabular x input split into (u, v)."""
+
+    def __init__(
+        self,
+        in_dim: int,
+        out_dim: int,
+        *,
+        u_idx: Sequence[int],
+        v_idx: Sequence[int],
+        hidden_sizes: Optional[Sequence[int]] = None,
+        activation: str = "relu",
+    ):
+        super().__init__()
+        self.in_dim = int(in_dim)
+        self.out_dim = int(out_dim)
+        self.u_idx = torch.tensor(list(u_idx), dtype=torch.long)
+        self.v_idx = torch.tensor(list(v_idx), dtype=torch.long)
+        self.picnn = PICNN(
+            u_dim=len(self.u_idx),
+            v_dim=len(self.v_idx),
+            out_dim=self.out_dim,
+            hidden_sizes=hidden_sizes or [256, 128, 64],
+            activation=activation,
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        u = x.index_select(dim=1, index=self.u_idx.to(x.device))
+        if len(self.v_idx) > 0:
+            v = x.index_select(dim=1, index=self.v_idx.to(x.device))
+        else:
+            v = None
+        return self.picnn(u, v)
+
+
+class TabularPICNNMTLSH(nn.Module):
+    """Adapter: PICNN_MTLSH(u, v) model with tabular x input split into (u, v)."""
+
+    def __init__(
+        self,
+        in_dim: int,
+        out_dim: int,
+        *,
+        u_idx: Sequence[int],
+        v_idx: Sequence[int],
+        trunk_sizes: Optional[Sequence[int]] = None,
+        head_sizes: Optional[Sequence[int]] = None,
+        activation: str = "relu",
+    ):
+        super().__init__()
+        self.in_dim = int(in_dim)
+        self.out_dim = int(out_dim)
+        self.u_idx = torch.tensor(list(u_idx), dtype=torch.long)
+        self.v_idx = torch.tensor(list(v_idx), dtype=torch.long)
+        self.picnn_mtlsh = PICNN_MTLSH(
+            u_dim=len(self.u_idx),
+            v_dim=len(self.v_idx),
+            n_tasks=self.out_dim,
+            trunk_sizes=trunk_sizes or [256, 128],
+            head_sizes=head_sizes or [128, 64],
+            activation=activation,
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        u = x.index_select(dim=1, index=self.u_idx.to(x.device))
+        if len(self.v_idx) > 0:
+            v = x.index_select(dim=1, index=self.v_idx.to(x.device))
+        else:
+            v = None
+        return self.picnn_mtlsh(u, v)
+
+
 MODEL_FACTORY = {
     "MLP": MLP,
     "MTLSH": MTLSharedHeads,
@@ -733,6 +671,9 @@ MODEL_FACTORY = {
     "MTLGSH_ATT": MTLGroupedSharedHeadsAttn,
     "MTLGSH_KAN_SHARED": MTLGroupedSharedHeadsKANShared,
     "MTLGSH_KAN": MTLGroupedSharedHeadsKAN,
+    "FICNN": FICNN,
+    "PICNN": TabularPICNN,
+    "PICNN_MTLSH": TabularPICNNMTLSH,
 }
 
 MODEL_CATALOG = {name: cls.__name__ for name, cls in MODEL_FACTORY.items()}
@@ -759,7 +700,9 @@ def create_model(
     attention_hidden_dim: Optional[int] = None,
     attention_temperature: float = 1.0,
     attention_dropout: float = 0.0,
-    convex: bool = False,
+    u_feature_idx: Optional[Sequence[int]] = None,
+    v_feature_idx: Optional[Sequence[int]] = None,
+    activation: str = "relu",
 ):
     if model_type not in {"MTLGSH", "MTLGSH_ATT", "MTLGSH_KAN_SHARED", "MTLGSH_KAN"}:
         if model_type == "MLP":
@@ -768,7 +711,6 @@ def create_model(
                 out_dim,
                 hidden_sizes=hidden_sizes,
                 dropout=dropout,
-                convex=convex,
             )
         elif model_type == "MTLSH":
             model = MTLSharedHeads(
@@ -777,15 +719,49 @@ def create_model(
                 shared_sizes=shared_sizes,
                 head_sizes=head_sizes,
                 dropout=dropout,
-                convex=convex,
             )
+        elif model_type == "FICNN":
+            model = FICNN(
+                in_dim=in_dim,
+                out_dim=out_dim,
+                hidden_sizes=hidden_sizes or [256, 128, 64],
+                activation=activation,
+            )
+        elif model_type in {"PICNN", "PICNN_MTLSH"}:
+            if u_feature_idx is None:
+                raise ValueError(f"{model_type} requires `u_feature_idx`.")
+            u_idx = [int(i) for i in u_feature_idx]
+            if v_feature_idx is None:
+                v_idx = [i for i in range(in_dim) if i not in set(u_idx)]
+            else:
+                v_idx = [int(i) for i in v_feature_idx]
+
+            if model_type == "PICNN":
+                model = TabularPICNN(
+                    in_dim=in_dim,
+                    out_dim=out_dim,
+                    u_idx=u_idx,
+                    v_idx=v_idx,
+                    hidden_sizes=hidden_sizes,
+                    activation=activation,
+                )
+            else:
+                model = TabularPICNNMTLSH(
+                    in_dim=in_dim,
+                    out_dim=out_dim,
+                    u_idx=u_idx,
+                    v_idx=v_idx,
+                    trunk_sizes=shared_sizes,
+                    head_sizes=head_sizes,
+                    activation=activation,
+                )
         else:
             model = MODEL_FACTORY[model_type](in_dim, out_dim)
     else:
         if group_head_indices is None:
             group_head_indices = [
-                [0, 1],
-                [2, 3, 4, 5],
+                [0, 1, 2, 3],
+                [4, 5, 6, 7],
             ]
         if group_shared_sizes is None:
             group_shared_sizes = [128, 64]
@@ -813,7 +789,6 @@ def create_model(
                 head_sizes=group_head_sizes,
                 dropout=dropout,
                 group_shared_configs=group_shared_configs,
-                convex=convex,
             )
         elif model_type == "MTLGSH_ATT":
             model = MTLGroupedSharedHeadsAttn(
@@ -826,7 +801,6 @@ def create_model(
                 attention_hidden_dim=attention_hidden_dim,
                 attention_temperature=attention_temperature,
                 attention_dropout=attention_dropout,
-                convex=convex,
             )
         else:
             model = MODEL_FACTORY[model_type](
