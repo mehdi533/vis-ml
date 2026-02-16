@@ -19,23 +19,65 @@ class MLP(nn.Module):
     ):
         super().__init__()
         hidden_sizes = hidden_sizes or [256, 128, 64, 64]
-        layers = []
-        last_dim = in_dim
-        unconstrained_first = convex  # first linear can be unconstrained in ICNN-style
+        self.convex = bool(convex)
+        self.hidden_sizes = hidden_sizes
 
-        for h in hidden_sizes:
-            lin = _make_linear(last_dim, h, convex=convex, unconstrained=unconstrained_first)
+        if not self.convex:
+            layers = []
+            last_dim = in_dim
             unconstrained_first = False
-            layers.append(lin)
-            layers.append(nn.ReLU())
-            layers.append(nn.Dropout(dropout))
-            last_dim = h
 
-        layers.append(_make_linear(last_dim, out_dim, convex=convex, unconstrained=False))
-        self.net = nn.Sequential(*layers)
+            for h in hidden_sizes:
+                lin = _make_linear(last_dim, h, convex=False, unconstrained=unconstrained_first)
+                unconstrained_first = False
+                layers.append(lin)
+                layers.append(nn.ReLU())
+                layers.append(nn.Dropout(dropout))
+                last_dim = h
+
+            layers.append(_make_linear(last_dim, out_dim, convex=False, unconstrained=False))
+            self.net = nn.Sequential(*layers)
+            return
+
+        # Convex branch: build an ICNN-style architecture with input skips.
+        # Dropout is disabled to preserve convexity per forward pass.
+        self.in_dim = in_dim
+
+        # First layer: only input skip (no constraint needed).
+        if hidden_sizes:
+            self.first_wx = nn.Linear(in_dim, hidden_sizes[0])
+        else:
+            self.first_wx = None
+
+        # Hidden ICNN layers: z_{k+1} = ReLU(Wz z_k + Wx x + b) with Wz >= 0.
+        self.Wz_layers = nn.ModuleList()
+        self.Wx_layers = nn.ModuleList()
+        for i in range(1, len(hidden_sizes)):
+            self.Wz_layers.append(NonNegLinear(hidden_sizes[i - 1], hidden_sizes[i]))
+            self.Wx_layers.append(nn.Linear(in_dim, hidden_sizes[i]))
+
+        # Output: affine in x plus non-negative map of last z.
+        if hidden_sizes:
+            self.out_wz = NonNegLinear(hidden_sizes[-1], out_dim)
+        else:
+            self.out_wz = None
+        self.out_wx = nn.Linear(in_dim, out_dim)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.net(x)
+        if not self.convex:
+            return self.net(x)
+
+        # Convex forward (ICNN)
+        if self.first_wx is None:
+            # No hidden layers: purely affine, still convex.
+            return self.out_wx(x)
+
+        z = F.relu(self.first_wx(x))
+        for Wz, Wx in zip(self.Wz_layers, self.Wx_layers):
+            z = F.relu(Wz(z) + Wx(x))
+
+        out = self.out_wz(z) + self.out_wx(x)
+        return out
 
 
 class FeatureAttention(nn.Module):
@@ -742,8 +784,8 @@ def create_model(
     else:
         if group_head_indices is None:
             group_head_indices = [
-                [0, 1, 2, 3],
-                [4, 5, 6, 7],
+                [0, 1],
+                [2, 3, 4, 5],
             ]
         if group_shared_sizes is None:
             group_shared_sizes = [128, 64]

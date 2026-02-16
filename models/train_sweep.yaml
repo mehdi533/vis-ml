@@ -12,10 +12,8 @@ model:
 data:
   csv_path: simulation_results.csv
   target_cols:
-    - rocof_max_COI
-    - rocof_min_COI
-    - devdown_COI
-    - devup_COI
+    - rocof_COI
+    - dev_COI
     - Delta_P_IBR_1
     - Delta_P_IBR_2
     - Delta_P_IBR_3
@@ -27,6 +25,9 @@ data:
     - load_step_time
     - time_max_dev
     - plotter_csv
+    - step_bin_label
+    - M_bin_label
+    - D_bin_label
   use_recommended_scalers: false
 
 split:
@@ -47,7 +48,7 @@ training:
   lr_scheduler_min_lr: 0.000001
 
 sweep:
-  models: ["MLP"]
+  models: ["MLP", "MTLSH", "MTLGSH", ...]
   losses: ["mse"]
   scalers: ["minmax"]
   seeds: [42]
