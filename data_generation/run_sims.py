@@ -102,6 +102,18 @@ def _build_fieldnames(
         "sim_id",
         "seed",
         "success",
+        "cont_type",
+        "contingency_id",
+        "contingency_time",
+        "load_step_enabled",
+        "line_uid",
+        "line_idx",
+        "line_name",
+        "line_from_bus",
+        "line_to_bus",
+        "line_rating",
+        "pre_fault_flow",
+        "pre_fault_loading",
         "base_load_scale",
         "load_step_scale",
         "load_step_time",
@@ -145,6 +157,13 @@ def _build_fieldnames(
     return fieldnames
 
 
+def _sample_ed_costs(ed_cfg: Dict, rng: np.random.Generator) -> Dict[str, Tuple[float, float, float]]:
+    return {
+        "gen": _sample_cost_triple(ed_cfg.get("genrou_costs", {}), rng, default=(1.0, 0.1, 0.01)),
+        "ibr": _sample_cost_triple(ed_cfg.get("regcv1_costs", {}), rng, default=(1.0, 0.1, 0.01)),
+    }
+
+
 def load_config(path: str) -> Dict:
     with open(path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
@@ -175,7 +194,13 @@ def _sample_cost_triple(cfg: Dict, rng: np.random.Generator, default: Tuple[floa
     return a, b, c
 
 
-def _run_ed_dispatch(ss, rng: np.random.Generator, ed_cfg: Dict, ibr_idx: Sequence[int]) -> Tuple[np.ndarray, Dict[str, float]]:
+def _run_ed_dispatch(
+    ss,
+    ed_cfg: Dict,
+    ibr_idx: Sequence[int],
+    *,
+    sampled_costs: Optional[Dict[str, Tuple[float, float, float]]] = None,
+) -> Tuple[np.ndarray, Dict[str, float]]:
     """Solve economic dispatch with two shared cost triples (GENROU-like vs REGCV1-like)."""
     ng = ss.PV.n + ss.Slack.n
     if ng == 0:
@@ -185,8 +210,12 @@ def _run_ed_dispatch(ss, rng: np.random.Generator, ed_cfg: Dict, ibr_idx: Sequen
     Pg_min = np.asarray(ss.PV.pmin.v + ss.Slack.pmin.v, dtype=float)
     Pg_max = np.asarray(ss.PV.pmax.v + ss.Slack.pmax.v, dtype=float)
 
-    gen_cost = _sample_cost_triple(ed_cfg.get("genrou_costs", {}), rng, default=(1.0, 0.1, 0.01))
-    ibr_cost = _sample_cost_triple(ed_cfg.get("regcv1_costs", {}), rng, default=(1.0, 0.1, 0.01))
+    if sampled_costs is None:
+        gen_cost = (1.0, 0.1, 0.01)
+        ibr_cost = (1.0, 0.1, 0.01)
+    else:
+        gen_cost = sampled_costs["gen"]
+        ibr_cost = sampled_costs["ibr"]
 
     a = np.full(ng, gen_cost[0], dtype=float)
     b = np.full(ng, gen_cost[1], dtype=float)
@@ -226,6 +255,95 @@ def _run_ed_dispatch(ss, rng: np.random.Generator, ed_cfg: Dict, ibr_idx: Sequen
     }
 
 
+def _to_float_or_nan(value) -> float:
+    try:
+        if value is None:
+            return float("nan")
+        return float(value)
+    except Exception:
+        return float("nan")
+
+
+def _line_rating_from_ss(ss, uid: int) -> float:
+    for attr in ("rate_a", "rateA", "RATE_A"):
+        obj = getattr(ss.Line, attr, None)
+        if obj is None:
+            continue
+        vals = getattr(obj, "v", None)
+        if vals is None or uid >= len(vals):
+            continue
+        return _to_float_or_nan(vals[uid])
+    return float("nan")
+
+
+def _extract_line_records(ss) -> List[Dict[str, float | int | str]]:
+    records: List[Dict[str, float | int | str]] = []
+    n_line = int(getattr(ss.Line, "n", 0))
+    idx_vals = list(getattr(getattr(ss.Line, "idx", None), "v", []))
+    name_vals = list(getattr(getattr(ss.Line, "name", None), "v", []))
+    bus1_vals = list(getattr(getattr(ss.Line, "bus1", None), "v", []))
+    bus2_vals = list(getattr(getattr(ss.Line, "bus2", None), "v", []))
+    u_vals = list(getattr(getattr(ss.Line, "u", None), "v", []))
+
+    for uid in range(n_line):
+        idx_val = idx_vals[uid] if uid < len(idx_vals) else uid + 1
+        name_val = name_vals[uid] if uid < len(name_vals) else f"Line_{idx_val}"
+        bus1 = bus1_vals[uid] if uid < len(bus1_vals) else np.nan
+        bus2 = bus2_vals[uid] if uid < len(bus2_vals) else np.nan
+        in_service = bool(u_vals[uid]) if uid < len(u_vals) else True
+        records.append(
+            {
+                "uid": uid,
+                "idx": idx_val,
+                "name": str(name_val),
+                "bus1": _to_float_or_nan(bus1),
+                "bus2": _to_float_or_nan(bus2),
+                "rating": _line_rating_from_ss(ss, uid),
+                "in_service": in_service,
+            }
+        )
+    return records
+
+
+def _pick_line_contingencies(ss, cont_cfg: Dict, rng: np.random.Generator) -> List[Dict[str, float | int | str]]:
+    line_records = _extract_line_records(ss)
+    if not line_records:
+        return []
+
+    active = [r for r in line_records if bool(r.get("in_service", True))]
+    line_ids_cfg = _as_list(cont_cfg.get("line_ids"))
+    if line_ids_cfg:
+        wanted = {str(v) for v in line_ids_cfg}
+        selected = [
+            r
+            for r in active
+            if (str(r["idx"]) in wanted) or (str(r["name"]) in wanted) or (str(r["uid"]) in wanted)
+        ]
+    else:
+        selected = active
+
+    max_lines = int(cont_cfg.get("max_lines", 0) or 0)
+    if max_lines > 0 and len(selected) > max_lines:
+        pick = rng.choice(len(selected), size=max_lines, replace=False)
+        selected = [selected[int(i)] for i in np.sort(pick)]
+
+    return selected
+
+
+def _line_flow_from_ss(ss, uid: int) -> float:
+    # Best effort across different ANDES line variable names.
+    candidates = [("a1", "e"), ("Pij", "v"), ("p1", "v"), ("P1", "v")]
+    for attr, sub in candidates:
+        obj = getattr(ss.Line, attr, None)
+        if obj is None:
+            continue
+        vals = getattr(obj, sub, None)
+        if vals is None or uid >= len(vals):
+            continue
+        return _to_float_or_nan(vals[uid])
+    return float("nan")
+
+
 def _run_worker(
     worker_id: int,
     sim_ids: Sequence[int],
@@ -248,10 +366,11 @@ def _run_worker(
         writer.writeheader()
         for sim_id in sim_ids:
             rng = _rng_for_sim(int(cfg["seed"]), sim_id)
-            row = run_single_sim(cfg, sim_id, rng, case_path, pq_names, owner_map, regcv1_ids, plotter_dir)
-            for name in fieldnames:
-                row.setdefault(name, np.nan)
-            writer.writerow(row)
+            rows = run_single_sim(cfg, sim_id, rng, case_path, pq_names, owner_map, regcv1_ids, plotter_dir)
+            for row in rows:
+                for name in fieldnames:
+                    row.setdefault(name, np.nan)
+                writer.writerow(row)
     return str(worker_csv)
 
 
@@ -278,12 +397,41 @@ def run_single_sim(
 ):
     base_scale = rng.uniform(cfg["base_load_scale"]["low"], cfg["base_load_scale"]["high"])
 
-    step_scale, step_bin = _sample_value(
-        cfg.get("load_step_scale", {}),
-        rng,
-        default_low=cfg["load_step_scale"]["low"],
-        default_high=cfg["load_step_scale"]["high"],
-    )
+    cont_cfg = cfg.get("contingency", {})
+    load_step_cfg = dict(cont_cfg.get("load_step", {}) or {})
+    line_n1_cfg = dict(cont_cfg.get("line_n1", {}) or {})
+
+    # Backward compatibility with older contingency.mode schema.
+    if ("mode" in cont_cfg) and (not load_step_cfg) and (not line_n1_cfg):
+        cont_mode = str(cont_cfg.get("mode", "none")).lower()
+        valid_modes = {"none", "load_step", "line_n1"}
+        if cont_mode not in valid_modes:
+            raise ValueError(
+                f"Unsupported contingency.mode={cont_mode!r}. Expected one of {sorted(valid_modes)}."
+            )
+        load_step_cfg["enable"] = bool(cont_mode == "load_step" or cont_cfg.get("include_load_step", False))
+        line_n1_cfg["enable"] = bool(cont_mode == "line_n1")
+        line_n1_cfg["trip_time"] = cont_cfg.get("trip_time")
+        line_n1_cfg["line_ids"] = cont_cfg.get("line_ids")
+        line_n1_cfg["max_lines"] = cont_cfg.get("max_lines")
+
+    load_step_enabled = bool(load_step_cfg.get("enable", False))
+    line_n1_enabled = bool(line_n1_cfg.get("enable", False))
+
+    load_step_time = float(load_step_cfg.get("time", cfg.get("tds", {}).get("load_step_time", 0.1)))
+    load_step_scale_cfg = load_step_cfg.get("scale", cfg.get("load_step_scale", {}))
+    default_low = float(load_step_scale_cfg.get("low", 1.0))
+    default_high = float(load_step_scale_cfg.get("high", default_low))
+
+    if load_step_enabled:
+        step_scale, step_bin = _sample_value(
+            load_step_scale_cfg,
+            rng,
+            default_low=default_low,
+            default_high=default_high,
+        )
+    else:
+        step_scale, step_bin = 1.0, "disabled"
 
     M_samples = [
         _sample_value(
@@ -308,122 +456,195 @@ def run_single_sim(
     M_bin_label = M_samples[0][1] if M_samples else "none"
     D_bin_label = D_samples[0][1] if D_samples else "none"
 
-    ss = andes.load(case_path, setup=False)
-    ss.config.freq = float(50)
-
-    # Apply base load scale
-    for uid in range(ss.PQ.n):
-        ss.PQ.p0.v[uid] = ss.PQ.p0.v[uid] * base_scale
-        ss.PQ.q0.v[uid] = ss.PQ.q0.v[uid] * base_scale
-    for uid in range(ss.PV.n):
-        ss.PV.p0.v[uid] = ss.PV.p0.v[uid] * base_scale
-        ss.PV.q0.v[uid] = ss.PV.q0.v[uid] * base_scale
-    
-    ss.REGCV1.M.v, ss.REGCV1.D.v = M_vec, D_vec
-
-    # Optional economic dispatch before disturbance
     ed_cfg = cfg.get("ed", {})
-    ed_meta = {}
-    pg_dispatch = np.array([], dtype=float)
-    if ed_cfg.get("enable", False):
-        ibr_idx = _as_list(ed_cfg.get("ibr_idx")) or []
-        pg_dispatch, ed_meta = _run_ed_dispatch(ss, rng, ed_cfg, ibr_idx=ibr_idx)
+    sampled_ed_costs = _sample_ed_costs(ed_cfg, rng) if ed_cfg.get("enable", False) else None
 
-    ss.PQ.config.p2p = 1
-    ss.PQ.config.q2q = 1
-    ss.PQ.config.p2z = 0
-    ss.PQ.config.q2z = 0
-    ss.PQ.config.p2i = 0
-    ss.PQ.config.q2i = 0
-    ss.PQ.config.pq2z = 0
+    # Use a dry system load to determine which line contingencies to run.
+    if line_n1_enabled:
+        ss_pick = andes.load(case_path, setup=False)
+        line_records = _pick_line_contingencies(ss_pick, line_n1_cfg, rng)
+        if not line_records:
+            raise ValueError(
+                "contingency.line_n1.enable=true, but no valid in-service lines were found "
+                "for contingency.line_n1.line_ids/max_lines."
+            )
+        trip_time = float(line_n1_cfg.get("trip_time", load_step_time))
+        contingencies = line_records
+    else:
+        trip_time = float("nan")
+        contingencies = [None]
 
-    pq_p_before, pq_q_before = ss.PQ.p0.v, ss.PQ.q0.v  
-    base_load_q_total = float(np.sum(pq_q_before)) if len(pq_q_before) else 0.0
-    pq_owner_list = [owner_map.get(str(o), _sanitize_label(o)) for o in ss.PQ.owner.v]
+    rows: List[Dict] = []
+    for cont in contingencies:
+        ss = andes.load(case_path, setup=False)
+        ss.config.freq = float(50)
 
-    # TODO: test with changing the step by just doing Ppf bcs p0 q0 isn't changed here, does it matter? Test locally? 
-    step_targets = _select_step_targets(ss, cfg.get("load", {}))
-    for dev in step_targets:
-        ss.add(model='Alter', param_dict=dict(t=cfg["tds"]["load_step_time"], model='PQ', dev=dev, src='Ppf', attr='v', method='*', amount=step_scale))
-        ss.add(model='Alter', param_dict=dict(t=cfg["tds"]["load_step_time"], model='PQ', dev=dev, src='Qpf', attr='v', method='*', amount=step_scale))
+        # Apply base load scale
+        for uid in range(ss.PQ.n):
+            ss.PQ.p0.v[uid] = ss.PQ.p0.v[uid] * base_scale
+            ss.PQ.q0.v[uid] = ss.PQ.q0.v[uid] * base_scale
+        for uid in range(ss.PV.n):
+            ss.PV.p0.v[uid] = ss.PV.p0.v[uid] * base_scale
+            ss.PV.q0.v[uid] = ss.PV.q0.v[uid] * base_scale
 
-    ss.setup()
-    ss.PFlow.run()
+        ss.REGCV1.M.v, ss.REGCV1.D.v = M_vec, D_vec
 
-    ss.TDS.config.no_tqdm = bool(cfg["tds"].get("no_tqdm", True))
-    ss.TDS.config.criteria = int(cfg["tds"].get("criteria", 0))
-    ss.TDS.config.tol = float(cfg["tds"].get("tol", 1e-3))
-    ss.TDS.config.tf = float(cfg["tds"]["t_end"])
-    ss.TDS.config.tstep = float(cfg["tds"]["t_step"])
-    ss.TDS.config.fixt = int(cfg["tds"].get("fixt", 0))
-    ss.TDS.config.method = str(cfg["tds"].get("method", "backeuler"))
-    ss.TDS.config.honest = int(cfg["tds"].get("honest", 1))
-    ss.TDS.config.max_iter = int(cfg["tds"].get("max_iter", 35))
-    ss.TDS.config.shrinkt = int(cfg["tds"].get("shrinkt", 1))
+        # Optional economic dispatch before disturbance (same sampled costs for all contingencies in this sim_id)
+        ed_meta = {}
+        pg_dispatch = np.array([], dtype=float)
+        if ed_cfg.get("enable", False):
+            ibr_idx = _as_list(ed_cfg.get("ibr_idx")) or []
+            pg_dispatch, ed_meta = _run_ed_dispatch(
+                ss,
+                ed_cfg,
+                ibr_idx=ibr_idx,
+                sampled_costs=sampled_ed_costs,
+            )
 
-    ss.TDS.init()
+        ss.PQ.config.p2p = 1
+        ss.PQ.config.q2q = 1
+        ss.PQ.config.p2z = 0
+        ss.PQ.config.q2z = 0
+        ss.PQ.config.p2i = 0
+        ss.PQ.config.q2i = 0
+        ss.PQ.config.pq2z = 0
 
-    # for uid in range(ss.PQ.n):
-    # # for dev in _as_list(cfg["load"].get("pq_names")):
-    #     p = ss.PQ.p0.v[uid] * step_scale
-    #     q = ss.PQ.q0.v[uid] * step_scale
-    #     ss.PQ.p0.v[uid], ss.PQ.Ppf.v[uid] = p, p
-    #     ss.PQ.q0.v[uid], ss.PQ.Qpf.v[uid] = q, q
-    #     # ss.add(model='Alter', param_dict=dict(t=cfg["tds"]["load_step_time"], model='PQ', dev=dev, src='Ppf', attr='v', method='*', amount=step_scale))
-    #     # ss.add(model='Alter', param_dict=dict(t=cfg["tds"]["load_step_time"], model='PQ', dev=dev, src='Qpf', attr='v', method='*', amount=step_scale))
+        pq_p_before, pq_q_before = ss.PQ.p0.v, ss.PQ.q0.v
+        base_load_q_total = float(np.sum(pq_q_before)) if len(pq_q_before) else 0.0
+        pq_owner_list = [owner_map.get(str(o), _sanitize_label(o)) for o in ss.PQ.owner.v]
 
-    success = bool(ss.TDS.run())
-    ss.TDS.load_plotter()
+        if load_step_enabled:
+            step_targets = _select_step_targets(ss, cfg.get("load", {}))
+            for dev in step_targets:
+                ss.add(model="Alter", param_dict=dict(t=load_step_time, model="PQ", dev=dev, src="Ppf", attr="v", method="*", amount=step_scale))
+                ss.add(model="Alter", param_dict=dict(t=load_step_time, model="PQ", dev=dev, src="Qpf", attr="v", method="*", amount=step_scale))
 
-    pq_p_after, pq_q_after = ss.PQ.Ppf.v, ss.PQ.Qpf.v  
+        if cont is not None:
+            # N-1 line outage via Toggle at contingency time.
+            ss.add(
+                model="Toggle",
+                param_dict={
+                    "t": trip_time,
+                    "model": "Line",
+                    "dev": cont["idx"],
+                },
+            )
 
-    genrou_pg = np.asarray(getattr(ss.GENROU, "Pg", np.zeros(0)), dtype=float)
-    if genrou_pg.size == 0 and hasattr(ss.GENROU, "p0"):
-        genrou_pg = np.asarray(ss.GENROU.p0.v, dtype=float)
-    if genrou_pg.size == 0 and pg_dispatch.size:
-        genrou_pg = pg_dispatch[: ss.GENROU.n] if ss.GENROU.n else np.zeros(0)
-    regcv1_pg = np.zeros(ss.REGCV1.n, dtype=float)
-    if hasattr(ss.REGCV1, "pref"):
-        try:
-            regcv1_pg = np.asarray(ss.REGCV1.pref.v, dtype=float)
-        except Exception:
-            regcv1_pg = np.zeros(ss.REGCV1.n, dtype=float)
-    if pg_dispatch.size:
-        ibr_idx = _as_list(ed_cfg.get("ibr_idx")) or list(range(ss.REGCV1.n))
-        for local_idx, gen_idx in enumerate(ibr_idx):
-            if 0 <= gen_idx < pg_dispatch.size and local_idx < regcv1_pg.size:
-                regcv1_pg[local_idx] = pg_dispatch[gen_idx]
+        ss.setup()
+        ss.PFlow.run()
 
-    plotter_csv = None
-    if plotter_dir is not None:
-        plotter_csv = str(plotter_dir / f"plotter_{sim_id:05d}.csv")
-        export_plotter_all(ss.TDS.plotter, plotter_csv)
+        pre_fault_flow = float("nan")
+        pre_fault_loading = float("nan")
+        if cont is not None:
+            uid = int(cont["uid"])
+            pre_fault_flow = _line_flow_from_ss(ss, uid)
+            rating = _to_float_or_nan(cont.get("rating"))
+            if np.isfinite(pre_fault_flow) and np.isfinite(rating) and rating > 0:
+                pre_fault_loading = abs(pre_fault_flow) / rating
 
-    row = extract_simulation_row(
-        ss=ss,
-        base_load_scale=base_scale,
-        load_step_scale=step_scale,
-        load_step_time=float(cfg["tds"]["load_step_time"]),
-        pq_names=pq_names,
-        pq_owners=pq_owner_list,
-        pq_p_before=pq_p_before,
-        pq_p_after=pq_p_after,
-        base_load_q_total=base_load_q_total,
-        M_vec=M_vec,
-        D_vec=D_vec,
-        genrou_pg=genrou_pg,
-        regcv1_pg=regcv1_pg,
-        success=success,
-        plotter_csv=plotter_csv,
-    )
+        ss.TDS.config.no_tqdm = bool(cfg["tds"].get("no_tqdm", True))
+        ss.TDS.config.criteria = int(cfg["tds"].get("criteria", 0))
+        ss.TDS.config.tol = float(cfg["tds"].get("tol", 1e-3))
+        ss.TDS.config.tf = float(cfg["tds"]["t_end"])
+        ss.TDS.config.tstep = float(cfg["tds"]["t_step"])
+        ss.TDS.config.fixt = int(cfg["tds"].get("fixt", 0))
+        ss.TDS.config.method = str(cfg["tds"].get("method", "backeuler"))
+        ss.TDS.config.honest = int(cfg["tds"].get("honest", 1))
+        ss.TDS.config.max_iter = int(cfg["tds"].get("max_iter", 35))
+        ss.TDS.config.shrinkt = int(cfg["tds"].get("shrinkt", 1))
 
-    row["sim_id"] = sim_id
-    row["seed"] = int(cfg["seed"])
-    row["step_bin_label"] = step_bin
-    row["M_bin_label"] = M_bin_label
-    row["D_bin_label"] = D_bin_label
-    row.update(ed_meta)
-    return row
+        ss.TDS.init()
+        success = bool(ss.TDS.run())
+        ss.TDS.load_plotter()
+
+        pq_p_after, pq_q_after = ss.PQ.Ppf.v, ss.PQ.Qpf.v
+
+        genrou_pg = np.asarray(getattr(ss.GENROU, "Pg", np.zeros(0)), dtype=float)
+        if genrou_pg.size == 0 and hasattr(ss.GENROU, "p0"):
+            genrou_pg = np.asarray(ss.GENROU.p0.v, dtype=float)
+        if genrou_pg.size == 0 and pg_dispatch.size:
+            genrou_pg = pg_dispatch[: ss.GENROU.n] if ss.GENROU.n else np.zeros(0)
+        regcv1_pg = np.zeros(ss.REGCV1.n, dtype=float)
+        if hasattr(ss.REGCV1, "pref"):
+            try:
+                regcv1_pg = np.asarray(ss.REGCV1.pref.v, dtype=float)
+            except Exception:
+                regcv1_pg = np.zeros(ss.REGCV1.n, dtype=float)
+        if pg_dispatch.size:
+            ibr_idx = _as_list(ed_cfg.get("ibr_idx")) or list(range(ss.REGCV1.n))
+            for local_idx, gen_idx in enumerate(ibr_idx):
+                if 0 <= gen_idx < pg_dispatch.size and local_idx < regcv1_pg.size:
+                    regcv1_pg[local_idx] = pg_dispatch[gen_idx]
+
+        plotter_csv = None
+        if plotter_dir is not None:
+            if cont is None:
+                name_suffix = f"none_{sim_id:05d}"
+            else:
+                name_suffix = f"line_{sim_id:05d}_{int(cont['uid']):03d}"
+            plotter_csv = str(plotter_dir / f"plotter_{name_suffix}.csv")
+            export_plotter_all(ss.TDS.plotter, plotter_csv)
+
+        row = extract_simulation_row(
+            ss=ss,
+            base_load_scale=base_scale,
+            load_step_scale=step_scale,
+            load_step_time=load_step_time,
+            pq_names=pq_names,
+            pq_owners=pq_owner_list,
+            pq_p_before=pq_p_before,
+            pq_p_after=pq_p_after,
+            base_load_q_total=base_load_q_total,
+            M_vec=M_vec,
+            D_vec=D_vec,
+            genrou_pg=genrou_pg,
+            regcv1_pg=regcv1_pg,
+            success=success,
+            plotter_csv=plotter_csv,
+        )
+
+        row["sim_id"] = sim_id
+        row["seed"] = int(cfg["seed"])
+        row["step_bin_label"] = step_bin
+        row["M_bin_label"] = M_bin_label
+        row["D_bin_label"] = D_bin_label
+        row.update(ed_meta)
+
+        if cont is None:
+            if load_step_enabled:
+                row["cont_type"] = "load"
+                row["contingency_id"] = "load_step"
+                row["contingency_time"] = load_step_time
+            else:
+                row["cont_type"] = "none"
+                row["contingency_id"] = "none"
+                row["contingency_time"] = np.nan
+            row["load_step_enabled"] = int(bool(load_step_enabled))
+            row["line_uid"] = np.nan
+            row["line_idx"] = np.nan
+            row["line_name"] = ""
+            row["line_from_bus"] = np.nan
+            row["line_to_bus"] = np.nan
+            row["line_rating"] = np.nan
+            row["pre_fault_flow"] = np.nan
+            row["pre_fault_loading"] = np.nan
+        else:
+            row["cont_type"] = "line_plus_load" if load_step_enabled else "line"
+            row["contingency_id"] = f"line:{cont['idx']}"
+            row["contingency_time"] = trip_time
+            row["load_step_enabled"] = int(bool(load_step_enabled))
+            row["line_uid"] = int(cont["uid"])
+            row["line_idx"] = cont["idx"]
+            row["line_name"] = str(cont["name"])
+            row["line_from_bus"] = _to_float_or_nan(cont["bus1"])
+            row["line_to_bus"] = _to_float_or_nan(cont["bus2"])
+            row["line_rating"] = _to_float_or_nan(cont["rating"])
+            row["pre_fault_flow"] = pre_fault_flow
+            row["pre_fault_loading"] = pre_fault_loading
+
+        rows.append(row)
+
+    return rows
 
 
 def main() -> None:
@@ -474,10 +695,11 @@ def main() -> None:
             writer.writeheader()
             for sim_id in range(n_sims):
                 sim_rng = _rng_for_sim(int(cfg["seed"]), sim_id)
-                row = run_single_sim(cfg, sim_id, sim_rng, case_path, pq_names, owner_map, regcv1_ids, plotter_dir)
-                for name in fieldnames:
-                    row.setdefault(name, np.nan)
-                writer.writerow(row)
+                rows = run_single_sim(cfg, sim_id, sim_rng, case_path, pq_names, owner_map, regcv1_ids, plotter_dir)
+                for row in rows:
+                    for name in fieldnames:
+                        row.setdefault(name, np.nan)
+                    writer.writerow(row)
         return
 
     sim_chunks = _chunk_sim_ids(n_sims, workers)

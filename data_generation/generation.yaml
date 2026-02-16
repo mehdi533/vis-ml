@@ -10,14 +10,23 @@ base_load_scale:
   low: 0.3
   high: 1.0
 
-load_step_scale:
-  low: .5
-  high: 1.5
-  # Optional stratified bins for step scale sampling
-  bins:
-    - {low: 0.5, high: 0.95, prob: 0.1, label: "small"}
-    - {low: 0.95, high: 1.05, prob: 0.8, label: "medium"}
-    - {low: 1.05, high: 1.5, prob: 0.1, label: "large"}
+contingency:
+  load_step:
+    enable: false
+    time: 0.1
+    scale:
+      low: 0.5
+      high: 1.5
+      # Optional stratified bins for step scale sampling
+      bins:
+        - {low: 0.5, high: 0.95, prob: 0.1, label: "small"}
+        - {low: 0.95, high: 1.05, prob: 0.8, label: "medium"}
+        - {low: 1.05, high: 1.5, prob: 0.1, label: "large"}
+  line_n1:
+    enable: true
+    trip_time: 1.0
+    line_ids: []          # optional: list of line idx/name; empty means all in-service lines
+    max_lines: 1          # optional cap per sim_id; 0 means no cap
 
 ibr:
   model: "REGCV1"
@@ -56,7 +65,6 @@ ed:
 tds:
   t_end: 20.0
   t_step: 0.1
-  load_step_time: 0.1
   method: "backeuler"
   max_iter: 35
   tol: 1.0e-3
