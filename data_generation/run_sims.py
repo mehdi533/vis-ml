@@ -344,6 +344,40 @@ def _line_flow_from_ss(ss, uid: int) -> float:
     return float("nan")
 
 
+def _line_ratings_from_pandapower(ss) -> Optional[np.ndarray]:
+    """
+    Best-effort fallback to extract RATE_A per branch from pandapower.
+    Returns None if conversion/extraction fails.
+    """
+    try:
+        from andes.interop import pandapower as ap
+        from pandapower.pd2ppc import _pd2ppc
+        from pandapower import auxiliary as aux
+    except Exception:
+        return None
+
+    try:
+        pp_net = ap.to_pandapower(ss, verify=False)
+        if not hasattr(pp_net, "_options") or not isinstance(pp_net._options, dict):
+            pp_net._options = {}
+        if "mode" not in pp_net._options:
+            aux._add_ppc_options(
+                pp_net,
+                calculate_voltage_angles=True,
+                trafo_model="pi",
+                check_connectivity=False,
+                mode="opf",
+                switch_rx_ratio=2,
+                enforce_q_lims=False,
+                recycle=None,
+            )
+        _, ppci = _pd2ppc(pp_net)
+        branch = ppci["branch"]
+        return np.asarray(branch[:, 5], dtype=float)  # RATE_A
+    except Exception:
+        return None
+
+
 def _run_worker(
     worker_id: int,
     sim_ids: Sequence[int],
@@ -532,15 +566,20 @@ def run_single_sim(
 
         ss.setup()
         ss.PFlow.run()
+        pp_fmax = _line_ratings_from_pandapower(ss)
 
         pre_fault_flow = float("nan")
         pre_fault_loading = float("nan")
+        line_rating = float("nan")
         if cont is not None:
             uid = int(cont["uid"])
             pre_fault_flow = _line_flow_from_ss(ss, uid)
             rating = _to_float_or_nan(cont.get("rating"))
-            if np.isfinite(pre_fault_flow) and np.isfinite(rating) and rating > 0:
-                pre_fault_loading = abs(pre_fault_flow) / rating
+            if (not np.isfinite(rating) or rating <= 0.0) and pp_fmax is not None and uid < len(pp_fmax):
+                rating = _to_float_or_nan(pp_fmax[uid])
+            line_rating = rating
+            if np.isfinite(pre_fault_flow) and np.isfinite(line_rating) and line_rating > 0:
+                pre_fault_loading = abs(pre_fault_flow) / line_rating
 
         ss.TDS.config.no_tqdm = bool(cfg["tds"].get("no_tqdm", True))
         ss.TDS.config.criteria = int(cfg["tds"].get("criteria", 0))
@@ -638,7 +677,7 @@ def run_single_sim(
             row["line_name"] = str(cont["name"])
             row["line_from_bus"] = _to_float_or_nan(cont["bus1"])
             row["line_to_bus"] = _to_float_or_nan(cont["bus2"])
-            row["line_rating"] = _to_float_or_nan(cont["rating"])
+            row["line_rating"] = line_rating
             row["pre_fault_flow"] = pre_fault_flow
             row["pre_fault_loading"] = pre_fault_loading
 
