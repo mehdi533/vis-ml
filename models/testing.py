@@ -21,12 +21,16 @@ def evaluate_model(model, device, test_loader, y_scaler, target_cols, output_dir
     y_pred = y_scaler.inverse_transform(y_pred_norm)
     rmse_norm = np.sqrt(np.mean((y_pred_norm - y_true_norm) ** 2, axis=0))
     rmse = np.sqrt(np.mean((y_pred - y_true) ** 2, axis=0))
+    real_diff = np.mean(np.abs(y_pred - y_true), axis=0)
 
     rmse_path = os.path.join(output_dir, "rmse_results.txt")
 
     with open(rmse_path, "w", encoding="utf-8") as f:
-        for name, val, val_norm in zip(target_cols, rmse, rmse_norm):
-            line = f"Test RMSE({name}) = {val:.4f} | norm: {val_norm:.4f}"
+        for name, val, val_norm, val_diff in zip(target_cols, rmse, rmse_norm, real_diff):
+            line = (
+                f"Test RMSE({name}) = {val:.4f} | norm: {val_norm:.4f} "
+                f"| real_diff: {val_diff:.4f}"
+            )
             print(line)
             f.write(line + "\n")
 
