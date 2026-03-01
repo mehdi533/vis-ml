@@ -4,6 +4,29 @@ from typing import Dict, Iterable, Optional, Sequence, Tuple
 import numpy as np
 import pandas as pd
 
+try:
+    from .line_metrics import extract_line_metrics
+except ImportError:
+    from line_metrics import extract_line_metrics
+
+def _to_float_or_nan(value) -> float:
+    try:
+        if value is None:
+            return np.nan
+        out = float(value)
+        return out if np.isfinite(out) else np.nan
+    except (TypeError, ValueError):
+        return np.nan
+
+
+def _to_int_or_nan(value):
+    try:
+        if value is None:
+            return np.nan
+        return int(value)
+    except (TypeError, ValueError):
+        return np.nan
+
 
 
 def compute_freq_metrics(t, f, f0=50, r=None, tol_hz=0.01):
@@ -196,6 +219,10 @@ def extract_simulation_row(
     genrou_pg: np.ndarray,
     regcv1_pg: np.ndarray,
     success: bool,
+    contingency: Optional[Dict[str, object]] = None,
+    load_step_enabled: bool = False,
+    trip_time: float = np.nan,
+    line_uids: Optional[Sequence[int]] = None,
     plotter_csv: Optional[str] = None,
 ) -> Dict[str, float]:
     """
@@ -282,6 +309,40 @@ def extract_simulation_row(
     row.update(labels)
     row["time_max_dev"] = float(time_of_max_dev) if np.isfinite(time_of_max_dev) else np.nan
     row["success"] = bool(success)
+    line_metrics = extract_line_metrics(ss=ss, contingency=contingency, line_uids=line_uids)
+
+    if contingency is None:
+        if load_step_enabled:
+            row["cont_type"] = "load"
+            row["contingency_id"] = "load_step"
+            row["contingency_time"] = float(load_step_time)
+        else:
+            row["cont_type"] = "none"
+            row["contingency_id"] = "none"
+            row["contingency_time"] = np.nan
+        row["load_step_enabled"] = int(bool(load_step_enabled))
+        row["line_uid"] = np.nan
+        row["line_name"] = ""
+        row["line_from_bus"] = np.nan
+        row["line_to_bus"] = np.nan
+        row["line_rating"] = _to_float_or_nan(line_metrics.get("line_rating"))
+        row["pre_fault_flow"] = _to_float_or_nan(line_metrics.get("pre_fault_flow"))
+        row["pre_fault_loading"] = _to_float_or_nan(line_metrics.get("pre_fault_loading"))
+    else:
+        row["cont_type"] = "line_plus_load" if load_step_enabled else "line"
+        row["contingency_id"] = f"line:{contingency['idx']}"
+        row["contingency_time"] = _to_float_or_nan(trip_time)
+        row["load_step_enabled"] = int(bool(load_step_enabled))
+        row["line_uid"] = _to_int_or_nan(contingency.get("uid"))
+        row["line_name"] = str(contingency["name"])
+        row["line_from_bus"] = _to_float_or_nan(contingency.get("bus1"))
+        row["line_to_bus"] = _to_float_or_nan(contingency.get("bus2"))
+        row["line_rating"] = _to_float_or_nan(line_metrics.get("line_rating"))
+        row["pre_fault_flow"] = _to_float_or_nan(line_metrics.get("pre_fault_flow"))
+        row["pre_fault_loading"] = _to_float_or_nan(line_metrics.get("pre_fault_loading"))
+
+    row.update(line_metrics)
+
     if plotter_csv:
         row["plotter_csv"] = os.path.abspath(plotter_csv)
 

@@ -14,6 +14,7 @@ import sys as _sys
 
 _sys.path.insert(0, str(Path(__file__).resolve().parent))
 from extract_metrics import export_plotter_all, extract_simulation_row
+from line_metrics import line_extra_fieldnames
 
 
 def _resolve_case_path(case: str) -> str:
@@ -96,6 +97,7 @@ def _build_fieldnames(
     owner_labels: Sequence[str],
     n_ibr: int,
     n_genrou: int,
+    line_uids: Sequence[int],
     include_plotter: bool,
 ) -> List[str]:
     fieldnames = [
@@ -107,7 +109,6 @@ def _build_fieldnames(
         "contingency_time",
         "load_step_enabled",
         "line_uid",
-        "line_idx",
         "line_name",
         "line_from_bus",
         "line_to_bus",
@@ -139,6 +140,7 @@ def _build_fieldnames(
         fieldnames.append(f"P_REGCV1_{i}")
     for i in range(1, n_ibr + 1):
         fieldnames.append(f"Delta_P_IBR_{i}")
+    fieldnames.extend(line_extra_fieldnames(line_uids))
     fieldnames.extend(
         [
             "step_bin_label",
@@ -330,54 +332,6 @@ def _pick_line_contingencies(ss, cont_cfg: Dict, rng: np.random.Generator) -> Li
     return selected
 
 
-def _line_flow_from_ss(ss, uid: int) -> float:
-    # Best effort across different ANDES line variable names.
-    candidates = [("a1", "e"), ("Pij", "v"), ("p1", "v"), ("P1", "v")]
-    for attr, sub in candidates:
-        obj = getattr(ss.Line, attr, None)
-        if obj is None:
-            continue
-        vals = getattr(obj, sub, None)
-        if vals is None or uid >= len(vals):
-            continue
-        return _to_float_or_nan(vals[uid])
-    return float("nan")
-
-
-def _line_ratings_from_pandapower(ss) -> Optional[np.ndarray]:
-    """
-    Best-effort fallback to extract RATE_A per branch from pandapower.
-    Returns None if conversion/extraction fails.
-    """
-    try:
-        from andes.interop import pandapower as ap
-        from pandapower.pd2ppc import _pd2ppc
-        from pandapower import auxiliary as aux
-    except Exception:
-        return None
-
-    try:
-        pp_net = ap.to_pandapower(ss, verify=False)
-        if not hasattr(pp_net, "_options") or not isinstance(pp_net._options, dict):
-            pp_net._options = {}
-        if "mode" not in pp_net._options:
-            aux._add_ppc_options(
-                pp_net,
-                calculate_voltage_angles=True,
-                trafo_model="pi",
-                check_connectivity=False,
-                mode="opf",
-                switch_rx_ratio=2,
-                enforce_q_lims=False,
-                recycle=None,
-            )
-        _, ppci = _pd2ppc(pp_net)
-        branch = ppci["branch"]
-        return np.asarray(branch[:, 5], dtype=float)  # RATE_A
-    except Exception:
-        return None
-
-
 def _run_worker(
     worker_id: int,
     sim_ids: Sequence[int],
@@ -386,6 +340,7 @@ def _run_worker(
     pq_names: Sequence[str],
     owner_map: Dict[str, str],
     regcv1_ids: Sequence[str],
+    line_uids: Sequence[int],
     plotter_dir: Optional[Path],
     fieldnames: Sequence[str],
     output_dir: Path,
@@ -400,7 +355,7 @@ def _run_worker(
         writer.writeheader()
         for sim_id in sim_ids:
             rng = _rng_for_sim(int(cfg["seed"]), sim_id)
-            rows = run_single_sim(cfg, sim_id, rng, case_path, pq_names, owner_map, regcv1_ids, plotter_dir)
+            rows = run_single_sim(cfg, sim_id, rng, case_path, pq_names, owner_map, regcv1_ids, line_uids, plotter_dir)
             for row in rows:
                 for name in fieldnames:
                     row.setdefault(name, np.nan)
@@ -419,6 +374,25 @@ def _merge_worker_csvs(csv_path: Path, worker_paths: Iterable[Path], fieldnames:
                     writer.writerow(row)
 
 
+def _log_row_nan_health(row: Dict, *, sim_id: int) -> None:
+    key_cols = [
+        "line_rating",
+        "pre_fault_flow",
+        "pre_fault_loading",
+        "pre_p_from",
+        "system_max_loading_prefault",
+        "system_mean_loading_prefault",
+        "system_top5_loading_mean_prefault",
+        "ptdf_l1_norm_outaged_line",
+        "max_abs_lodf_row",
+        "predicted_max_post_cont_loading_dc",
+    ]
+    nan_cols = [c for c in key_cols if c in row and (row[c] is None or not np.isfinite(float(row[c])))]
+    if nan_cols:
+        cont = row.get("contingency_id", "unknown")
+        print(f"[nan-health] sim_id={sim_id} cont={cont} NaN in: {', '.join(nan_cols)}")
+
+
 def run_single_sim(
     cfg: Dict,
     sim_id: int,
@@ -427,6 +401,7 @@ def run_single_sim(
     pq_names: Sequence[str],
     owner_map: Dict[str, str],
     regcv1_ids: Sequence[str],
+    line_uids: Sequence[int],
     plotter_dir: Path,
 ):
     base_scale = rng.uniform(cfg["base_load_scale"]["low"], cfg["base_load_scale"]["high"])
@@ -566,20 +541,6 @@ def run_single_sim(
 
         ss.setup()
         ss.PFlow.run()
-        pp_fmax = _line_ratings_from_pandapower(ss)
-
-        pre_fault_flow = float("nan")
-        pre_fault_loading = float("nan")
-        line_rating = float("nan")
-        if cont is not None:
-            uid = int(cont["uid"])
-            pre_fault_flow = _line_flow_from_ss(ss, uid)
-            rating = _to_float_or_nan(cont.get("rating"))
-            if (not np.isfinite(rating) or rating <= 0.0) and pp_fmax is not None and uid < len(pp_fmax):
-                rating = _to_float_or_nan(pp_fmax[uid])
-            line_rating = rating
-            if np.isfinite(pre_fault_flow) and np.isfinite(line_rating) and line_rating > 0:
-                pre_fault_loading = abs(pre_fault_flow) / line_rating
 
         ss.TDS.config.no_tqdm = bool(cfg["tds"].get("no_tqdm", True))
         ss.TDS.config.criteria = int(cfg["tds"].get("criteria", 0))
@@ -639,6 +600,10 @@ def run_single_sim(
             genrou_pg=genrou_pg,
             regcv1_pg=regcv1_pg,
             success=success,
+            contingency=cont,
+            load_step_enabled=load_step_enabled,
+            trip_time=trip_time,
+            line_uids=line_uids,
             plotter_csv=plotter_csv,
         )
 
@@ -648,38 +613,7 @@ def run_single_sim(
         row["M_bin_label"] = M_bin_label
         row["D_bin_label"] = D_bin_label
         row.update(ed_meta)
-
-        if cont is None:
-            if load_step_enabled:
-                row["cont_type"] = "load"
-                row["contingency_id"] = "load_step"
-                row["contingency_time"] = load_step_time
-            else:
-                row["cont_type"] = "none"
-                row["contingency_id"] = "none"
-                row["contingency_time"] = np.nan
-            row["load_step_enabled"] = int(bool(load_step_enabled))
-            row["line_uid"] = np.nan
-            row["line_idx"] = np.nan
-            row["line_name"] = ""
-            row["line_from_bus"] = np.nan
-            row["line_to_bus"] = np.nan
-            row["line_rating"] = np.nan
-            row["pre_fault_flow"] = np.nan
-            row["pre_fault_loading"] = np.nan
-        else:
-            row["cont_type"] = "line_plus_load" if load_step_enabled else "line"
-            row["contingency_id"] = f"line:{cont['idx']}"
-            row["contingency_time"] = trip_time
-            row["load_step_enabled"] = int(bool(load_step_enabled))
-            row["line_uid"] = int(cont["uid"])
-            row["line_idx"] = cont["idx"]
-            row["line_name"] = str(cont["name"])
-            row["line_from_bus"] = _to_float_or_nan(cont["bus1"])
-            row["line_to_bus"] = _to_float_or_nan(cont["bus2"])
-            row["line_rating"] = line_rating
-            row["pre_fault_flow"] = pre_fault_flow
-            row["pre_fault_loading"] = pre_fault_loading
+        _log_row_nan_health(row, sim_id=sim_id)
 
         rows.append(row)
 
@@ -724,7 +658,9 @@ def main() -> None:
         raise ValueError("No REGCV1 entries found to assign M/D parameters.")
 
     n_genrou = int(getattr(base_ss, "GENROU", None).n) if getattr(base_ss, "GENROU", None) else 0
-    fieldnames = _build_fieldnames(pq_names, owner_labels, len(regcv1_ids), n_genrou, export_plotter)
+    n_line = int(getattr(base_ss, "Line", None).n) if getattr(base_ss, "Line", None) else 0
+    line_uids = list(range(n_line))
+    fieldnames = _build_fieldnames(pq_names, owner_labels, len(regcv1_ids), n_genrou, line_uids, export_plotter)
 
     n_sims = int(cfg["n_sims"])
     workers = max(1, int(cfg.get("workers", 1)))
@@ -734,7 +670,7 @@ def main() -> None:
             writer.writeheader()
             for sim_id in range(n_sims):
                 sim_rng = _rng_for_sim(int(cfg["seed"]), sim_id)
-                rows = run_single_sim(cfg, sim_id, sim_rng, case_path, pq_names, owner_map, regcv1_ids, plotter_dir)
+                rows = run_single_sim(cfg, sim_id, sim_rng, case_path, pq_names, owner_map, regcv1_ids, line_uids, plotter_dir)
                 for row in rows:
                     for name in fieldnames:
                         row.setdefault(name, np.nan)
@@ -754,6 +690,7 @@ def main() -> None:
                     pq_names,
                     owner_map,
                     regcv1_ids,
+                    line_uids,
                     plotter_dir,
                     fieldnames,
                     output_dir,
