@@ -1,0 +1,42 @@
+# Training sweep config for models/train_sweep.py
+output_dir: models_trained
+skip_if_exists: true
+seed: 42
+
+model:
+  shared_sizes: [128, 64]
+  head_sizes: [32]
+  hidden_sizes: [256, 128, 64]
+  activation: relu
+  dropout: 0.1
+  group_shared_sizes: [64]
+
+data:
+  csv_path: results/to_export/simulation_results.csv
+  target_cols: [rocof_COI, dev_COI]
+  drop_cols: [sim_id, seed, success, time_max_dev, plotter_csv]
+  use_recommended_scalers: true
+
+split:
+  test_size: 0.2
+  val_fraction: 0.5
+  random_state: 42
+
+training:
+  epochs: 150
+  lr: 0.001
+  weight_decay: 0.0001
+  batch_train: 512
+  batch_eval: 1024
+  loss_weights: []
+  use_lr_scheduler: true
+  lr_scheduler_patience: 6
+  lr_scheduler_factor: 0.5
+  lr_scheduler_min_lr: 1e-7
+
+sweep:
+  models: ["MTLSH"]
+  losses: ["mse"]
+  scalers: ["minmax"]
+  seeds: [42, 1337]
+  training: {}
