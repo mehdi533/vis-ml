@@ -11,12 +11,14 @@ Write the MILP end-to-end:
 
 Takes too long to solve, was correct in the other
 """
+f_scale = 1000/1000
 
 import cvxpy as cp
 import numpy as np
 import torch
 import andes
 import argparse
+import csv
 from pathlib import Path
 import yaml
 import joblib
@@ -26,6 +28,7 @@ from typing import Dict, List, Sequence, Tuple
 from andes.interop.pandapower import to_pandapower
 from pandapower.pd2ppc import _pd2ppc
 from pandapower.pypower.makePTDF import makePTDF
+from pandapower.pypower.makeLODF import makeLODF
 from pandapower.pd2ppc import _pd2ppc
 from pandapower import auxiliary as aux
 
@@ -38,7 +41,45 @@ from scheduling.utils import (
     add_measurement_devices,
     _extract_linear_layers,
     activation_masks_mtlshared,
+    _sanitize_label,
 )
+
+
+def _load_csv_header(csv_path: Path) -> list[str]:
+    with csv_path.open("r", encoding="utf-8-sig", newline="") as f:
+        reader = csv.reader(f)
+        header = next(reader)
+    return [str(col).strip() for col in header if str(col).strip()]
+
+
+def _resolve_x_features(cost_cfg: dict) -> list[str]:
+    """
+    Resolve the input feature ordering.
+
+    Priority:
+    1) If cost_cfg.data.csv_path is provided, use CSV column order and drop:
+       - cost_cfg.data.target_cols
+       - cost_cfg.data.drop_cols
+    2) Fall back to cost_cfg.features.x_features.
+    """
+    data_cfg = cost_cfg.get("data") or {}
+    csv_path = data_cfg.get("csv_path")
+    if csv_path:
+        header = _load_csv_header(Path(csv_path))
+        target_cols = set(data_cfg.get("target_cols") or [])
+        drop_cols = set(data_cfg.get("drop_cols") or [])
+        x_features = [c for c in header if c not in target_cols and c not in drop_cols]
+        if not x_features:
+            raise ValueError(
+                f"No x_features left after excluding target_cols/drop_cols from {csv_path}."
+            )
+        return x_features
+
+    features_cfg = cost_cfg.get("features") or {}
+    x_features = list(features_cfg.get("x_features") or [])
+    if not x_features:
+        raise ValueError("Missing features.x_features in cost config (and no data.csv_path provided).")
+    return x_features
 
 
 def input_features_constraints(x_val_sc: np.ndarray, 
@@ -49,16 +90,62 @@ def input_features_constraints(x_val_sc: np.ndarray,
                                m_max_sc: float,
                                d_min_sc: float,
                                d_max_sc: float,
-                               free_idx: Sequence[int] | None = None):
+                               pg: cp.Expression | np.ndarray,
+                               free_idx: Sequence[int] | None = None,
+                               pg_link_order: Sequence[int] | None = None,
+                               pg_link_scales: np.ndarray | None = None,
+                               pg_link_offsets: np.ndarray | None = None):
     
     # TODO: maybe I should redefine the variables because I only need the M and Ds to be changing, not the rest no matter if I add limits
     x = cp.Variable(len(x_val_sc), name="features")
     
-    free = set(m_idx) | set(d_idx) | set(free_idx or [])
-    eq_idx = [i for i in range(len(x_val_sc)) if i not in free]
+    n_feat = len(x_val_sc)
+    free = set(m_idx) | set(d_idx)
+    if free_idx:
+        free.update(((idx + n_feat) if idx < 0 else idx) for idx in free_idx)
+
+    pg_n = int(pg.shape[0]) if getattr(pg, "shape", None) else int(np.size(pg))
+    # Optionally link dispatch setpoint features to the dispatch decision variable pg.
+    #
+    # This repo's feature pipeline adds dispatch features as:
+    #   P_GENROU_1..n_genrou then P_REGCV1_1..n_regcv1
+    # These are typically the last 10 features for the ETH demo cases (6 GENROU + 4 REGCV1),
+    # but we support locating them by name if possible.
+    # Simpler, case-agnostic linking: assume the last k dispatch features correspond
+    # to generator setpoints, where k = len(pg_link_order) or 10 by default.
+    k = len(pg_link_order) if pg_link_order is not None else min(10, n_feat)
+    x_pg_idx = list(range(n_feat - k, n_feat)) if k and n_feat >= k else []
+
+    link_pg = bool(x_pg_idx) and pg_n >= len(x_pg_idx)
+    if link_pg:
+        free.update(x_pg_idx)
+
+    eq_idx = [i for i in range(n_feat) if i not in free]
     constraints = [x[eq_idx] == x_val_sc[eq_idx]]
     constraints += [x[m_idx] >= m_min_sc, x[m_idx] <= m_max_sc]
     constraints += [x[d_idx] >= d_min_sc, x[d_idx] <= d_max_sc]
+
+    if link_pg:
+        k = len(x_pg_idx)
+        if pg_link_order is None:
+            pg_link_order = tuple(range(k))
+
+        if len(pg_link_order) != k:
+            raise ValueError(f"pg_link_order must have length {k} (got {len(pg_link_order)}).")
+        if max(pg_link_order) >= pg_n:
+            raise ValueError(f"pg_link_order has index >= len(pg) ({pg_n}): {pg_link_order}")
+
+        pg_link = cp.hstack([pg[i] for i in tuple(pg_link_order)])
+        if pg_link_scales is not None and pg_link_offsets is not None:
+            pg_link_scales = np.asarray(pg_link_scales, dtype=float).reshape(-1)
+            pg_link_offsets = np.asarray(pg_link_offsets, dtype=float).reshape(-1)
+            if pg_link_scales.size != k or pg_link_offsets.size != k:
+                raise ValueError(
+                    f"pg_link_scales/offsets must have length {k} (got {pg_link_scales.size}/{pg_link_offsets.size})."
+                )
+            pg_link = cp.multiply(pg_link, pg_link_scales) + pg_link_offsets
+
+        constraints += [x[x_pg_idx] == pg_link]
 
     return x, constraints
 
@@ -80,18 +167,16 @@ def output_features_constraints(y_min_sc: np.ndarray,
     # Constraints on (/\P_IBR)_sc <= y[4:8]
     # constraints += [y[4:8] >= dp_ibr_sc]
     # TODO: need to fix this bcs we actually do not put the delta p ibr max but the delta p ibr, the extra prod. of the ibr doesn't go back down, are we actually predicting delta p ibr? 
-    constraints += [y[4:8] <= dp_sc]
-    constraints += [y[4:8] >= p_min_sc] # the negative difference cannot be greater than the difference between power output and 
-    constraints += [y[4:8] <= p_max_sc]
+    constraints += [y[2:6] >= dp_sc]
+    constraints += [y[2:6] >= p_min_sc] # the negative difference cannot be greater than the difference between power output and 
+    constraints += [y[2:6] <= p_max_sc]
 
     return y, constraints
 
 
 def inequality_line_flows(ss: andes.System, 
                           pg: cp.Expression | np.ndarray,
-                          pd: cp.Expression | np.ndarray,
-                          *,
-                          fmax_scale: float = 1.0):
+                          pd: cp.Expression | np.ndarray):
 
     # Convert andes system to pandapower format to compute line flow limits constraints
     pp_net = to_pandapower(ss, verify=False) # TODO what if i put true here? 
@@ -111,11 +196,6 @@ def inequality_line_flows(ss: andes.System,
     _, ppci = _pd2ppc(pp_net)
     branch = ppci["branch"]
     fmax = np.asarray(branch[:, 5], dtype=float)  # RATE_A TODO why is this up to 5? 
-    scale = float(fmax_scale)
-    if scale <= 0.0:
-        raise ValueError(f"fmax_scale must be > 0 (got {fmax_scale}).")
-    if scale != 1.0:
-        fmax = fmax * scale
     ptdf = makePTDF(ppci["baseMVA"], ppci["bus"], ppci["branch"], using_sparse_solver=False) # TODO what if i put true here? 
     
     bus_ids = pp_net.bus.index.to_numpy()
@@ -153,9 +233,71 @@ def inequality_line_flows(ss: andes.System,
     flows = ptdf @ injections
 
     # Build constraints (flows, fmax)
-    constraints = [flows <= fmax, flows >= -fmax]
+    constraints = [flows <= fmax * f_scale, flows >= -fmax * f_scale]
 
-    return flows, constraints, fmax
+    return flows, constraints
+
+
+def preventive_n1_line_flow_constraints(
+    ss: andes.System,
+    pg: cp.Expression | np.ndarray,
+    pd: cp.Expression | np.ndarray,
+):
+    """
+    Preventive DC N-1 constraints with PTDF + LODF:
+    f_post(l) = f + LODF[:, l] * f[l] for each single-line outage l.
+    """
+    pp_net = to_pandapower(ss, verify=False)
+    pp_net._options = {}
+    aux._add_ppc_options(
+        pp_net,
+        calculate_voltage_angles=True,
+        trafo_model="pi",
+        check_connectivity=False,
+        mode="opf",
+        switch_rx_ratio=2,
+        enforce_q_lims=False,
+        recycle=None,
+    )
+    _, ppci = _pd2ppc(pp_net)
+    branch = ppci["branch"]
+    fmax = np.asarray(branch[:, 5], dtype=float)
+    ptdf = makePTDF(ppci["baseMVA"], ppci["bus"], branch, using_sparse_solver=False)
+    try:
+        lodf = np.asarray(makeLODF(branch, ptdf), dtype=float)
+    except TypeError:
+        lodf = np.asarray(makeLODF(ptdf, branch), dtype=float)
+
+    bus_ids = pp_net.bus.index.to_numpy()
+    bus_df = ss.Bus.as_df()[["idx"]]
+    bus_nums = bus_df["idx"].to_numpy(dtype=int)
+    bus_uids = bus_df.index.to_numpy(dtype=int)
+    bus_pos = {int(bus): i for i, bus in enumerate(bus_ids)}
+    bus_num_to_pos = {int(num): bus_pos[int(uid)] for num, uid in zip(bus_nums, bus_uids)}
+
+    gen_buses = np.concatenate([np.asarray(ss.PV.bus.v, dtype=int), np.asarray(ss.Slack.bus.v, dtype=int)])
+    load_buses = np.asarray(ss.PQ.bus.v, dtype=int)
+
+    gen_rows = np.fromiter((bus_num_to_pos[int(bus)] for bus in gen_buses), dtype=int, count=len(gen_buses))
+    load_rows = np.fromiter((bus_num_to_pos[int(bus)] for bus in load_buses), dtype=int, count=len(load_buses))
+
+    Cg = np.zeros((len(bus_ids), len(gen_buses)), dtype=float)
+    Cd = np.zeros((len(bus_ids), len(load_buses)), dtype=float)
+    Cg[gen_rows, np.arange(len(gen_buses))] = 1.0
+    Cd[load_rows, np.arange(len(load_buses))] = 1.0
+
+    injections = Cg @ pg - Cd @ pd
+    flows = ptdf @ injections
+
+    constraints = []
+    n_lines = int(len(fmax))
+    for l in range(n_lines):
+        col = lodf[:, l]
+        if not np.all(np.isfinite(col)):
+            continue
+        f_post = flows + cp.multiply(col, flows[l])
+        constraints += [f_post <= fmax * f_scale, f_post >= -fmax * f_scale]
+    return constraints
 
 
 def masks_equal(masks_a, masks_b): # Can i replace this????
@@ -378,13 +520,9 @@ def define_rted_vis(ss: andes.System, model,
                     a: np.ndarray, b: np.ndarray, c: np.ndarray,
                     pg: cp.Variable, pg_min: np.ndarray, pg_max: np.ndarray,
                     pd: np.ndarray,
-                    *,
-                    include_line: bool = True,
                     mask_max_iter: int = 10,
-                    solver: str = "GUROBI",
-                    verbose: bool = True,
-                    run_checks: bool = True,
-                    line_fmax_scale: float = 1.0):
+                    pg_link_scales: np.ndarray | None = None,
+                    pg_link_offsets: np.ndarray | None = None):
     """
     function to define the problem end to end, it should 1. test constraints one by one to see if feasible. 2. provide the entire problem with constraints... 
     Define obj. func. (minimize cost, load from yaml file) and constraints (input features, output features, line flows, surrogate model) and solve the problem with a MILP solver (e.g., Gurobi).
@@ -408,68 +546,63 @@ def define_rted_vis(ss: andes.System, model,
         m_max_sc,
         d_min_sc,
         d_max_sc,
+        pg,
+        free_idx=[-10, -9, -8, -7, -6, -5, -4, -3, -2, -1], # TODO: this is very hacky, need to find a better way to link the features to the pg variables, maybe with a dict of feature name to variable?
+        pg_link_scales=pg_link_scales,
+        pg_link_offsets=pg_link_offsets,
     )
 
     y, constraints_y = output_features_constraints(y_min_sc, y_max_sc, p_min_sc, p_max_sc, dp_sc)
-    # constraints_nn = surrogate_constraints_milp(model, x, x_min_sc, x_max_sc, y)
-    flows, constraints_line, fmax = inequality_line_flows(ss, pg, pd, fmax_scale=line_fmax_scale)
-    active_line_constraints = constraints_line if include_line else []
+    constraints_nn = surrogate_constraints_milp(model, x, x_min_sc, x_max_sc, y)
+    flows, constraints_line = inequality_line_flows(ss, pg, pd)
+    constraints_n1 = preventive_n1_line_flow_constraints(ss, pg, pd)
     constraints_ed = [pg >= pg_min, pg <= pg_max, cp.sum(pg) == float(np.sum(pd))]
 
     objective = cp.Minimize(cp.sum(a + cp.multiply(b, pg) + cp.multiply(c, cp.square(pg))))
-    base_constraints = constraints_x + constraints_y + active_line_constraints + constraints_ed
-    constraints_nn = solve_fixed_pattern_iter(
-        model,
-        x,
-        x_val_sc,
-        y,
-        max_iter=int(mask_max_iter),
-        base_constraints=base_constraints,
-        objective=objective,
-        solver=solver,
-    )
+    base_constraints = constraints_x + constraints_y + constraints_line + constraints_ed
+    # constraints_nn = solve_fixed_pattern_iter(
+    #     model,
+    #     x,
+    #     x_val_sc,
+    #     y,
+    #     max_iter=int(mask_max_iter),
+    #     base_constraints=base_constraints,
+    #     objective=objective,
+    # )
 
     constraints += constraints_x # if isinstance(constraints_x, list) else [constraints_x]
     constraints += constraints_y
     constraints += constraints_nn
-    constraints += active_line_constraints
+    constraints += constraints_line
+    constraints += constraints_n1
     constraints += constraints_ed # Constraints on generator outputs and ED cosntraint
 
     feasibility = {}
 
-    solver_kwargs = {"solver": solver, "verbose": verbose}
-    if str(solver).upper() == "GUROBI":
-        solver_kwargs["reoptimize"] = True
+    checks = {
+        "input": constraints_x + constraints_ed, # eq. and ineq.
+        "output": constraints_y + constraints_ed, # 20 (ineq.)
+        "nn": constraints_nn + constraints_ed,
+        "line_flows": constraints_line + constraints_ed, # 92 (ineq. ==> 2 per line)
+        "line_flows_n1": constraints_line + constraints_n1 + constraints_ed,
+        "all_but_nn": constraints_line + constraints_n1 + constraints_ed + constraints_x + constraints_y,
+        "combined": constraints, # 6762 constraints (21 constraints for sum(pg) = sum(pd) (1), pg_max and pg_min ineq. (10 each)
+    }
 
-    if run_checks:
-        checks = {
-            "input": constraints_x + constraints_ed, # eq. and ineq.
-            "output": constraints_y + constraints_ed, # 20 (ineq.)
-            "nn": constraints_nn + constraints_ed,
-            "combined": constraints,
-        }
-        if include_line:
-            checks["line_flows"] = constraints_line + constraints_ed  # 92 (ineq.)
+    solver_kwargs = {"solver": "GUROBI", "verbose": True, "reoptimize": False}
 
-        for name, cons in checks.items():
-            cons_list = cons if isinstance(cons, list) else [cons]
-            prob_check = cp.Problem(objective, cons_list)
-            prob_check.solve(**(solver_kwargs))
-            feasibility[name] = prob_check.status
+    for name, cons in checks.items():
+        cons_list = cons if isinstance(cons, list) else [cons]
+        prob_check = cp.Problem(objective, cons_list)
+        prob_check.solve(**(solver_kwargs))
+        feasibility[name] = prob_check.status
+        print(f"Problem {name} is {prob_check.status} with values of {prob_check.value}")
 
     prob = cp.Problem(objective, constraints)
 
     prob.solve(**(solver_kwargs))
 
-    return prob, {
-        "x": x,
-        "y": y,
-        "flows": flows,
-        "fmax": fmax,
-        "pg": pg,
-        "constraints": constraints,
-        "feasibility": feasibility,
-    }
+    return prob, {"x": x, "y": y, "flows": flows, "pg": pg, "constraints": constraints, "feasibility": feasibility}
 
 
 def main():
@@ -480,15 +613,14 @@ def main():
     parser = argparse.ArgumentParser(description="Scan step_scale to find ED differences with NN convex constraints.")
     parser.add_argument("--config", default="experiments/generation.yaml", help="Path to sim YAML.")
     parser.add_argument("--cost-config", default="scheduling/mtlsh_convex.yaml", help="Path to cost YAML.")
-    parser.add_argument("--base-scale", type=float, default=1.0, help="Base load scale.")
-    parser.add_argument("--step-scale", type=float, default=0.95, help="Load step scale.")
-    parser.add_argument("--solver", type=str, default="GUROBI", help="CVXPY solver name.")
+    parser.add_argument("--base-scale", type=float, default=1, help="Base load scale.")
     parser.add_argument(
-        "--line-fmax-scale",
-        type=float,
-        default=1.0,
-        help="Scale line flow limits (fmax). Use <1 to tighten and create visible congestion effects.",
+        "--step-scale-by-owner",
+        type=str,
+        default=None,
+        help="Comma-separated owner_id:step_scale overrides applied on top of --step-scale (e.g. 1:0.9,3:1.1).",
     )
+    parser.add_argument("--step-scale", type=float, default=1, help="Load step scale.")
     parser.add_argument(
         "--init-m",
         type=str,
@@ -507,24 +639,6 @@ def main():
         default=25,
         help="Max iterations for alternating solve -> recompute ReLU masks.",
     )
-    parser.add_argument(
-        "--constraint-effects",
-        action="store_true",
-        help="Run ED vs (+NN) vs (+line) ablations and save plots for presentation.",
-    )
-    parser.add_argument(
-        "--effects-dir",
-        type=str,
-        default="experiments/constraint_effects",
-        help="Output directory for constraint effect plots.",
-    )
-    parser.add_argument(
-        "--top-lines",
-        type=int,
-        default=20,
-        help="Number of most-utilized lines to plot.",
-    )
-    parser.add_argument("--no-plots", action="store_true", help="Skip generating plots.")
     # parser.add_argument("--plot-dir", type=str, default="experiments", help="Directory to save plots.")
     args = parser.parse_args()
 
@@ -534,6 +648,27 @@ def main():
         with path.open("r", encoding="utf-8") as f:
             return yaml.safe_load(f)
     
+    def parse_owner_scales(text: str | None) -> Dict[str, float]:
+        if not text:
+            return {}
+        scales: Dict[str, float] = {}
+        for entry in text.split(","):
+            item = entry.strip()
+            if not item:
+                continue
+            owner, sep, scale = item.partition(":")
+            if not sep:
+                raise ValueError(
+                    f"Invalid --step-scale-by-owner entry '{item}'. Use owner_id:scale."
+                )
+            owner_key = owner.strip()
+            if not owner_key:
+                raise ValueError(
+                    f"Invalid --step-scale-by-owner entry '{item}'. Owner id is empty."
+                )
+            scales[owner_key] = float(scale.strip())
+        return scales
+
     cfg = load_yaml(Path(args.config))
     cost_cfg = load_yaml(Path(args.cost_config))
 
@@ -546,12 +681,13 @@ def main():
         raise FileNotFoundError(f"Model state_dict not found at {state_path}")
 
     model = MTLSharedHeads(
-                in_dim=int(model_cfg["in_dim"]),
-                n_tasks=int(model_cfg["n_tasks"]),
-                shared_sizes=model_cfg.get("shared_sizes"),
-                head_sizes=model_cfg.get("head_sizes"),
-                dropout=float(model_cfg.get("dropout", 0.0)),
-            )
+        in_dim=int(model_cfg["in_dim"]),
+        n_tasks=int(model_cfg["n_tasks"]),
+        shared_sizes=model_cfg.get("shared_sizes"),
+        head_sizes=model_cfg.get("head_sizes"),
+        dropout=float(model_cfg.get("dropout", 0.0)),
+        # convex=bool(model_cfg.get("convex", False)),
+    )
     model.load_state_dict(torch.load(state_path, map_location="cpu"))
     model.eval()
 
@@ -567,8 +703,8 @@ def main():
     ss.config.freq = float(50)
     add_measurement_devices(ss)
 
-    m_vec = np.full(ss.REGCV1.n, 4)
-    d_vec = np.full(ss.REGCV1.n, 2)
+    m_vec = np.full(ss.REGCV1.n, 0)
+    d_vec = np.full(ss.REGCV1.n, 0)
 
     for uid in range(ss.PQ.n):
         ss.PQ.p0.v[uid] = ss.PQ.p0.v[uid] * args.base_scale
@@ -588,13 +724,22 @@ def main():
     ss.PQ.config.pq2z = 0
 
     ss.setup()
-    
     # ==== build constraints from cfg file ======
 
     pg_min = np.asarray(ss.PV.pmin.v.tolist() + ss.Slack.pmin.v.tolist(), dtype=float)
     pg_max = np.asarray(ss.PV.pmax.v.tolist() + ss.Slack.pmax.v.tolist(), dtype=float)
 
-    x_features = cost_cfg["features"]["x_features"]
+    x_features = _resolve_x_features(cost_cfg)
+    if hasattr(x_scaler, "n_features_in_") and int(getattr(x_scaler, "n_features_in_")) != len(x_features):
+        raise ValueError(
+            f"x_features length ({len(x_features)}) does not match x_scaler.n_features_in_ "
+            f"({int(getattr(x_scaler, 'n_features_in_'))})."
+        )
+    if hasattr(x_scaler, "scale_") and len(getattr(x_scaler, "scale_")) != len(x_features):
+        raise ValueError(
+            f"x_features length ({len(x_features)}) does not match x_scaler.scale_ length "
+            f"({len(getattr(x_scaler, 'scale_'))})."
+        )
 
     a = np.asarray(cost_cfg["ed_costs"]["a"], dtype=float)
     b = np.asarray(cost_cfg["ed_costs"]["b"], dtype=float)
@@ -634,15 +779,22 @@ def main():
     p_ibr_min = pg_min[ibr_idx] - pg_base[ibr_idx] # pg[ibr_idx]
     p_ibr_max = pg_max[ibr_idx] - pg_base[ibr_idx] # pg[ibr_idx]
     dp_ibr = pg[ibr_idx] - pg_base[ibr_idx] # - pg_base[ibr_idx]
-    ibr_out_idx = np.arange(4,8)
+    ibr_out_idx = np.arange(2,6)
     p_ibr_sc_min = cp.multiply(p_ibr_min, y_scaler.scale_[ibr_out_idx]) + y_scaler.min_[ibr_out_idx] 
     p_ibr_sc_max = cp.multiply(p_ibr_max, y_scaler.scale_[ibr_out_idx]) + y_scaler.min_[ibr_out_idx] 
     dp_ibr_sc = cp.multiply(dp_ibr, y_scaler.scale_[ibr_out_idx]) + y_scaler.min_[ibr_out_idx] 
 
-    pd = np.asarray(ss.PQ.p0.v, dtype=float) * args.step_scale
+    step_scales_by_owner = parse_owner_scales(args.step_scale_by_owner)
+
+    pq_p_before = np.asarray(ss.PQ.p0.v, dtype=float)
+    pq_step_scale = np.full(ss.PQ.n, float(args.step_scale), dtype=float)
+    for uid in range(ss.PQ.n):
+        pq_step_scale[uid] = step_scales_by_owner.get(str(ss.PQ.owner.v[uid]), pq_step_scale[uid])
+
+    pd = pq_p_before * pq_step_scale
 
     # ==== extract features ======
-
+    
     x_val = build_features(
         ss,
         base_scale=args.base_scale,
@@ -651,7 +803,49 @@ def main():
         M_vec=m_vec,
         D_vec=d_vec,
     )
-    
+
+    # Add dispatch setpoints (matches data_generation.extract_metrics feature naming).
+    genrou = getattr(ss, "GENROU", None)
+    regcv1 = getattr(ss, "REGCV1", None)
+
+    genrou_pg = np.zeros(int(getattr(genrou, "n", 0) or 0), dtype=float) if genrou is not None else np.zeros(0, dtype=float)
+    if genrou is not None and getattr(genrou, "n", 0):
+        genrou_pg = np.asarray(getattr(genrou, "Pg", np.zeros(0)), dtype=float).reshape(-1)
+        if genrou_pg.size == 0 and hasattr(genrou, "p0"):
+            genrou_pg = np.asarray(genrou.p0.v, dtype=float).reshape(-1)
+
+    regcv1_pg = np.zeros(int(getattr(regcv1, "n", 0) or 0), dtype=float) if regcv1 is not None else np.zeros(0, dtype=float)
+    if regcv1 is not None and getattr(regcv1, "n", 0):
+        if hasattr(regcv1, "pref"):
+            try:
+                regcv1_pg = np.asarray(regcv1.pref.v, dtype=float).reshape(-1)
+            except Exception:
+                regcv1_pg = np.zeros(int(getattr(regcv1, "n", 0) or 0), dtype=float)
+
+    for i, val in enumerate(genrou_pg, start=1):
+        x_val[f"P_GENROU_{i}"] = float(val)
+    for i, val in enumerate(regcv1_pg, start=1):
+        x_val[f"P_REGCV1_{i}"] = float(val)
+
+    if ss.PQ.n:
+        pq_delta = pq_p_before * (pq_step_scale - 1.0)
+        # For N-1 extraction parity: DELTA_PQ_tot is sum of active-power deltas only.
+        x_val["DELTA_PQ_tot"] = float(np.sum(pq_delta))
+        owner_delta_totals: Dict[str, float] = {}
+        for uid, name in enumerate(ss.PQ.name.v):
+            owner_key = _sanitize_label(ss.PQ.owner.v[uid])
+            dp = float(pq_delta[uid])
+            x_val[f"DELTA_P_{name}"] = dp
+            owner_delta_totals[owner_key] = owner_delta_totals.get(owner_key, 0.0) + dp
+        for owner_key, total in owner_delta_totals.items():
+            x_val[f"DELTA_P_OWNER_{owner_key}"] = float(total)
+
+    missing = [name for name in x_features if name not in x_val]
+    if missing:
+        preview = ", ".join(missing[:25])
+        more = f" (+{len(missing) - 25} more)" if len(missing) > 25 else ""
+        raise KeyError(f"Missing {len(missing)} input features required by x_features: {preview}{more}")
+
     feat_vec = np.array([x_val[name] for name in x_features], dtype=float).reshape(-1)
 
     # ==== define features bounds (big M for the MILP) ======
@@ -689,295 +883,18 @@ def main():
     x_min_sc, x_max_sc = x_val_sc.copy(), x_val_sc.copy()
     x_min_sc[m_idx], x_max_sc[m_idx] = m_min_sc, m_max_sc
     x_min_sc[d_idx], x_max_sc[d_idx] = d_min_sc, d_max_sc
-
-    if args.constraint_effects:
-        import csv as _csv
-
-        effects_dir = Path(args.effects_dir)
-        effects_dir.mkdir(parents=True, exist_ok=True)
-
-        solver_kwargs = {"solver": str(args.solver), "verbose": False}
-        if str(args.solver).upper() == "GUROBI":
-            solver_kwargs["reoptimize"] = True
-
-        # Torch prediction at the (optionally warm-started) feature point.
-        with torch.no_grad():
-            y_pred_scaled = (
-                model(torch.tensor(x_val_sc, dtype=torch.float32).unsqueeze(0))
-                .cpu()
-                .numpy()
-                .reshape(-1)
-            )
-        y_pred_raw = unscale_minmax(y_pred_scaled, y_scaler, np.arange(len(y_pred_scaled)))
-
-        def _solve_ed_case(*, name: str, enforce_line: bool):
-            pg_case = cp.Variable(ss.PV.n + ss.Slack.n, name=f"pg_{name}")
-            flows_expr, line_cons, fmax = inequality_line_flows(
-                ss, pg_case, pd, fmax_scale=float(args.line_fmax_scale)
-            )
-            constraints = [
-                pg_case >= pg_min,
-                pg_case <= pg_max,
-                cp.sum(pg_case) == float(np.sum(pd)),
-            ]
-            if enforce_line:
-                constraints += line_cons
-            objective = cp.Minimize(cp.sum(a + cp.multiply(b, pg_case) + cp.multiply(c, cp.square(pg_case))))
-            prob_case = cp.Problem(objective, constraints)
-            prob_case.solve(**solver_kwargs)
-            return {
-                "prob": prob_case,
-                "pg": pg_case,
-                "flows": flows_expr,
-                "fmax": fmax,
-            }
-
-        def _solve_nn_case(*, name: str, include_line: bool):
-            pg_case = cp.Variable(ss.PV.n + ss.Slack.n, name=f"pg_{name}")
-            dp_ibr_case = pg_case[ibr_idx] - pg_base[ibr_idx]
-            dp_ibr_sc_case = cp.multiply(dp_ibr_case, y_scaler.scale_[ibr_out_idx]) + y_scaler.min_[ibr_out_idx]
-            prob_case, vals = define_rted_vis(
-                ss,
-                model,
-                x_val_sc,
-                m_idx,
-                d_idx,
-                m_min_sc,
-                m_max_sc,
-                d_min_sc,
-                d_max_sc,
-                x_min_sc,
-                x_max_sc,
-                y_min_sc,
-                y_max_sc,
-                p_ibr_sc_min,
-                p_ibr_sc_max,
-                dp_ibr_sc_case,
-                a,
-                b,
-                c,
-                pg_case,
-                pg_min,
-                pg_max,
-                pd,
-                include_line=include_line,
-                mask_max_iter=int(args.mask_max_iter),
-                solver=str(args.solver),
-                verbose=False,
-                run_checks=False,
-                line_fmax_scale=float(args.line_fmax_scale),
-            )
-            return {"prob": prob_case, "vals": vals}
-
-        cases = {
-            "ED": _solve_ed_case(name="ed", enforce_line=False),
-            "ED+Line": _solve_ed_case(name="ed_line", enforce_line=True),
-            "ED+NN": _solve_nn_case(name="ed_nn", include_line=False),
-            "ED+NN+Line": _solve_nn_case(name="ed_nn_line", include_line=True),
-        }
-
-        # Collect arrays for plots + a CSV summary.
-        case_names = list(cases.keys())
-        costs = {}
-        statuses = {}
-        pg_vals = {}
-        flows_vals = {}
-        fmax_ref = None
-
-        for name in case_names:
-            entry = cases[name]
-            if "vals" in entry:  # NN case
-                prob_case = entry["prob"]
-                vals = entry["vals"]
-                statuses[name] = prob_case.status
-                costs[name] = float(prob_case.value) if prob_case.value is not None else float("nan")
-                pg_vals[name] = np.asarray(vals["pg"].value, dtype=float).reshape(-1) if vals["pg"].value is not None else None
-                flows_vals[name] = np.asarray(vals["flows"].value, dtype=float).reshape(-1) if vals["flows"].value is not None else None
-                if fmax_ref is None:
-                    fmax_ref = np.asarray(vals["fmax"], dtype=float).reshape(-1)
-            else:  # ED-only case
-                prob_case = entry["prob"]
-                statuses[name] = prob_case.status
-                costs[name] = float(prob_case.value) if prob_case.value is not None else float("nan")
-                pg_vals[name] = np.asarray(entry["pg"].value, dtype=float).reshape(-1) if entry["pg"].value is not None else None
-                flows_vals[name] = np.asarray(entry["flows"].value, dtype=float).reshape(-1) if entry["flows"].value is not None else None
-                if fmax_ref is None:
-                    fmax_ref = np.asarray(entry["fmax"], dtype=float).reshape(-1)
-
-        summary_path = effects_dir / "constraint_effects_summary.csv"
-        with summary_path.open("w", newline="", encoding="utf-8") as f:
-            writer = _csv.DictWriter(
-                f,
-                fieldnames=[
-                    "case",
-                    "status",
-                    "objective",
-                    "max_line_util",
-                    "num_line_violations",
-                ],
-            )
-            writer.writeheader()
-            for name in case_names:
-                flows = flows_vals.get(name)
-                fmax = fmax_ref
-                max_util = float("nan")
-                n_viol = float("nan")
-                if flows is not None and fmax is not None and fmax.size:
-                    safe = fmax > 0
-                    util = np.zeros_like(fmax, dtype=float)
-                    util[safe] = np.abs(flows[safe]) / fmax[safe]
-                    max_util = float(np.max(util))
-                    n_viol = int(np.sum(util > 1.0 + 1e-6))
-                writer.writerow(
-                    {
-                        "case": name,
-                        "status": statuses.get(name, ""),
-                        "objective": costs.get(name, float("nan")),
-                        "max_line_util": max_util,
-                        "num_line_violations": n_viol,
-                    }
-                )
-
-        print(f"[constraint-effects] Wrote {summary_path}")
-
-        if not args.no_plots:
-            import matplotlib.pyplot as plt
-
-            # 1) Objective comparison
-            plt.figure(figsize=(6, 4))
-            plt.bar(case_names, [costs[n] for n in case_names])
-            plt.xticks(rotation=20, ha="right")
-            plt.ylabel("Objective (cost)")
-            plt.title("Objective by constraint set")
-            plt.tight_layout()
-            plt.savefig(effects_dir / "effects_objective.png", dpi=150)
-            plt.close()
-
-            # 2) Pg grouped bars
-            pg_ref = next((pg_vals[n] for n in case_names if pg_vals[n] is not None), None)
-            if pg_ref is not None:
-                x = np.arange(pg_ref.size)
-                width = 0.18
-                plt.figure(figsize=(10, 4))
-                for i, name in enumerate(case_names):
-                    pg_val = pg_vals.get(name)
-                    if pg_val is None:
-                        continue
-                    plt.bar(x + (i - 1.5) * width, pg_val, width=width, label=name)
-                plt.xlabel("Generator index")
-                plt.ylabel("Pg")
-                plt.title("Dispatch Pg under different constraints")
-                plt.legend(ncol=2, fontsize=8)
-                plt.tight_layout()
-                plt.savefig(effects_dir / "effects_pg.png", dpi=150)
-                plt.close()
-
-            # 3) Line utilization (top-K by max utilization across cases)
-            if fmax_ref is not None and fmax_ref.size:
-                util_by_case = {}
-                util_max = np.zeros_like(fmax_ref, dtype=float)
-                safe = fmax_ref > 0
-                for name in case_names:
-                    flows = flows_vals.get(name)
-                    if flows is None:
-                        continue
-                    util = np.zeros_like(fmax_ref, dtype=float)
-                    util[safe] = np.abs(flows[safe]) / fmax_ref[safe]
-                    util_by_case[name] = util
-                    util_max = np.maximum(util_max, util)
-
-                top_k = int(args.top_lines)
-                top_k = max(1, min(top_k, int(util_max.size)))
-                top_idx = np.argsort(-util_max)[:top_k]
-
-                plt.figure(figsize=(10, 4))
-                xx = np.arange(top_k)
-                width = 0.18
-                for i, name in enumerate(case_names):
-                    util = util_by_case.get(name)
-                    if util is None:
-                        continue
-                    plt.bar(xx + (i - 1.5) * width, util[top_idx], width=width, label=name)
-                plt.axhline(1.0, color="k", linestyle="--", linewidth=1, label="limit")
-                plt.xlabel("Top line index (by utilization)")
-                plt.ylabel("|flow| / fmax")
-                plt.title("Line flow utilization (top-K)")
-                plt.legend(ncol=2, fontsize=8)
-                plt.tight_layout()
-                plt.savefig(effects_dir / "effects_line_util.png", dpi=150)
-                plt.close()
-
-            # 4) DeltaP IBR: baseline vs prediction vs NN solutions
-            def _delta_pg(pg_val: np.ndarray | None):
-                if pg_val is None:
-                    return None
-                return pg_val[ibr_idx] - pg_base[ibr_idx]
-
-            dp_ed = _delta_pg(pg_vals.get("ED"))
-            dp_nn = _delta_pg(pg_vals.get("ED+NN"))
-            dp_nn_line = _delta_pg(pg_vals.get("ED+NN+Line"))
-
-            dp_pred_base = y_pred_raw[4:8] if y_pred_raw.size >= 8 else None
-            dp_pred_nn = None
-            dp_pred_nn_line = None
-            if cases["ED+NN"]["vals"]["y"].value is not None:
-                y_nn_raw = unscale_minmax(cases["ED+NN"]["vals"]["y"].value, y_scaler, np.arange(8))
-                dp_pred_nn = y_nn_raw[4:8]
-            if cases["ED+NN+Line"]["vals"]["y"].value is not None:
-                y_nn_line_raw = unscale_minmax(cases["ED+NN+Line"]["vals"]["y"].value, y_scaler, np.arange(8))
-                dp_pred_nn_line = y_nn_line_raw[4:8]
-
-            labels = [f"IBR{i+1}" for i in range(len(ibr_idx))]
-            x = np.arange(len(labels))
-            width = 0.12
-            plt.figure(figsize=(10, 4))
-            if dp_ed is not None:
-                plt.bar(x - 2.5 * width, dp_ed, width=width, label="ED actual")
-            if dp_pred_base is not None:
-                plt.bar(x - 1.5 * width, dp_pred_base, width=width, label="ED predicted")
-            if dp_nn is not None:
-                plt.bar(x - 0.5 * width, dp_nn, width=width, label="ED+NN actual")
-            if dp_pred_nn is not None:
-                plt.bar(x + 0.5 * width, dp_pred_nn, width=width, label="ED+NN predicted")
-            if dp_nn_line is not None:
-                plt.bar(x + 1.5 * width, dp_nn_line, width=width, label="ED+NN+Line actual")
-            if dp_pred_nn_line is not None:
-                plt.bar(x + 2.5 * width, dp_pred_nn_line, width=width, label="ED+NN+Line predicted")
-            plt.xticks(x, labels)
-            plt.ylabel("Delta Pg (unscaled)")
-            plt.title("IBR DeltaP: actual dispatch vs NN prediction")
-            plt.legend(ncol=3, fontsize=8)
-            plt.tight_layout()
-            plt.savefig(effects_dir / "effects_deltaP_ibr.png", dpi=150)
-            plt.close()
-
-            # Save M/D plots for NN cases (if solved)
-            for name in ("ED+NN", "ED+NN+Line"):
-                vals = cases[name]["vals"]
-                if vals["x"].value is None:
-                    continue
-                x_opt_sc = np.asarray(vals["x"].value, dtype=float).reshape(-1)
-                m_opt = unscale_minmax(x_opt_sc[m_idx], x_scaler, m_idx)
-                d_opt = unscale_minmax(x_opt_sc[d_idx], x_scaler, d_idx)
-
-                fig, axes = plt.subplots(2, 1, figsize=(8, 5), sharex=True)
-                idx = np.arange(len(m_opt))
-                axes[0].bar(idx + 1, m_opt)
-                axes[0].hlines([float(m_min), float(m_max)], 0.5, len(m_opt) + 0.5, colors="gray", linestyles="--")
-                axes[0].set_ylabel("M")
-                axes[0].set_title(f"M/D solution ({name})")
-
-                axes[1].bar(idx + 1, d_opt)
-                axes[1].hlines([float(d_min), float(d_max)], 0.5, len(d_opt) + 0.5, colors="gray", linestyles="--")
-                axes[1].set_xlabel("IBR index")
-                axes[1].set_ylabel("D")
-
-                plt.tight_layout()
-                safe_name = name.lower().replace("+", "_").replace(" ", "_")
-                plt.savefig(effects_dir / f"effects_md_{safe_name}.png", dpi=150)
-                plt.close()
-
-        return None, {}
+    if len(x_features) >= 10 and pg_min.size >= 10 and pg_max.size >= 10:
+        pg_link_order = np.asarray([1, 2, 3, 4, 6, 9, 0, 5, 7, 8], dtype=int)
+        x_pg_idx = np.arange(len(x_features) - 10, len(x_features), dtype=int)
+        pg_link_scales = np.asarray(x_scaler.scale_[x_pg_idx], dtype=float)
+        pg_link_offsets = np.asarray(x_scaler.min_[x_pg_idx], dtype=float)
+        pg_link_min_sc = pg_min[pg_link_order] * pg_link_scales + pg_link_offsets
+        pg_link_max_sc = pg_max[pg_link_order] * pg_link_scales + pg_link_offsets
+        x_min_sc[x_pg_idx] = np.minimum(pg_link_min_sc, pg_link_max_sc)
+        x_max_sc[x_pg_idx] = np.maximum(pg_link_min_sc, pg_link_max_sc)
+    else:
+        pg_link_scales = None
+        pg_link_offsets = None
 
     # === continue with pb definition and solving ====
     prob, values = define_rted_vis(
@@ -986,9 +903,9 @@ def main():
         x_min_sc, x_max_sc, y_min_sc, y_max_sc,
         p_ibr_sc_min, p_ibr_sc_max, dp_ibr_sc,
         a, b, c, pg, pg_min, pg_max, pd,
-        solver=str(args.solver),
         mask_max_iter=int(args.mask_max_iter),
-        line_fmax_scale=float(args.line_fmax_scale),
+        pg_link_scales=pg_link_scales,
+        pg_link_offsets=pg_link_offsets,
     )  
 
 

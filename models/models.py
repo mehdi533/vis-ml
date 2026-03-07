@@ -3,10 +3,8 @@ from typing import List, Optional, Sequence, Tuple
 
 import torch
 import torch.nn as nn
-try:
-    from .convex_models import FICNN, PICNN, PICNN_MTLSH, NonNegLinear
-except ImportError:  # script/module import fallback
-    from convex_models import FICNN, PICNN, PICNN_MTLSH, NonNegLinear
+from models.convex_models import FICNN, PICNN, PICNN_MTLSH, NonNegLinear
+
 
 
 class MLP(nn.Module):
@@ -683,6 +681,86 @@ def list_models():
     return sorted(MODEL_CATALOG.keys())
 
 
+def _resolve_device(device=None):
+    if device is None:
+        return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    return device
+
+
+def _normalize_picnn_feature_split(
+    in_dim: int,
+    u_feature_idx: Optional[Sequence[int]],
+    v_feature_idx: Optional[Sequence[int]],
+):
+    if u_feature_idx is None:
+        raise ValueError("PICNN/PICNN_MTLSH requires `u_feature_idx`.")
+
+    u_idx = [int(i) for i in u_feature_idx]
+    if any(i < 0 or i >= in_dim for i in u_idx):
+        raise ValueError("u_feature_idx contains out-of-range index.")
+    if len(set(u_idx)) != len(u_idx):
+        raise ValueError("u_feature_idx contains duplicates.")
+
+    if v_feature_idx is None:
+        u_set = set(u_idx)
+        v_idx = [i for i in range(in_dim) if i not in u_set]
+    else:
+        v_idx = [int(i) for i in v_feature_idx]
+        if any(i < 0 or i >= in_dim for i in v_idx):
+            raise ValueError("v_feature_idx contains out-of-range index.")
+        if len(set(v_idx)) != len(v_idx):
+            raise ValueError("v_feature_idx contains duplicates.")
+
+    overlap = set(u_idx).intersection(v_idx)
+    if overlap:
+        raise ValueError(f"u_feature_idx and v_feature_idx overlap: {sorted(overlap)}")
+    return u_idx, v_idx
+
+
+def _default_group_head_indices(n_tasks: int):
+    if n_tasks >= 6:
+        return [[0, 1], [2, 3, 4, 5]]
+    return [list(range(n_tasks))]
+
+
+def _build_group_shared_configs(
+    n_tasks: int,
+    group_head_indices: Optional[Sequence[Sequence[int]]],
+    group_shared_sizes: Optional[Sequence[Sequence[int]]],
+):
+    head_groups = list(group_head_indices) if group_head_indices is not None else _default_group_head_indices(n_tasks)
+    if not head_groups:
+        return []
+
+    for group in head_groups:
+        for idx in group:
+            if int(idx) < 0 or int(idx) >= n_tasks:
+                raise ValueError(f"group head index {idx} out of range [0, {n_tasks}).")
+
+    if group_shared_sizes is None:
+        size_groups = [[128, 64] for _ in head_groups]
+    else:
+        # Accept either:
+        # - list[int]: one block shape reused for all groups
+        # - list[list[int]]: per-group shapes
+        if group_shared_sizes and all(isinstance(s, (list, tuple)) for s in group_shared_sizes):
+            nested = [list(s) for s in group_shared_sizes]
+            if len(nested) == 1:
+                size_groups = nested * len(head_groups)
+            elif len(nested) == len(head_groups):
+                size_groups = nested
+            else:
+                raise ValueError("group_shared_sizes must have length 1 or match group_head_indices.")
+        else:
+            shared = list(group_shared_sizes)
+            size_groups = [shared for _ in head_groups]
+
+    return [
+        SharedGroupSpec(head_indices=[int(i) for i in indices], hidden_sizes=list(size_groups[i]))
+        for i, indices in enumerate(head_groups)
+    ]
+
+
 def create_model(
     model_type: str,
     in_dim: int,
@@ -693,7 +771,7 @@ def create_model(
     head_sizes: Optional[Sequence[int]] = None,
     dropout: float = 0.0,
     group_head_indices: Optional[Sequence[Sequence[int]]] = None,
-    group_shared_sizes: Optional[Sequence[Sequence[int]] | Sequence[int]] = None,
+    group_shared_sizes: Optional[Sequence[Sequence[int]]] = None,
     kan_grid_size: int = 8,
     kan_grid_min: float = -1.0,
     kan_grid_max: float = 1.0,
@@ -704,88 +782,62 @@ def create_model(
     v_feature_idx: Optional[Sequence[int]] = None,
     activation: str = "relu",
 ):
-    if model_type not in {"MTLGSH", "MTLGSH_ATT", "MTLGSH_KAN_SHARED", "MTLGSH_KAN"}:
-        if model_type == "MLP":
-            model = MLP(
-                in_dim,
-                out_dim,
-                hidden_sizes=hidden_sizes,
-                dropout=dropout,
-            )
-        elif model_type == "MTLSH":
-            model = MTLSharedHeads(
-                in_dim=in_dim,
-                n_tasks=out_dim,
-                shared_sizes=shared_sizes,
-                head_sizes=head_sizes,
-                dropout=dropout,
-            )
-        elif model_type == "FICNN":
-            model = FICNN(
+    if model_type not in MODEL_FACTORY:
+        raise ValueError(f"Unknown model_type='{model_type}'. Available: {list_models()}")
+
+    grouped_types = {"MTLGSH", "MTLGSH_ATT", "MTLGSH_KAN_SHARED", "MTLGSH_KAN"}
+
+    if model_type == "MLP":
+        model = MLP(in_dim, out_dim, hidden_sizes=hidden_sizes, dropout=dropout)
+    elif model_type == "MTLSH":
+        model = MTLSharedHeads(
+            in_dim=in_dim,
+            n_tasks=out_dim,
+            shared_sizes=shared_sizes,
+            head_sizes=head_sizes,
+            dropout=dropout,
+        )
+    elif model_type == "FICNN":
+        model = FICNN(
+            in_dim=in_dim,
+            out_dim=out_dim,
+            hidden_sizes=hidden_sizes or [256, 128, 64],
+            activation=activation,
+        )
+    elif model_type in {"PICNN", "PICNN_MTLSH"}:
+        u_idx, v_idx = _normalize_picnn_feature_split(in_dim, u_feature_idx, v_feature_idx)
+        if model_type == "PICNN":
+            model = TabularPICNN(
                 in_dim=in_dim,
                 out_dim=out_dim,
-                hidden_sizes=hidden_sizes or [256, 128, 64],
+                u_idx=u_idx,
+                v_idx=v_idx,
+                hidden_sizes=hidden_sizes,
                 activation=activation,
             )
-        elif model_type in {"PICNN", "PICNN_MTLSH"}:
-            if u_feature_idx is None:
-                raise ValueError(f"{model_type} requires `u_feature_idx`.")
-            u_idx = [int(i) for i in u_feature_idx]
-            if v_feature_idx is None:
-                v_idx = [i for i in range(in_dim) if i not in set(u_idx)]
-            else:
-                v_idx = [int(i) for i in v_feature_idx]
-
-            if model_type == "PICNN":
-                model = TabularPICNN(
-                    in_dim=in_dim,
-                    out_dim=out_dim,
-                    u_idx=u_idx,
-                    v_idx=v_idx,
-                    hidden_sizes=hidden_sizes,
-                    activation=activation,
-                )
-            else:
-                model = TabularPICNNMTLSH(
-                    in_dim=in_dim,
-                    out_dim=out_dim,
-                    u_idx=u_idx,
-                    v_idx=v_idx,
-                    trunk_sizes=shared_sizes,
-                    head_sizes=head_sizes,
-                    activation=activation,
-                )
         else:
-            model = MODEL_FACTORY[model_type](in_dim, out_dim)
-    else:
-        if group_head_indices is None:
-            group_head_indices = [
-                [0, 1, 2, 3],
-                [4, 5, 6, 7],
-            ]
-        if group_shared_sizes is None:
-            group_shared_sizes = [128, 64]
-        if group_shared_sizes and all(isinstance(s, (list, tuple)) for s in group_shared_sizes):
-            if len(group_shared_sizes) == 1:
-                group_sizes = list(group_shared_sizes) * len(group_head_indices)
-            elif len(group_shared_sizes) != len(group_head_indices):
-                raise ValueError("group_shared_sizes must be 1 group or match group_head_indices.")
-            else:
-                group_sizes = list(group_shared_sizes)
-        else:
-            group_sizes = [list(group_shared_sizes)] * len(group_head_indices)
-
-        group_shared_configs = [
-            SharedGroupSpec(head_indices=indices, hidden_sizes=list(group_sizes[i]))
-            for i, indices in enumerate(group_head_indices)
-        ]
-        group_head_sizes = head_sizes if head_sizes is not None else [64, 32]
-        group_shared_sizes = shared_sizes if shared_sizes is not None else [256, 128]
+            model = TabularPICNNMTLSH(
+                in_dim=in_dim,
+                out_dim=out_dim,
+                u_idx=u_idx,
+                v_idx=v_idx,
+                trunk_sizes=shared_sizes,
+                head_sizes=head_sizes,
+                activation=activation,
+            )
+    elif model_type in grouped_types:
+        group_shared_configs = _build_group_shared_configs(
+            n_tasks=out_dim,
+            group_head_indices=group_head_indices,
+            group_shared_sizes=group_shared_sizes,
+        )
+        group_head_sizes = list(head_sizes) if head_sizes is not None else [64, 32]
+        trunk_sizes = list(shared_sizes) if shared_sizes is not None else [256, 128]
         if model_type == "MTLGSH":
             model = MTLGroupedSharedHeads(
                 in_dim=in_dim,
                 n_tasks=out_dim,
-                shared_sizes=group_shared_sizes,
+                shared_sizes=trunk_sizes,
                 head_sizes=group_head_sizes,
                 dropout=dropout,
                 group_shared_configs=group_shared_configs,
@@ -794,7 +846,7 @@ def create_model(
             model = MTLGroupedSharedHeadsAttn(
                 in_dim=in_dim,
                 n_tasks=out_dim,
-                shared_sizes=group_shared_sizes,
+                shared_sizes=trunk_sizes,
                 head_sizes=group_head_sizes,
                 dropout=dropout,
                 group_shared_configs=group_shared_configs,
@@ -806,7 +858,7 @@ def create_model(
             model = MODEL_FACTORY[model_type](
                 in_dim=in_dim,
                 n_tasks=out_dim,
-                shared_sizes=group_shared_sizes,
+                shared_sizes=trunk_sizes,
                 head_sizes=group_head_sizes,
                 dropout=dropout,
                 group_shared_configs=group_shared_configs,
@@ -814,8 +866,10 @@ def create_model(
                 kan_grid_min=kan_grid_min,
                 kan_grid_max=kan_grid_max,
             )
+    else:
+        # Keep compatibility for any simple 2-arg models in registry.
+        model = MODEL_FACTORY[model_type](in_dim, out_dim)
 
-    if device is None:
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    device = _resolve_device(device)
     model.to(device)
     return model, device
