@@ -1,8 +1,8 @@
 case: "data_generation/andes_cases/ieee39_full_ibrs.xlsx"
-output_dir: "results/to_export"
+output_dir: "__results/to_export"
 output_csv: "simulation_results.csv"
 seed: 42
-n_sims: 10
+n_sims: 1
 workers: 1
 stream_level: 50
 
@@ -25,7 +25,7 @@ contingency:
   line_n1:
     enable: true
     trip_time: 1.0
-    line_ids: []          # optional: list of line idx/name; empty means all in-service lines
+    line_ids: ["Line_44"]          # optional: list of line idx/name; empty means all in-service lines
     max_lines: 1          # optional cap per sim_id; 0 means no cap
 
 ibr:
@@ -61,6 +61,7 @@ ed:
     c: {low: 0.01, high: 0.1}
   solver: "OSQP"
   verbose: true
+  line_limits_enable: true
 
 tds:
   t_end: 20.0

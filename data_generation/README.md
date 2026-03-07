@@ -1,27 +1,138 @@
-# Data Generation (ANDES TDS → Supervised Dataset)
+# Data Generation (ANDES TDS -> Supervised Dataset)
 
-This part of the repo is used to generate supervised datasets for **Virtual Inertia Scheduling (VIS)** in **IBR-dominated power systems**. It runs **ANDES time-domain simulations (TDS)** on a benchmark grid (IEEE39), applies disturbances (load steps, trips), varies IBR virtual inertia/damping setpoints (M, D), and extracts labels such as **COI frequency nadir**, **RoCoF**, and **IBR power peaks**.
+This module runs ANDES simulations and writes a flat dataset for VIS model training/evaluation.
 
-The output is a **flat CSV dataset** that can be used directly for training surrogate models and for end-to-end scheduling evaluation.
+Code entrypoint: `data_generation/run_sims.py`  
+Config file: `data_generation/generation.yaml`
 
-Parallel runs are supported via multiprocessing. Set `workers` in `data_generation/generation.yaml` to the number of processes; each worker writes a CSV shard that is merged into the final `output_csv`.
+## YAML configuration
 
-### Load-step selection (owners or explicit PQ list)
-- `load.pq_names`: optional list of PQ device names to receive the load step (defaults to all PQs in the case).
-- `load.owners`: optional list of owner labels; if provided, only PQs whose `ss.PQ.owner` matches one of these labels will receive the step.  
-  Base scaling still applies to **all** PQs/PVs; the owner filter only affects the step disturbance.
+Top-level keys:
 
-### Stratified sampling knobs
-- `load_step_scale`: supports `bins` with `low/high/prob/label` to bias small/medium/large disturbances (falls back to uniform if omitted).
-- `ibr.M_range` / `ibr.D_range`: support `bins` and `log_uniform` flags to emphasize low-inertia regimes.
+- `case`: direct path to the ANDES case file (no resolver/fallback is used).
+- `output_dir`: folder for dataset artifacts.
+- `output_csv`: final merged CSV filename.
+- `seed`: global random seed.
+- `n_sims`: number of sampled scenarios.
+- `workers`: number of multiprocessing workers.
+- `stream_level`: ANDES logger level.
 
-### Economic pre-dispatch (optional)
-- `ed.enable`: if true, sample two shared cost triples (GENROU vs REGCV1), solve ED, and set generator setpoints before PFlow/TDS.
-- `ed.genrou_costs` / `ed.regcv1_costs`: each has `a/b/c` ranges (same for all units in that class).
-- `ed.ibr_idx`: indices (PV+Slack order) treated as IBRs for costing; others use the GENROU triple.
-- Results (sampled costs, dispatch setpoints) are logged in the output CSV.
+Sampling/disturbance:
 
-### Feature/label outputs (updated)
-- Features now drop all ΔQ terms; keep ΔP per PQ and add ΔP aggregated per owner.
-- Dispatch features: `P_GENROU_i` (and `P_REGCV1_i` when available) record pre-disturbance setpoints.
-- Frequency labels are signed: `dev_COI` (largest signed deviation from f0) and `rocof_COI` (RoCoF with largest magnitude, signed), plus `Delta_P_IBR_i` peaks.
+- `base_load_scale.low/high`: uniform scale applied to all PQ/PV base loads.
+- `contingency.load_step.enable`: enable load step disturbance.
+- `contingency.load_step.time`: step application time.
+- `contingency.load_step.scale`: scalar or range/bins for step multiplier.
+- `contingency.line_n1.enable`: enable line outage contingencies.
+- `contingency.line_n1.trip_time`: line trip time.
+- `contingency.line_n1.line_ids`: optional subset (line idx/name/uid).
+- `contingency.line_n1.max_lines`: cap on sampled lines per sim.
+
+IBR parameters:
+
+- `ibr.n_ibr` / `ibr.indices`: how many REGCV1 devices are sampled.
+- `ibr.M_range`, `ibr.D_range`: sampled inertia/damping ranges (supports bins).
+
+Load targeting:
+
+- `load.pq_names`: optional list of PQ names for load-step targeting.
+- `load.owners`: optional owner filter for load-step targeting.
+
+Economic dispatch:
+
+- `ed.enable`: run pre-disturbance ED.
+- `ed.ibr_idx`: generator indices (PV+Slack order) treated as IBR cost class.
+- `ed.genrou_costs.{a,b,c}`: sampled cost ranges for non-IBR class.
+- `ed.regcv1_costs.{a,b,c}`: sampled cost ranges for IBR class.
+- `ed.solver`: CVXPY solver name.
+- `ed.verbose`: solver verbosity.
+- `ed.line_limits_enable` (default true): enforce PTDF line constraints in ED.
+
+TDS:
+
+- `tds.t_end`, `tds.t_step`, `tds.method`, `tds.max_iter`, `tds.tol`, `tds.honest`, `tds.fixt`, `tds.shrinkt`, `tds.criteria`, `tds.no_tqdm`.
+
+Plot export:
+
+- `plotter.export`: if true, export one-row plotter snapshot per run.
+- `plotter.subdir`: subfolder under `output_dir`.
+
+## What is saved in CSV
+
+Column schema is built in `run_sims._build_fieldnames(...)`.
+
+Core metadata:
+
+- `sim_id`, `seed`, `success`
+- `cont_type` in `{none, load, line, line_plus_load}`
+- `contingency_time`
+- `line_uid`, `line_name`, `line_from_bus`, `line_to_bus`
+
+Base line metrics:
+
+- `line_rating` (p.u.; raw limit divided by system base MVA)
+- `pre_fault_flow` (p.u.)
+- `pre_fault_loading` (%)
+
+Feature inputs:
+
+- `base_load_scale`, `load_step_scale`, `load_step_time`
+- `base_load_p_total`, `base_load_q_total`
+- `DELTA_PQ_tot`
+- `M_agg`, `D_agg`
+- `M_i`, `D_i` for sampled IBRs
+- `DELTA_P_<pq_name>` for each selected PQ
+- `DELTA_P_OWNER_<owner>` for each owner bucket
+- `P_GENROU_i`, `P_REGCV1_i` (dispatch/setpoints)
+
+Frequency/response labels:
+
+- `time_max_dev`
+- `rocof_COI` (signed largest-magnitude ROCOF)
+- `dev_COI` (signed largest-magnitude frequency deviation)
+- `Delta_P_IBR_i` (peak signed REGCV1 active-power delta)
+
+Extended line/topology/DC metrics (`line_utils.line_extra_fieldnames(...)`):
+
+- Line params: `line_fn`, `line_Vn1`, `line_Vn2`, `line_r`, `line_x`, `line_b`, `line_g`, `line_b1`, `line_g1`, `line_b2`, `line_g2`, `line_trans`, `line_tap`, `line_phi`
+- Ratio: `line_x_over_r` (invalid -> `-1`)
+- Prefault directional flows: `pre_p_from`, `pre_p_to` (p.u.)
+- Directional loadings: `pre_loading_from`, `pre_loading_to` (%)
+- `pre_flow_direction_p` (`sign(pre_p_from)`)
+- Bus states: `pre_v_from`, `pre_v_to`, `pre_theta_from`, `pre_theta_to`, `pre_delta_theta`
+- Graph criticality: `bus_degree_from`, `bus_degree_to`, `is_bridge`, `n_components_after_trip`, `largest_component_fraction_after_trip`
+- System stress: `total_load_p_prefault`, `total_gen_p_prefault`, `reserve_proxy_prefault`, `system_max_loading_prefault`, `system_mean_loading_prefault`, `system_top5_loading_mean_prefault`
+- DC sensitivity: `ptdf_l1_norm_outaged_line`, `max_abs_lodf_row`, `predicted_max_post_cont_loading_dc` (%, invalid -> `-1`)
+- One-hot outage identity: `line_oh_uid_<uid>` in `{0,1}`
+
+Sampling/ED diagnostics:
+
+- `step_bin_label`, `M_bin_label`, `D_bin_label`
+- `ed_cost_genrou_a`, `ed_cost_genrou_b`, `ed_cost_genrou_c`
+- `ed_cost_ibr_a`, `ed_cost_ibr_b`, `ed_cost_ibr_c`
+- Optional: `plotter_csv`
+
+## How key quantities are computed
+
+- `pre_fault` line metrics are extracted after `PFlow.run()` and before `TDS.run()`.
+- `line_rating` source order: `Line.rate_a/rateA/RATE_A`, fallback to `Line.Sn`, then pandapower branch `RATE_A`.
+- p.u. conversion: `rating_pu = rating_raw / system_base_mva`.
+- Loading conversion (all exported loading fields): `abs(flow_pu / rating_pu) * 100`.
+- `line_x_over_r`: `line_x / line_r`; non-finite mapped to `-1`.
+- `predicted_max_post_cont_loading_dc`:
+  - Builds DC PTDF/LODF on intact topology.
+  - Projects post-contingency flows with outage column.
+  - Returns max projected loading in `%`.
+  - If unavailable/non-finite, fallback path is used; final non-finite is forced to `-1`.
+
+## ED line limits behavior
+
+When `ed.line_limits_enable=true`:
+
+- PTDF is built from the pandapower-converted pypower case.
+- Branch limit comes from `RATE_A`.
+- Placeholder/unlimited values are rejected (`<=0`, `NaN`, or `>=1e4`).
+- Invalid entries are backfilled from ANDES `Line.rate_a`, then `Line.Sn` when branch/line alignment is available.
+- If any branch still has invalid limits, ED fails fast with an explicit error.
+
+This avoids silently accepting fake limits such as `99999`.

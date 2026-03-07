@@ -2,41 +2,17 @@ import argparse
 import csv
 import multiprocessing as mp
 import os
-import re
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 import numpy as np
 import yaml
 import andes
-import cvxpy as cp
 
 import sys as _sys
 
 _sys.path.insert(0, str(Path(__file__).resolve().parent))
-from extract_metrics import export_plotter_all, extract_simulation_row
-from line_metrics import line_extra_fieldnames
-
-
-def _resolve_case_path(case: str) -> str:
-    if os.path.exists(case):
-        return case
-    case_path = andes.get_case(case)
-    if os.path.exists(case_path):
-        return case_path
-    raise FileNotFoundError(f"Case not found: {case}")
-
-
-def _as_list(value) -> List:
-    if value is None:
-        return []
-    if isinstance(value, list):
-        return value
-    return [value]
-
-
-def _sanitize_label(value: str) -> str:
-    safe = re.sub(r"[^A-Za-z0-9_]+", "_", str(value)).strip("_")
-    return safe or "owner"
+from extract_metrics import export_plotter_all, extract_line_metrics, extract_simulation_row
+from line_utils import line_extra_fieldnames
 
 
 def _sample_from_bins(bins: Sequence[Dict], rng: np.random.Generator) -> Tuple[float, str]:
@@ -80,11 +56,11 @@ def _select_step_targets(ss, load_cfg: Dict) -> List[str]:
       list (ownership is read from ss.PQ.owner).
     """
 
-    pq_names_cfg = _as_list(load_cfg.get("pq_names"))
+    pq_names_cfg = list(load_cfg.get("pq_names") or [])
     if not pq_names_cfg:
         pq_names_cfg = list(ss.PQ.name.v) if getattr(ss, "PQ", None) and ss.PQ.n else []
 
-    owner_filter = {str(o) for o in _as_list(load_cfg.get("owners"))}
+    owner_filter = {str(o) for o in list(load_cfg.get("owners") or [])}
     if owner_filter and getattr(ss.PQ, "n", 0):
         name_to_owner = {str(name): str(owner) for name, owner in zip(ss.PQ.name.v, ss.PQ.owner.v)}
         pq_names_cfg = [name for name in pq_names_cfg if name_to_owner.get(str(name)) in owner_filter]
@@ -105,9 +81,7 @@ def _build_fieldnames(
         "seed",
         "success",
         "cont_type",
-        "contingency_id",
         "contingency_time",
-        "load_step_enabled",
         "line_uid",
         "line_name",
         "line_from_bus",
@@ -171,6 +145,20 @@ def load_config(path: str) -> Dict:
         return yaml.safe_load(f)
 
 
+def _assert_line_metrics_dc_ready(cfg: Dict) -> None:
+    cont_cfg = cfg.get("contingency", {}) or {}
+    line_n1_cfg = cont_cfg.get("line_n1", {}) or {}
+    if not bool(line_n1_cfg.get("enable", False)):
+        return
+    try:
+        import pandapower  # noqa: F401
+    except Exception as e:
+        raise RuntimeError(
+            "contingency.line_n1.enable=true requires pandapower in the active Python environment. "
+            "Run with the project venv (../venv/bin/python ...) or install pandapower."
+        ) from e
+
+
 def _rng_for_sim(seed: int, sim_id: int) -> np.random.Generator:
     sim_seed = np.random.SeedSequence([seed, sim_id])
     return np.random.default_rng(sim_seed)
@@ -196,6 +184,119 @@ def _sample_cost_triple(cfg: Dict, rng: np.random.Generator, default: Tuple[floa
     return a, b, c
 
 
+def _build_ed_line_constraints(ss, Pg_var):
+    """Build PTDF-based line flow limits for ED in p.u. space."""
+    try:
+        from andes.interop import pandapower as ap
+        from pandapower import auxiliary as aux
+        from pandapower.pd2ppc import _pd2ppc
+        from pandapower.pypower.makePTDF import makePTDF
+        from pandapower.pypower.idx_brch import RATE_A
+    except Exception as exc:
+        raise RuntimeError(
+            "ED with line limits requires pandapower (andes.interop + pypower PTDF)."
+        ) from exc
+
+    pp_net = ap.to_pandapower(ss, verify=False)
+    if not hasattr(pp_net, "_options") or not isinstance(pp_net._options, dict):
+        pp_net._options = {}
+    if "mode" not in pp_net._options:
+        aux._add_ppc_options(
+            pp_net,
+            calculate_voltage_angles=True,
+            trafo_model="pi",
+            check_connectivity=False,
+            mode="opf",
+            switch_rx_ratio=2,
+            enforce_q_lims=False,
+            recycle=None,
+        )
+    _, ppci = _pd2ppc(pp_net)
+    branch = np.asarray(ppci["branch"], dtype=float)
+    ptdf = np.asarray(makePTDF(ppci["baseMVA"], ppci["bus"], branch, using_sparse_solver=False), dtype=float)
+    base_mva = float(ppci.get("baseMVA", np.nan))
+    if not np.isfinite(base_mva) or base_mva <= 0:
+        raise RuntimeError("Could not read valid baseMVA from pandapower case for ED line limits.")
+
+    # RATE_A (branch column index from pypower idx_brch)
+    fmax_raw = np.asarray(branch[:, RATE_A], dtype=float)
+
+    # 99999/1e10-style RATE_A placeholders mean "unlimited" and should not be
+    # accepted silently for constrained ED.
+    sentinel_threshold = float(1.0e4)
+    valid_direct = np.isfinite(fmax_raw) & (fmax_raw > 0) & (fmax_raw < sentinel_threshold)
+
+    if not np.all(valid_direct):
+        # Fallback from ANDES line ratings when branch/line row alignment exists.
+        n_line = int(getattr(getattr(ss, "Line", None), "n", 0))
+        rate_a_vals = list(getattr(getattr(getattr(ss, "Line", None), "rate_a", None), "v", []))
+        sn_vals = list(getattr(getattr(getattr(ss, "Line", None), "Sn", None), "v", []))
+
+        if branch.shape[0] == n_line and n_line > 0:
+            for i in np.where(~valid_direct)[0]:
+                ra = np.nan
+                if i < len(rate_a_vals):
+                    try:
+                        ra = float(rate_a_vals[i])
+                    except Exception:
+                        ra = np.nan
+                if not (np.isfinite(ra) and ra > 0 and ra < sentinel_threshold):
+                    if i < len(sn_vals):
+                        try:
+                            ra = float(sn_vals[i])
+                        except Exception:
+                            ra = np.nan
+                if np.isfinite(ra) and ra > 0 and ra < sentinel_threshold:
+                    fmax_raw[i] = ra
+
+        valid_direct = np.isfinite(fmax_raw) & (fmax_raw > 0) & (fmax_raw < sentinel_threshold)
+        if not np.all(valid_direct):
+            bad = np.where(~valid_direct)[0]
+            preview = ", ".join(str(int(i)) for i in bad[:10])
+            raise RuntimeError(
+                "Invalid/unset branch limits for ED line constraints "
+                f"(RATE_A <=0, NaN, or >= {sentinel_threshold:g}) on {bad.size} branches. "
+                f"Example indices: [{preview}]"
+            )
+
+    fmax_pu = fmax_raw / base_mva
+    valid = np.isfinite(fmax_pu) & (fmax_pu > 0)
+    if not np.any(valid):
+        raise RuntimeError("No valid branch limits remain after RATE_A sanitization for ED line constraints.")
+    ptdf = ptdf[valid, :]
+    fmax_pu = fmax_pu[valid]
+
+    bus_ids = pp_net.bus.index.to_numpy(dtype=int)
+    bus_pos = {int(bus): i for i, bus in enumerate(bus_ids)}
+    bus_df = ss.Bus.as_df()[["idx"]]
+    bus_num_to_uid = {int(row.idx): int(uid) for uid, row in bus_df.iterrows()}
+
+    gen_buses = np.asarray(ss.PV.bus.v + ss.Slack.bus.v, dtype=int)
+    load_buses = np.asarray(ss.PQ.bus.v, dtype=int)
+    pd_vec = np.asarray(ss.PQ.p0.v, dtype=float)
+
+    n_bus = int(bus_ids.size)
+    ng = int(gen_buses.size)
+    nd = int(load_buses.size)
+    Cg = np.zeros((n_bus, ng), dtype=float)
+    Cd = np.zeros((n_bus, nd), dtype=float)
+
+    for j, bus_num in enumerate(gen_buses):
+        uid = bus_num_to_uid.get(int(bus_num))
+        if uid is None or uid not in bus_pos:
+            raise RuntimeError(f"Could not map generator bus {int(bus_num)} to pandapower bus index.")
+        Cg[bus_pos[uid], j] += 1.0
+    for j, bus_num in enumerate(load_buses):
+        uid = bus_num_to_uid.get(int(bus_num))
+        if uid is None or uid not in bus_pos:
+            raise RuntimeError(f"Could not map load bus {int(bus_num)} to pandapower bus index.")
+        Cd[bus_pos[uid], j] += 1.0
+
+    injections = Cg @ Pg_var - Cd @ pd_vec
+    flows = ptdf @ injections
+    return [flows <= fmax_pu, flows >= -fmax_pu]
+
+
 def _run_ed_dispatch(
     ss,
     ed_cfg: Dict,
@@ -204,6 +305,7 @@ def _run_ed_dispatch(
     sampled_costs: Optional[Dict[str, Tuple[float, float, float]]] = None,
 ) -> Tuple[np.ndarray, Dict[str, float]]:
     """Solve economic dispatch with two shared cost triples (GENROU-like vs REGCV1-like)."""
+    import cvxpy as cp  # lazy import so runs without ED dependency when disabled
     ng = ss.PV.n + ss.Slack.n
     if ng == 0:
         return np.zeros(0), {}
@@ -230,6 +332,8 @@ def _run_ed_dispatch(
 
     Pg = cp.Variable(ng)
     constraints = [cp.sum(Pg) == Pd, Pg >= Pg_min, Pg <= Pg_max]
+    if bool(ed_cfg.get("line_limits_enable", True)):
+        constraints += _build_ed_line_constraints(ss, Pg)
     objective = cp.Minimize(cp.sum(a + cp.multiply(b, Pg) + cp.multiply(c, cp.square(Pg))))
     prob = cp.Problem(objective, constraints)
     prob.solve(solver=ed_cfg.get("solver", "OSQP"), verbose=bool(ed_cfg.get("verbose", False)))
@@ -257,15 +361,6 @@ def _run_ed_dispatch(
     }
 
 
-def _to_float_or_nan(value) -> float:
-    try:
-        if value is None:
-            return float("nan")
-        return float(value)
-    except Exception:
-        return float("nan")
-
-
 def _line_rating_from_ss(ss, uid: int) -> float:
     for attr in ("rate_a", "rateA", "RATE_A"):
         obj = getattr(ss.Line, attr, None)
@@ -274,7 +369,10 @@ def _line_rating_from_ss(ss, uid: int) -> float:
         vals = getattr(obj, "v", None)
         if vals is None or uid >= len(vals):
             continue
-        return _to_float_or_nan(vals[uid])
+        try:
+            return float(vals[uid])
+        except Exception:
+            return float("nan")
     return float("nan")
 
 
@@ -290,16 +388,22 @@ def _extract_line_records(ss) -> List[Dict[str, float | int | str]]:
     for uid in range(n_line):
         idx_val = idx_vals[uid] if uid < len(idx_vals) else uid + 1
         name_val = name_vals[uid] if uid < len(name_vals) else f"Line_{idx_val}"
-        bus1 = bus1_vals[uid] if uid < len(bus1_vals) else np.nan
-        bus2 = bus2_vals[uid] if uid < len(bus2_vals) else np.nan
+        try:
+            bus1 = float(bus1_vals[uid]) if uid < len(bus1_vals) else np.nan
+        except Exception:
+            bus1 = np.nan
+        try:
+            bus2 = float(bus2_vals[uid]) if uid < len(bus2_vals) else np.nan
+        except Exception:
+            bus2 = np.nan
         in_service = bool(u_vals[uid]) if uid < len(u_vals) else True
         records.append(
             {
                 "uid": uid,
                 "idx": idx_val,
                 "name": str(name_val),
-                "bus1": _to_float_or_nan(bus1),
-                "bus2": _to_float_or_nan(bus2),
+                "bus1": bus1,
+                "bus2": bus2,
                 "rating": _line_rating_from_ss(ss, uid),
                 "in_service": in_service,
             }
@@ -313,7 +417,7 @@ def _pick_line_contingencies(ss, cont_cfg: Dict, rng: np.random.Generator) -> Li
         return []
 
     active = [r for r in line_records if bool(r.get("in_service", True))]
-    line_ids_cfg = _as_list(cont_cfg.get("line_ids"))
+    line_ids_cfg = list(cont_cfg.get("line_ids") or [])
     if line_ids_cfg:
         wanted = {str(v) for v in line_ids_cfg}
         selected = [
@@ -389,7 +493,7 @@ def _log_row_nan_health(row: Dict, *, sim_id: int) -> None:
     ]
     nan_cols = [c for c in key_cols if c in row and (row[c] is None or not np.isfinite(float(row[c])))]
     if nan_cols:
-        cont = row.get("contingency_id", "unknown")
+        cont = row.get("line_uid", "unknown")
         print(f"[nan-health] sim_id={sim_id} cont={cont} NaN in: {', '.join(nan_cols)}")
 
 
@@ -469,8 +573,13 @@ def run_single_sim(
     sampled_ed_costs = _sample_ed_costs(ed_cfg, rng) if ed_cfg.get("enable", False) else None
 
     # Use a dry system load to determine which line contingencies to run.
+    andes_opts = {}
+    pycode_env = os.environ.get("ANDES_PYCODE_PATH")
+    if pycode_env:
+        andes_opts["options"] = {"pycode_path": pycode_env}
+
     if line_n1_enabled:
-        ss_pick = andes.load(case_path, setup=False)
+        ss_pick = andes.load(case_path, setup=False, **andes_opts)
         line_records = _pick_line_contingencies(ss_pick, line_n1_cfg, rng)
         if not line_records:
             raise ValueError(
@@ -485,7 +594,7 @@ def run_single_sim(
 
     rows: List[Dict] = []
     for cont in contingencies:
-        ss = andes.load(case_path, setup=False)
+        ss = andes.load(case_path, setup=False, **andes_opts)
         ss.config.freq = float(50)
 
         # Apply base load scale
@@ -502,7 +611,7 @@ def run_single_sim(
         ed_meta = {}
         pg_dispatch = np.array([], dtype=float)
         if ed_cfg.get("enable", False):
-            ibr_idx = _as_list(ed_cfg.get("ibr_idx")) or []
+            ibr_idx = list(ed_cfg.get("ibr_idx") or [])
             pg_dispatch, ed_meta = _run_ed_dispatch(
                 ss,
                 ed_cfg,
@@ -520,7 +629,7 @@ def run_single_sim(
 
         pq_p_before, pq_q_before = ss.PQ.p0.v, ss.PQ.q0.v
         base_load_q_total = float(np.sum(pq_q_before)) if len(pq_q_before) else 0.0
-        pq_owner_list = [owner_map.get(str(o), _sanitize_label(o)) for o in ss.PQ.owner.v]
+        pq_owner_list = [owner_map.get(str(o), str(o)) for o in ss.PQ.owner.v]
 
         if load_step_enabled:
             step_targets = _select_step_targets(ss, cfg.get("load", {}))
@@ -541,6 +650,7 @@ def run_single_sim(
 
         ss.setup()
         ss.PFlow.run()
+        line_metrics_snapshot = extract_line_metrics(ss=ss, contingency=cont, line_uids=line_uids)
 
         ss.TDS.config.no_tqdm = bool(cfg["tds"].get("no_tqdm", True))
         ss.TDS.config.criteria = int(cfg["tds"].get("criteria", 0))
@@ -571,7 +681,7 @@ def run_single_sim(
             except Exception:
                 regcv1_pg = np.zeros(ss.REGCV1.n, dtype=float)
         if pg_dispatch.size:
-            ibr_idx = _as_list(ed_cfg.get("ibr_idx")) or list(range(ss.REGCV1.n))
+            ibr_idx = list(ed_cfg.get("ibr_idx") or []) or list(range(ss.REGCV1.n))
             for local_idx, gen_idx in enumerate(ibr_idx):
                 if 0 <= gen_idx < pg_dispatch.size and local_idx < regcv1_pg.size:
                     regcv1_pg[local_idx] = pg_dispatch[gen_idx]
@@ -604,6 +714,7 @@ def run_single_sim(
             load_step_enabled=load_step_enabled,
             trip_time=trip_time,
             line_uids=line_uids,
+            line_metrics_snapshot=line_metrics_snapshot,
             plotter_csv=plotter_csv,
         )
 
@@ -627,9 +738,10 @@ def main() -> None:
 
     print("Loading config from ", args.config)
     cfg = load_config(args.config)
+    _assert_line_metrics_dc_ready(cfg)
     andes.config_logger(stream_level=int(cfg.get("stream_level", 30)))
 
-    case_path = _resolve_case_path(cfg["case"])
+    case_path = str(cfg["case"])
 
     output_dir = Path(cfg["output_dir"])
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -642,12 +754,18 @@ def main() -> None:
         plotter_dir = output_dir / plotter_cfg.get("subdir", "plotter")
         plotter_dir.mkdir(parents=True, exist_ok=True)
 
-    base_ss = andes.load(case_path, setup=False)
+    # Allow overriding ANDES pycode/autogen path to avoid permission issues on shared installs.
+    andes_opts = {}
+    pycode_env = os.environ.get("ANDES_PYCODE_PATH")
+    if pycode_env:
+        andes_opts["options"] = {"pycode_path": pycode_env}
+
+    base_ss = andes.load(case_path, setup=False, **andes_opts)
     pq_names = list(base_ss.PQ.name.v) if base_ss.PQ.n else []
     if cfg["load"].get("pq_names"):
         pq_names = [name for name in pq_names if name in cfg["load"]["pq_names"]]
 
-    owner_map = {str(o): _sanitize_label(o) for o in set(base_ss.PQ.owner.v)} if getattr(base_ss, "PQ", None) else {}
+    owner_map = {str(o): str(o) for o in set(base_ss.PQ.owner.v)} if getattr(base_ss, "PQ", None) else {}
     owner_labels = sorted(owner_map.values())
 
     regcv1_ids = cfg["ibr"].get("indices") or []

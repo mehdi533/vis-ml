@@ -15,6 +15,11 @@ def _to_float_or_nan(value) -> float:
         return float("nan")
 
 
+def _finite_or_neg_one(value) -> float:
+    out = _to_float_or_nan(value)
+    return out if np.isfinite(out) else -1.0
+
+
 def _warn_once(msg: str) -> None:
     if msg in _WARNED_MESSAGES:
         return
@@ -27,10 +32,17 @@ def _valid_rating(value) -> float:
     return val if np.isfinite(val) and val > 0 else np.nan
 
 
+def _rating_to_pu(rating_raw: float, base_mva: float) -> float:
+    r = _valid_rating(rating_raw)
+    if not np.isfinite(r):
+        return np.nan
+    if np.isfinite(base_mva) and base_mva > 0:
+        return float(r / base_mva)
+    return r
+
+
 def line_extra_fieldnames(line_uids: Sequence[int]) -> List[str]:
     fields = [
-        "line_u",
-        "line_Sn",
         "line_fn",
         "line_Vn1",
         "line_Vn2",
@@ -213,8 +225,6 @@ def _line_parameters(record: Dict[str, float | int | str]) -> Dict[str, float]:
     x = _to_float_or_nan(record.get("x"))
     x_over_r = x / r if np.isfinite(r) and np.isfinite(x) and abs(r) > 0 else np.nan
     return {
-        "line_u": _to_float_or_nan(record.get("u")),
-        "line_Sn": _to_float_or_nan(record.get("Sn")),
         "line_fn": _to_float_or_nan(record.get("fn")),
         "line_Vn1": _to_float_or_nan(record.get("Vn1")),
         "line_Vn2": _to_float_or_nan(record.get("Vn2")),
@@ -229,12 +239,12 @@ def _line_parameters(record: Dict[str, float | int | str]) -> Dict[str, float]:
         "line_trans": _to_float_or_nan(record.get("trans")),
         "line_tap": _to_float_or_nan(record.get("tap")),
         "line_phi": _to_float_or_nan(record.get("phi")),
-        "line_x_over_r": _to_float_or_nan(x_over_r),
+        "line_x_over_r": _finite_or_neg_one(x_over_r),
     }
 
 
-def _identity_one_hot(line_uids: Sequence[int], cont_uid: Optional[int]) -> Dict[str, float]:
-    return {f"line_oh_uid_{int(uid)}": 1.0 if (cont_uid is not None and int(uid) == int(cont_uid)) else 0.0 for uid in line_uids}
+def _identity_one_hot(line_uids: Sequence[int], cont_uid: Optional[int]) -> Dict[str, int]:
+    return {f"line_oh_uid_{int(uid)}": 1 if (cont_uid is not None and int(uid) == int(cont_uid)) else 0 for uid in line_uids}
 
 
 def _graph(records: Sequence[Dict[str, float | int | str]], skip_uid: Optional[int] = None) -> Tuple[Dict[int, set], set]:
@@ -280,12 +290,12 @@ def _components(adj: Dict[int, set], nodes: set) -> List[set]:
 
 def _topology_criticality(records: Sequence[Dict[str, float | int | str]], cont_uid: Optional[int], bus1: float, bus2: float) -> Dict[str, float]:
     adj_base, nodes_base = _graph(records, skip_uid=None)
-    deg_from = len(adj_base.get(int(bus1), set())) if np.isfinite(bus1) else np.nan
-    deg_to = len(adj_base.get(int(bus2), set())) if np.isfinite(bus2) else np.nan
+    deg_from = int(len(adj_base.get(int(bus1), set()))) if np.isfinite(bus1) else np.nan
+    deg_to = int(len(adj_base.get(int(bus2), set()))) if np.isfinite(bus2) else np.nan
     if cont_uid is None:
         return {
-            "bus_degree_from": _to_float_or_nan(deg_from),
-            "bus_degree_to": _to_float_or_nan(deg_to),
+            "bus_degree_from": deg_from,
+            "bus_degree_to": deg_to,
             "is_bridge": np.nan,
             "n_components_after_trip": np.nan,
             "largest_component_fraction_after_trip": np.nan,
@@ -297,30 +307,30 @@ def _topology_criticality(records: Sequence[Dict[str, float | int | str]], cont_
     largest = max((len(c) for c in comps_after), default=0)
     frac = (largest / len(nodes_after)) if nodes_after else np.nan
     return {
-        "bus_degree_from": _to_float_or_nan(deg_from),
-        "bus_degree_to": _to_float_or_nan(deg_to),
-        "is_bridge": float(n_after > n_base),
-        "n_components_after_trip": _to_float_or_nan(n_after),
-        "largest_component_fraction_after_trip": _to_float_or_nan(frac),
+        "bus_degree_from": deg_from,
+        "bus_degree_to": deg_to,
+        "is_bridge": bool(n_after > n_base),
+        "n_components_after_trip": int(n_after),
+        "largest_component_fraction_after_trip": int(frac) if np.isfinite(frac) else np.nan,
     }
 
 
-def _system_loading_stats(ss, ratings: Optional[np.ndarray]) -> Tuple[float, float, float]:
+def _system_loading_stats(ss, ratings: Optional[np.ndarray], base_mva: float) -> Tuple[float, float, float]:
     n_line = int(getattr(ss.Line, "n", 0))
     records = _line_records(ss)
     rec_by_uid = {int(r["uid"]): r for r in records if r.get("uid") is not None}
     vals = []
     for uid in range(n_line):
         p = _line_flow_component(ss, uid, (("Pij", "v"), ("p1", "v"), ("P1", "v"), ("pf", "v"), ("a1", "e")))
-        s = abs(p) if np.isfinite(p) else np.nan
         rec = rec_by_uid.get(uid, {})
-        r = _line_rating_from_ss(ss, uid)
-        if not np.isfinite(r):
-            r = _valid_rating(rec.get("Sn"))
-        if not np.isfinite(r) and ratings is not None and uid < len(ratings):
-            r = _valid_rating(ratings[uid])
-        if np.isfinite(s) and np.isfinite(r):
-            vals.append(abs(s) / r)
+        r_raw = _line_rating_from_ss(ss, uid)
+        if not np.isfinite(r_raw):
+            r_raw = _valid_rating(rec.get("Sn"))
+        if not np.isfinite(r_raw) and ratings is not None and uid < len(ratings):
+            r_raw = _valid_rating(ratings[uid])
+        r_pu = _rating_to_pu(r_raw, base_mva)
+        if np.isfinite(p) and np.isfinite(r_pu) and r_pu > 0:
+            vals.append(abs(p) / r_pu)
     if not vals:
         return np.nan, np.nan, np.nan
     arr = np.asarray(vals, dtype=float)
@@ -367,9 +377,25 @@ def _reserve_proxy(ss) -> float:
     return total if found else np.nan
 
 
-def _global_stress(ss, ratings: Optional[np.ndarray]) -> Dict[str, float]:
+def _fallback_max_loading(ss, base_mva: float) -> float:
+    """Lightweight backup: max |P| / rating using available Line data."""
+    vals = []
+    n_line = int(getattr(ss.Line, "n", 0))
+    records = _line_records(ss)
+    for uid in range(n_line):
+        p = _line_flow_component(ss, uid, (("Pij", "v"), ("p1", "v"), ("P1", "v"), ("pf", "v"), ("a1", "e")))
+        rating_raw = _line_rating_from_ss(ss, uid)
+        if not np.isfinite(rating_raw) and uid < len(records):
+            rating_raw = _valid_rating(records[uid].get("Sn"))
+        rating_pu = _rating_to_pu(rating_raw, base_mva)
+        if np.isfinite(p) and np.isfinite(rating_pu) and rating_pu > 0:
+            vals.append(abs(p) / rating_pu)
+    return float(np.nanmax(vals)) if vals else np.nan
+
+
+def _global_stress(ss, ratings: Optional[np.ndarray], base_mva: float) -> Dict[str, float]:
     total_load_p = float(np.nansum(np.asarray(ss.PQ.Ppf.v, dtype=float))) if getattr(ss.PQ, "n", 0) > 0 else np.nan
-    lmax, lmean, ltop5 = _system_loading_stats(ss, ratings)
+    lmax, lmean, ltop5 = _system_loading_stats(ss, ratings, base_mva)
     return {
         "total_load_p_prefault": _to_float_or_nan(total_load_p),
         "total_gen_p_prefault": _to_float_or_nan(_total_generation(ss)),
@@ -448,13 +474,14 @@ def _map_ss_busnum_to_ppnet_bus_index(ss, pp_net, bus_num: float) -> Optional[in
         return None
 
 
-def _dc_sensitivity(ss, cont_uid: Optional[int], out_bus1: float, out_bus2: float) -> Dict[str, float]:
+def _dc_sensitivity(ss, cont_uid: Optional[int], out_bus1: float, out_bus2: float, base_mva: float) -> Dict[str, float]:
     out = {
-        "ptdf_l1_norm_outaged_line": np.nan,
-        "max_abs_lodf_row": np.nan,
+        "ptdf_l1_norm_outaged_line": 0.0,
+        "max_abs_lodf_row": 0.0,
         "predicted_max_post_cont_loading_dc": np.nan,
     }
     if cont_uid is None and not (np.isfinite(out_bus1) and np.isfinite(out_bus2)):
+        out["predicted_max_post_cont_loading_dc"] = _finite_or_neg_one(out.get("predicted_max_post_cont_loading_dc"))
         return out
     restored_line_u = None
     line_u_vals = None
@@ -476,6 +503,8 @@ def _dc_sensitivity(ss, cont_uid: Optional[int], out_bus1: float, out_bus2: floa
         from pandapower.pypower.makePTDF import makePTDF
     except Exception as e:
         _warn_once(f"DC proxy unavailable (import failed): {e}")
+        out["predicted_max_post_cont_loading_dc"] = _fallback_max_loading(ss, base_mva)
+        out["predicted_max_post_cont_loading_dc"] = _finite_or_neg_one(out.get("predicted_max_post_cont_loading_dc"))
         return out
     try:
         pp_net = ap.to_pandapower(ss, verify=False)
@@ -627,6 +656,8 @@ def _dc_sensitivity(ss, cont_uid: Optional[int], out_bus1: float, out_bus2: floa
                 f"(uid={cont_uid}, bus1={out_bus1}, bus2={out_bus2}, "
                 f"bus1_ppc={out_bus1_ppc}, bus2_ppc={out_bus2_ppc})"
             )
+            out["predicted_max_post_cont_loading_dc"] = _fallback_max_loading(ss, base_mva)
+            out["predicted_max_post_cont_loading_dc"] = _finite_or_neg_one(out.get("predicted_max_post_cont_loading_dc"))
             return out
 
         ptdf = np.asarray(makePTDF(ppc["baseMVA"], bus, branch), dtype=float)
@@ -644,7 +675,7 @@ def _dc_sensitivity(ss, cont_uid: Optional[int], out_bus1: float, out_bus2: floa
         lodf_row = np.asarray(lodf[outage_row, :], dtype=float)
         finite_row = lodf_row[np.isfinite(lodf_row)]
         out["max_abs_lodf_row"] = (
-            _to_float_or_nan(np.max(np.abs(finite_row))) if finite_row.size else np.nan
+            _to_float_or_nan(np.max(np.abs(finite_row))) if finite_row.size else 0.0
         )
 
         lodf_col = np.asarray(lodf[:, outage_row], dtype=float)
@@ -653,87 +684,36 @@ def _dc_sensitivity(ss, cont_uid: Optional[int], out_bus1: float, out_bus2: floa
                 f"DC proxy: non-finite LODF outage column for row {outage_row}; "
                 "skipping predicted post-contingency loading"
             )
+            out["predicted_max_post_cont_loading_dc"] = _finite_or_neg_one(out.get("predicted_max_post_cont_loading_dc"))
             return out
 
         pf = branch[:, 13]
+        pf_pu = pf / base_mva if np.isfinite(base_mva) and base_mva > 0 else pf
         rates = branch[:, 5]
-        rates = np.where(np.isfinite(rates) & (rates > 0), rates, np.nan)
-        fk = pf[outage_row]
+        # Fallback: if rates missing/zero, try SS ratings.
+        if not np.any(np.isfinite(rates) & (rates > 0)):
+            ratings_ss = np.asarray([_line_rating_from_ss(ss, i) for i in range(branch.shape[0])], dtype=float)
+            rates = ratings_ss
+        rates_pu = rates / base_mva if np.isfinite(base_mva) and base_mva > 0 else rates
+        rates_pu = np.where(np.isfinite(rates_pu) & (rates_pu > 0), rates_pu, np.nan)
+        fk = pf_pu[outage_row]
         with np.errstate(invalid="ignore", divide="ignore"):
-            post = pf + lodf_col * fk
-            loading = np.abs(post) / rates
+            post = pf_pu + lodf_col * fk
+            loading = np.abs(post) / rates_pu * 100.0
         loading[~np.isfinite(loading)] = np.nan
         if outage_row < loading.size:
             loading[outage_row] = np.nan
         out["predicted_max_post_cont_loading_dc"] = (
-            _to_float_or_nan(np.nanmax(loading)) if np.any(np.isfinite(loading)) else np.nan
+            _to_float_or_nan(np.nanmax(loading)) if np.any(np.isfinite(loading)) else _fallback_max_loading(ss, base_mva)
         )
     except Exception as e:
         _warn_once(f"DC proxy failed during computation: {e}")
+        out["predicted_max_post_cont_loading_dc"] = _fallback_max_loading(ss, base_mva)
+        out["predicted_max_post_cont_loading_dc"] = _finite_or_neg_one(out.get("predicted_max_post_cont_loading_dc"))
         return out
     finally:
         if line_u_vals is not None and restored_line_u is not None and cont_uid is not None:
             if 0 <= int(cont_uid) < len(line_u_vals):
                 line_u_vals[int(cont_uid)] = restored_line_u
-    return out
-
-
-def extract_line_metrics(
-    ss,
-    contingency: Optional[Dict[str, object]],
-    line_uids: Optional[Sequence[int]],
-) -> Dict[str, float]:
-    line_uids = list(line_uids or [])
-    cont_uid = int(contingency["uid"]) if contingency is not None and contingency.get("uid") is not None else None
-    out: Dict[str, float] = {}
-    out.update(_identity_one_hot(line_uids, cont_uid))
-
-    ratings = _line_ratings_from_pandapower(ss)
-    records = _line_records(ss)
-    by_uid = {int(r["uid"]): r for r in records if r.get("uid") is not None}
-    out.update(_global_stress(ss, ratings))
-
-    if cont_uid is None:
-        out["line_rating"] = np.nan
-        out["pre_fault_flow"] = np.nan
-        out["pre_fault_loading"] = np.nan
-        return out
-
-    rec = by_uid.get(cont_uid, contingency)
-    line_rating = _valid_rating(rec.get("rating"))
-    if not np.isfinite(line_rating):
-        line_rating = _valid_rating(rec.get("Sn"))
-    if not np.isfinite(line_rating) and ratings is not None and cont_uid < len(ratings):
-        line_rating = _valid_rating(ratings[cont_uid])
-    p_from = _line_flow_component(ss, cont_uid, (("Pij", "v"), ("p1", "v"), ("P1", "v"), ("pf", "v"), ("a1", "e")))
-    pre_fault_loading = abs(p_from) / line_rating if np.isfinite(p_from) and np.isfinite(line_rating) else np.nan
-    out["line_rating"] = _to_float_or_nan(line_rating)
-    out["pre_fault_flow"] = _to_float_or_nan(p_from)
-    out["pre_fault_loading"] = _to_float_or_nan(pre_fault_loading)
-
-    out.update(_line_parameters(rec))
-    flow = _line_prefault_flows(ss, cont_uid)
-    p_from_abs = abs(flow.get("pre_p_from", np.nan)) if np.isfinite(flow.get("pre_p_from", np.nan)) else np.nan
-    p_to_abs = abs(flow.get("pre_p_to", np.nan)) if np.isfinite(flow.get("pre_p_to", np.nan)) else np.nan
-    flow["pre_loading_from"] = _to_float_or_nan(p_from_abs / line_rating) if np.isfinite(p_from_abs) and np.isfinite(line_rating) and line_rating > 0 else np.nan
-    flow["pre_loading_to"] = _to_float_or_nan(p_to_abs / line_rating) if np.isfinite(p_to_abs) and np.isfinite(line_rating) and line_rating > 0 else np.nan
-    p0 = flow.get("pre_p_from", np.nan)
-    flow["pre_flow_direction_p"] = _to_float_or_nan(np.sign(p0)) if np.isfinite(p0) else np.nan
-    out.update(flow)
-
-    bus1 = _to_float_or_nan(rec.get("bus1"))
-    bus2 = _to_float_or_nan(rec.get("bus2"))
-    v_from, a_from = _bus_state(ss, bus1)
-    v_to, a_to = _bus_state(ss, bus2)
-    out.update(
-        {
-            "pre_v_from": _to_float_or_nan(v_from),
-            "pre_v_to": _to_float_or_nan(v_to),
-            "pre_theta_from": _to_float_or_nan(a_from),
-            "pre_theta_to": _to_float_or_nan(a_to),
-            "pre_delta_theta": _to_float_or_nan(a_from - a_to) if np.isfinite(a_from) and np.isfinite(a_to) else np.nan,
-        }
-    )
-    out.update(_topology_criticality(records, cont_uid, bus1, bus2))
-    out.update(_dc_sensitivity(ss, cont_uid, bus1, bus2))
+    out["predicted_max_post_cont_loading_dc"] = _finite_or_neg_one(out.get("predicted_max_post_cont_loading_dc"))
     return out

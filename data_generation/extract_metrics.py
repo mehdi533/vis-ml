@@ -4,29 +4,24 @@ from typing import Dict, Iterable, Optional, Sequence, Tuple
 import numpy as np
 import pandas as pd
 
-try:
-    from .line_metrics import extract_line_metrics
-except ImportError:
-    from line_metrics import extract_line_metrics
-
-def _to_float_or_nan(value) -> float:
-    try:
-        if value is None:
-            return np.nan
-        out = float(value)
-        return out if np.isfinite(out) else np.nan
-    except (TypeError, ValueError):
-        return np.nan
+# Local import is always available via run_sims sys.path tweak.
+import line_utils as lu
 
 
-def _to_int_or_nan(value):
-    try:
-        if value is None:
-            return np.nan
-        return int(value)
-    except (TypeError, ValueError):
-        return np.nan
 
+def export_plotter_all(plotter, path: str) -> str:
+    """
+    Export all plotter channels (including time) to a CSV file.
+    """
+    if not hasattr(plotter, "_data"):
+        raise RuntimeError("TDS plotter has no _data attribute to export.")
+    data = dict()
+    initial_values = np.asarray(plotter._data[0]).reshape(-1)
+    for name, value in zip(plotter._uname, initial_values):
+        data[name] = float(value)
+    df = pd.DataFrame(data, index=[0])
+    df.to_csv(path, index=False)
+    return path
 
 
 def compute_freq_metrics(t, f, f0=50, r=None, tol_hz=0.01):
@@ -110,21 +105,6 @@ def compute_freq_metrics(t, f, f0=50, r=None, tol_hz=0.01):
     return metrics
 
 
-def export_plotter_all(plotter, path: str) -> str:
-    """
-    Export all plotter channels (including time) to a CSV file.
-    """
-    if not hasattr(plotter, "_data"):
-        raise RuntimeError("TDS plotter has no _data attribute to export.")
-    data = dict()
-    initial_values = np.asarray(plotter._data[0]).reshape(-1)
-    for name, value in zip(plotter._uname, initial_values):
-        data[name] = float(value)
-    df = pd.DataFrame(data, index=[0])
-    df.to_csv(path, index=False)
-    return path
-
-
 def extract_ibr_peaks(plotter) -> Dict[str, float]:
     """
     Extract peak |Delta P| for each REGCV1 unit from plotter data.
@@ -142,6 +122,74 @@ def extract_ibr_peaks(plotter) -> Dict[str, float]:
         peak = peak_max if np.abs(peak_max) > np.abs(peak_min) else peak_min
         peaks[f"Delta_P_IBR_{i + 1}"] = peak
     return peaks
+
+
+def extract_line_metrics(
+    ss,
+    contingency: Optional[Dict[str, object]],
+    line_uids: Optional[Sequence[int]],
+) -> Dict[str, float]:
+    """Extract line/topology/DC sensitivity metrics for one contingency."""
+    line_uids = list(line_uids or [])
+    base_mva = ss.config.mva
+    cont_uid = int(contingency["uid"]) if contingency is not None and contingency.get("uid") is not None else None
+    out: Dict[str, float] = {}
+    out.update(lu._identity_one_hot(line_uids, cont_uid))
+
+    ratings = lu._line_ratings_from_pandapower(ss)
+    records = lu._line_records(ss)
+    by_uid = {int(r["uid"]): r for r in records if r.get("uid") is not None}
+    out.update(lu._global_stress(ss, ratings, base_mva))
+
+    if cont_uid is None:
+        out["line_rating"] = np.nan
+        out["pre_fault_flow"] = np.nan
+        out["pre_fault_loading"] = np.nan
+        return out
+
+    rec = by_uid.get(cont_uid, contingency)
+    line_rating_raw = lu._valid_rating(rec.get("rating"))
+    if not np.isfinite(line_rating_raw):
+        line_rating_raw = lu._valid_rating(rec.get("Sn"))
+    if not np.isfinite(line_rating_raw) and ratings is not None and cont_uid < len(ratings):
+        line_rating_raw = lu._valid_rating(ratings[cont_uid])
+    line_rating = lu._rating_to_pu(line_rating_raw, base_mva)
+    p_from = lu._line_flow_component(ss, cont_uid, (("Pij", "v"), ("p1", "v"), ("P1", "v"), ("pf", "v"), ("a1", "e")))
+    pre_fault_loading = (
+        abs(p_from) / line_rating * 100.0
+        if np.isfinite(p_from) and np.isfinite(line_rating) and line_rating > 0
+        else np.nan
+    )
+    out["line_rating"] = lu._to_float_or_nan(line_rating)
+    out["pre_fault_flow"] = lu._to_float_or_nan(p_from)
+    out["pre_fault_loading"] = lu._to_float_or_nan(pre_fault_loading)
+
+    out.update(lu._line_parameters(rec))
+    flow = lu._line_prefault_flows(ss, cont_uid)
+    p_from_abs = abs(flow.get("pre_p_from", np.nan)) if np.isfinite(flow.get("pre_p_from", np.nan)) else np.nan
+    p_to_abs = abs(flow.get("pre_p_to", np.nan)) if np.isfinite(flow.get("pre_p_to", np.nan)) else np.nan
+    flow["pre_loading_from"] = lu._to_float_or_nan(p_from_abs / line_rating * 100.0) if np.isfinite(p_from_abs) and np.isfinite(line_rating) and line_rating > 0 else np.nan
+    flow["pre_loading_to"] = lu._to_float_or_nan(p_to_abs / line_rating * 100.0) if np.isfinite(p_to_abs) and np.isfinite(line_rating) and line_rating > 0 else np.nan
+    p0 = flow.get("pre_p_from", np.nan)
+    flow["pre_flow_direction_p"] = lu._to_float_or_nan(np.sign(p0)) if np.isfinite(p0) else np.nan
+    out.update(flow)
+
+    bus1 = lu._to_float_or_nan(rec.get("bus1"))
+    bus2 = lu._to_float_or_nan(rec.get("bus2"))
+    v_from, a_from = lu._bus_state(ss, bus1)
+    v_to, a_to = lu._bus_state(ss, bus2)
+    out.update(
+        {
+            "pre_v_from": lu._to_float_or_nan(v_from),
+            "pre_v_to": lu._to_float_or_nan(v_to),
+            "pre_theta_from": lu._to_float_or_nan(a_from),
+            "pre_theta_to": lu._to_float_or_nan(a_to),
+            "pre_delta_theta": lu._to_float_or_nan(a_from - a_to) if np.isfinite(a_from) and np.isfinite(a_to) else np.nan,
+        }
+    )
+    out.update(lu._topology_criticality(records, cont_uid, bus1, bus2))
+    out.update(lu._dc_sensitivity(ss, cont_uid, bus1, bus2, base_mva))
+    return out
 
 
 def build_feature_row(
@@ -223,6 +271,7 @@ def extract_simulation_row(
     load_step_enabled: bool = False,
     trip_time: float = np.nan,
     line_uids: Optional[Sequence[int]] = None,
+    line_metrics_snapshot: Optional[Dict[str, float]] = None,
     plotter_csv: Optional[str] = None,
 ) -> Dict[str, float]:
     """
@@ -304,42 +353,39 @@ def extract_simulation_row(
     labels.update(ibr_peaks)
 
     # ================================================ 
-    row: Dict[str, float | str | bool] = {}
+    row: Dict[str, float] = {}
     row.update(features)
     row.update(labels)
     row["time_max_dev"] = float(time_of_max_dev) if np.isfinite(time_of_max_dev) else np.nan
     row["success"] = bool(success)
-    line_metrics = extract_line_metrics(ss=ss, contingency=contingency, line_uids=line_uids)
+    line_metrics = line_metrics_snapshot or extract_line_metrics(ss=ss, contingency=contingency, line_uids=line_uids)
 
     if contingency is None:
         if load_step_enabled:
             row["cont_type"] = "load"
-            row["contingency_id"] = "load_step"
             row["contingency_time"] = float(load_step_time)
         else:
             row["cont_type"] = "none"
-            row["contingency_id"] = "none"
             row["contingency_time"] = np.nan
-        row["load_step_enabled"] = int(bool(load_step_enabled))
         row["line_uid"] = np.nan
         row["line_name"] = ""
         row["line_from_bus"] = np.nan
         row["line_to_bus"] = np.nan
-        row["line_rating"] = _to_float_or_nan(line_metrics.get("line_rating"))
-        row["pre_fault_flow"] = _to_float_or_nan(line_metrics.get("pre_fault_flow"))
-        row["pre_fault_loading"] = _to_float_or_nan(line_metrics.get("pre_fault_loading"))
+        row["line_rating"] = float(line_metrics.get("line_rating", np.nan))
+        row["pre_fault_flow"] = float(line_metrics.get("pre_fault_flow", np.nan))
+        row["pre_fault_loading"] = float(line_metrics.get("pre_fault_loading", np.nan))
     else:
         row["cont_type"] = "line_plus_load" if load_step_enabled else "line"
-        row["contingency_id"] = f"line:{contingency['idx']}"
-        row["contingency_time"] = _to_float_or_nan(trip_time)
-        row["load_step_enabled"] = int(bool(load_step_enabled))
-        row["line_uid"] = _to_int_or_nan(contingency.get("uid"))
+        row["contingency_time"] = float(trip_time if trip_time is not None else np.nan)
+        row["line_uid"] = int(contingency.get("uid")) if contingency.get("uid") is not None else np.nan
         row["line_name"] = str(contingency["name"])
-        row["line_from_bus"] = _to_float_or_nan(contingency.get("bus1"))
-        row["line_to_bus"] = _to_float_or_nan(contingency.get("bus2"))
-        row["line_rating"] = _to_float_or_nan(line_metrics.get("line_rating"))
-        row["pre_fault_flow"] = _to_float_or_nan(line_metrics.get("pre_fault_flow"))
-        row["pre_fault_loading"] = _to_float_or_nan(line_metrics.get("pre_fault_loading"))
+        bus1_val = contingency.get("bus1")
+        bus2_val = contingency.get("bus2")
+        row["line_from_bus"] = int(bus1_val) if bus1_val is not None and np.isfinite(float(bus1_val)) else np.nan
+        row["line_to_bus"] = int(bus2_val) if bus2_val is not None and np.isfinite(float(bus2_val)) else np.nan
+        row["line_rating"] = float(line_metrics.get("line_rating", np.nan))
+        row["pre_fault_flow"] = float(line_metrics.get("pre_fault_flow", np.nan))
+        row["pre_fault_loading"] = float(line_metrics.get("pre_fault_loading", np.nan))
 
     row.update(line_metrics)
 
