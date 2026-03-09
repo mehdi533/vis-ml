@@ -49,6 +49,7 @@ ed:
     c: {low: 0.01, high: 0.1}
   solver: "OSQP"
   verbose: false
+  line_limits_enable: true
 
 tds:
   t_end: 20.0
