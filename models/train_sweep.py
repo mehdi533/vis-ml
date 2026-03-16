@@ -9,20 +9,17 @@ import numpy as np
 import yaml
 import torch
 
-import sys as _sys
-
-_sys.path.insert(0, str(Path(__file__).resolve().parent))
-from data_utils import (
+from models.data_utils import (
     load_dataset,
     split_data,
     scale_data,
     scale_data_with_recommendations,
     make_dataloaders,
 )
-from models import create_model
-from training import train_model, save_model
-from testing import evaluate_model
-from plotting import plot_losses, plot_scatter_per_target
+from models.models import create_model
+from models.training import train_model, save_model
+from models.testing import evaluate_model
+from models.plotting import plot_losses, plot_scatter_per_target
 
 
 def _normalize_arg_list(values, default=None):
