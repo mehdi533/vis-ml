@@ -178,6 +178,6 @@ def train_model(
     return model, train_losses, train_eval_losses, val_losses
 
 
-def save_model(model, path="vis_mlp_state_dict.pt"):
+def save_model(model, path="model_state_dict.pt"):
     torch.save(model.state_dict(), path)
     print(f"Saved model to {path}")

@@ -210,19 +210,40 @@ def load_dataset(
     csv_path: str,
     target_cols: Optional[Sequence[str]] = None,
     remove_cols: Optional[Sequence[str]] = None,
+    remove_prefixes: Optional[Sequence[str]] = None,
+    ignore_missing_remove_cols: bool = False,
+    missing_fill_value: Optional[float] = None,
 ) -> Tuple[np.ndarray, np.ndarray, List[str], List[str]]:
-    df = pd.read_csv(csv_path)
+    df = pd.read_csv(csv_path, low_memory=False)
 
     targets = list(target_cols) if target_cols is not None else ["max_rocof", "f_nadir", "f_max"]
     drops = list(remove_cols) if remove_cols is not None else []
+    drop_prefixes = [str(prefix) for prefix in remove_prefixes] if remove_prefixes is not None else []
 
-    missing = [c for c in targets + drops if c not in df.columns]
-    if missing:
-        raise ValueError(f"Missing columns in CSV: {missing}")
+    missing_targets = [c for c in targets if c not in df.columns]
+    if missing_targets:
+        raise ValueError(f"Missing target columns in CSV: {missing_targets}")
 
-    feature_cols = [c for c in df.columns if c not in set(targets + drops)]
+    if ignore_missing_remove_cols:
+        drops = [c for c in drops if c in df.columns]
+    else:
+        missing_drops = [c for c in drops if c not in df.columns]
+        if missing_drops:
+            raise ValueError(f"Missing remove_cols in CSV: {missing_drops}")
+
+    blocked = set(targets + drops)
+    feature_cols = [
+        c
+        for c in df.columns
+        if c not in blocked and not any(str(c).startswith(prefix) for prefix in drop_prefixes)
+    ]
     if not feature_cols:
         raise ValueError("No feature columns left after removing targets/drops.")
+
+    # Optional NaN fill for training convenience (e.g., fill with -1.0).
+    if missing_fill_value is not None:
+        cols_to_fill = feature_cols + targets
+        df[cols_to_fill] = df[cols_to_fill].fillna(float(missing_fill_value))
 
     X = df[feature_cols].values.astype(np.float32)
     y = df[targets].values.astype(np.float32)
