@@ -1,0 +1,91 @@
+groups:
+  x_op:
+    exact:
+      - base_load_scale
+      - base_load_p_total
+      - base_load_q_total
+      - total_load_p_prefault
+      - total_load_q_prefault
+      - total_gen_p_prefault
+      - total_gen_q_prefault
+      - reserve_proxy_prefault
+      - bus_v_min_prefault
+      - bus_v_max_prefault
+      - bus_v_mean_prefault
+      - bus_v_std_prefault
+      - bus_v_max_abs_dev_prefault
+      - bus_angle_min_prefault
+      - bus_angle_max_prefault
+      - bus_angle_spread_prefault
+      - n_buses
+      - n_lines
+      - n_pq_loads
+      - n_genrou
+      - n_regcv1
+    prefixes:
+      - P_BASE_
+      - Q_BASE_
+      - x0__
+
+  x_cont:
+    exact:
+      - load_step_scale
+      - load_step_time
+      - DELTA_PQ_tot
+      - line_rating
+      - line_fn
+      - line_Vn1
+      - line_Vn2
+      - line_r
+      - line_x
+      - line_b
+      - line_g
+      - line_b1
+      - line_g1
+      - line_b2
+      - line_g2
+      - line_trans
+      - line_tap
+      - line_phi
+      - line_x_over_r
+      - pre_fault_flow
+      - pre_fault_loading
+      - pre_p_from
+      - pre_p_to
+      - pre_loading_from
+      - pre_loading_to
+      - pre_flow_direction_p
+      - pre_v_from
+      - pre_v_to
+      - pre_theta_from
+      - pre_theta_to
+      - pre_delta_theta
+      - bus_degree_from
+      - bus_degree_to
+      - is_bridge
+      - n_components_after_trip
+      - largest_component_fraction_after_trip
+      - system_max_loading_prefault
+      - system_mean_loading_prefault
+      - system_top5_loading_mean_prefault
+      - ptdf_l1_norm_outaged_line
+      - max_abs_lodf_row
+      - predicted_max_post_cont_loading_dc
+    prefixes:
+      - DELTA_P_
+      - DELTA_P_OWNER_
+      - line_oh_uid_
+
+  x_sched:
+    exact:
+      - M_agg
+      - D_agg
+      - P_GENROU_TOTAL
+      - P_REGCV1_TOTAL
+      - P_DISPATCH_TOTAL
+      - P_REGCV1_SHARE
+    prefixes:
+      - M_
+      - D_
+      - P_GENROU_
+      - P_REGCV1_

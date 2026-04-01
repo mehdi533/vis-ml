@@ -1,0 +1,38 @@
+name: chapter5_optional_redispatch_sensitivity
+baseline_id: ed_line_n1_surrogate
+
+results_root: ../../results/redispatch_sensitivity
+
+output:
+  summary_csv: ../../results/redispatch_sensitivity_summary.csv
+  summary_markdown: ../../results/redispatch_sensitivity_summary.md
+  summary_json: ../../results/redispatch_sensitivity_summary.json
+
+runs:
+  - id: ed_line_n1_surrogate
+    name: Full Preventive Baseline
+    description: Preventive baseline without redispatch recourse.
+    base_config: ../base_optimization.yaml
+    overrides:
+      constraints:
+        use_input: true
+        use_output: true
+        use_nn: true
+        use_line: true
+        use_n1: true
+        use_n1_redispatch: false
+        use_ed: true
+
+  - id: ed_line_n1_surrogate_redispatch
+    name: Redispatch Sensitivity
+    description: Optional sensitivity with redispatch recourse approximation.
+    base_config: ../base_optimization.yaml
+    overrides:
+      constraints:
+        use_input: true
+        use_output: true
+        use_nn: true
+        use_line: true
+        use_n1: true
+        use_n1_redispatch: true
+        use_ed: true
