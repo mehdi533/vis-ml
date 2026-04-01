@@ -35,7 +35,8 @@ load:
   pq_names: ["PQ_1", "PQ_2", "PQ_3", "PQ_4", "PQ_5", "PQ_6", "PQ_7", "PQ_8", "PQ_9", "PQ_10", "PQ_11", "PQ_12", "PQ_13", "PQ_14", "PQ_15", "PQ_16", "PQ_17", "PQ_18", "PQ_19"]
   pq_bus_ids: []
   scale_pv: false
-  owners: ["1"]
+  owners: ["1", "2", "3", "4"]
+  random_owner_per_sim: true
 
 ed:
   enable: true

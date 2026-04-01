@@ -5,7 +5,9 @@ This folder contains reproducible data-generation runs for the main disturbance 
 ## Structure
 
 - `configs/`: scenario-specific YAML configs for `data_generation/run_sims.py`
-- `scripts/run_all.sh`: runs all five scenarios sequentially
+- `scripts/run_all.sh`: runs all five scenarios sequentially on one machine
+- `scripts/*.slurm`: cluster-ready SLURM job files, one per scenario
+- `scripts/submit_all.sh`: submits all five SLURM jobs
 - `results/`: recommended destination for generated CSV files
 
 ## Scenarios
@@ -29,7 +31,7 @@ The pack includes five 10k-sample scenarios:
 
 ## How To Run
 
-Run from the repository root:
+Run locally from the repository root:
 
 ```bash
 results/thesis_data_generation_results/scripts/run_all.sh
@@ -41,6 +43,20 @@ Or run one scenario directly:
 python3 data_generation/run_sims.py \
   --config results/thesis_data_generation_results/configs/load_mismatch_only.yaml
 ```
+
+For the cluster workflow, submit all five jobs with:
+
+```bash
+results/thesis_data_generation_results/scripts/submit_all.sh
+```
+
+The individual SLURM job files are:
+
+- `results/thesis_data_generation_results/scripts/run_load_mismatch_only.slurm`
+- `results/thesis_data_generation_results/scripts/run_line_outages_only.slurm`
+- `results/thesis_data_generation_results/scripts/run_line_outages_plus_global_load_mismatch.slurm`
+- `results/thesis_data_generation_results/scripts/run_zone_based_load_mismatch.slurm`
+- `results/thesis_data_generation_results/scripts/run_line_outages_plus_zone_based_load_mismatch.slurm`
 
 ## What You Will Likely Edit
 

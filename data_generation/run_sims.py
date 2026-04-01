@@ -276,7 +276,7 @@ def _sample_value(value_cfg: Dict, rng: np.random.Generator, *, default_low: flo
     return val, "uniform_log" if log_u else "uniform"
 
 
-def _select_step_targets(ss, load_cfg: Dict) -> List[str]:
+def _select_step_targets(ss, load_cfg: Dict, rng: Optional[np.random.Generator] = None) -> List[str]:
     """Return PQ device names to apply the step scale to.
 
     Priority rules:
@@ -284,13 +284,22 @@ def _select_step_targets(ss, load_cfg: Dict) -> List[str]:
       otherwise default to all PQ names in the case.
     - if load_cfg["owners"] is provided, keep only PQs whose owner is in that
       list (ownership is read from ss.PQ.owner).
+    - if load_cfg["random_owner_per_sim"] is true, sample one owner from
+      `load_cfg["owners"]` and keep only PQs in that owner for this simulation.
     """
 
     pq_names_cfg = list(load_cfg.get("pq_names") or [])
     if not pq_names_cfg:
         pq_names_cfg = list(ss.PQ.name.v) if getattr(ss, "PQ", None) and ss.PQ.n else []
 
-    owner_filter = {str(o) for o in list(load_cfg.get("owners") or [])}
+    owner_values = [str(o) for o in list(load_cfg.get("owners") or [])]
+    if bool(load_cfg.get("random_owner_per_sim", False)) and owner_values:
+        if rng is None:
+            raise ValueError("random_owner_per_sim requires an RNG.")
+        sampled_owner = str(rng.choice(owner_values))
+        owner_values = [sampled_owner]
+
+    owner_filter = set(owner_values)
     if owner_filter and getattr(ss.PQ, "n", 0):
         name_to_owner = {str(name): str(owner) for name, owner in zip(ss.PQ.name.v, ss.PQ.owner.v)}
         pq_names_cfg = [name for name in pq_names_cfg if name_to_owner.get(str(name)) in owner_filter]
@@ -616,7 +625,7 @@ def _run_ed_dispatch(
         cp.sum(
             c
             + cp.multiply(b, Pg)
-            + cp.multiply(b_r, Pg_max - Pg) # Reserve cost is not considered in the data generation pipeline.
+            # + cp.multiply(b_r, Pg_max - Pg) # Reserve cost is not considered in the data generation pipeline.
             + cp.multiply(a, cp.square(Pg))
         )
     )
@@ -1146,7 +1155,7 @@ def run_single_sim(
         pq_owner_list = [owner_map.get(str(o), str(o)) for o in ss.PQ.owner.v]
 
         if load_step_enabled:
-            step_targets = _select_step_targets(ss, cfg.get("load", {}))
+            step_targets = _select_step_targets(ss, cfg.get("load", {}), rng=rng)
             for dev in step_targets:
                 ss.add(model="Alter", param_dict=dict(t=load_step_time, model="PQ", dev=dev, src="Ppf", attr="v", method="*", amount=step_scale))
                 ss.add(model="Alter", param_dict=dict(t=load_step_time, model="PQ", dev=dev, src="Qpf", attr="v", method="*", amount=step_scale))
