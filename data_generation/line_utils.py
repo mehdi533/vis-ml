@@ -1,8 +1,28 @@
+import io
+import warnings
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
 _WARNED_MESSAGES: set[str] = set()
+
+
+@contextmanager
+def _suppress_pandapower_interop_noise():
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            category=FutureWarning,
+            module=r"andes\.interop\.pandapower",
+        )
+        warnings.filterwarnings(
+            "ignore",
+            category=FutureWarning,
+            module=r"pandas\..*",
+        )
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            yield
 
 
 def _to_float_or_nan(value) -> float:
@@ -109,22 +129,23 @@ def _line_ratings_from_pandapower(ss) -> Optional[np.ndarray]:
     except Exception:
         return None
     try:
-        pp_net = ap.to_pandapower(ss, verify=False)
-        if not hasattr(pp_net, "_options") or not isinstance(pp_net._options, dict):
-            pp_net._options = {}
-        if "mode" not in pp_net._options:
-            aux._add_ppc_options(
-                pp_net,
-                calculate_voltage_angles=True,
-                trafo_model="pi",
-                check_connectivity=False,
-                mode="opf",
-                switch_rx_ratio=2,
-                enforce_q_lims=False,
-                recycle=None,
-            )
-        _, ppci = _pd2ppc(pp_net)
-        return np.asarray(ppci["branch"][:, 5], dtype=float)
+        with _suppress_pandapower_interop_noise():
+            pp_net = ap.to_pandapower(ss, verify=False)
+            if not hasattr(pp_net, "_options") or not isinstance(pp_net._options, dict):
+                pp_net._options = {}
+            if "mode" not in pp_net._options:
+                aux._add_ppc_options(
+                    pp_net,
+                    calculate_voltage_angles=True,
+                    trafo_model="pi",
+                    check_connectivity=False,
+                    mode="opf",
+                    switch_rx_ratio=2,
+                    enforce_q_lims=False,
+                    recycle=None,
+                )
+            _, ppci = _pd2ppc(pp_net)
+        return np.asarray(np.real(ppci["branch"][:, 5]), dtype=float)
     except Exception:
         return None
 
@@ -311,7 +332,7 @@ def _topology_criticality(records: Sequence[Dict[str, float | int | str]], cont_
         "bus_degree_to": deg_to,
         "is_bridge": bool(n_after > n_base),
         "n_components_after_trip": int(n_after),
-        "largest_component_fraction_after_trip": int(frac) if np.isfinite(frac) else np.nan,
+        "largest_component_fraction_after_trip": float(frac) if np.isfinite(frac) else np.nan,
     }
 
 
@@ -507,20 +528,21 @@ def _dc_sensitivity(ss, cont_uid: Optional[int], out_bus1: float, out_bus2: floa
         out["predicted_max_post_cont_loading_dc"] = _finite_or_neg_one(out.get("predicted_max_post_cont_loading_dc"))
         return out
     try:
-        pp_net = ap.to_pandapower(ss, verify=False)
-        if not hasattr(pp_net, "_options") or not isinstance(pp_net._options, dict):
-            pp_net._options = {}
-        if "mode" not in pp_net._options:
-            aux._add_ppc_options(
-                pp_net,
-                calculate_voltage_angles=True,
-                trafo_model="pi",
-                check_connectivity=False,
-                mode="opf",
-                switch_rx_ratio=2,
-                enforce_q_lims=False,
-                recycle=None,
-            )
+        with _suppress_pandapower_interop_noise():
+            pp_net = ap.to_pandapower(ss, verify=False)
+            if not hasattr(pp_net, "_options") or not isinstance(pp_net._options, dict):
+                pp_net._options = {}
+            if "mode" not in pp_net._options:
+                aux._add_ppc_options(
+                    pp_net,
+                    calculate_voltage_angles=True,
+                    trafo_model="pi",
+                    check_connectivity=False,
+                    mode="opf",
+                    switch_rx_ratio=2,
+                    enforce_q_lims=False,
+                    recycle=None,
+                )
         # Ensure pp_net has a reference element before ppc conversion.
         def _get_preferred_slack_busnum() -> Optional[int]:
             try:
@@ -608,7 +630,8 @@ def _dc_sensitivity(ss, cont_uid: Optional[int], out_bus1: float, out_bus2: floa
             _warn_once(f"DC proxy pre-_pd2ppc reference fallback failed: {e}")
 
         try:
-            ppc, ppci = _pd2ppc(pp_net)
+            with _suppress_pandapower_interop_noise():
+                ppc, ppci = _pd2ppc(pp_net)
         except Exception as e:
             if "No reference bus is available" not in str(e):
                 raise
@@ -617,7 +640,8 @@ def _dc_sensitivity(ss, cont_uid: Optional[int], out_bus1: float, out_bus2: floa
                 if not _ensure_ext_grid_fallback():
                     if not _set_slack_gen_fallback():
                         _warn_once("DC proxy retry failed: no generators available to set slack")
-                ppc, ppci = _pd2ppc(pp_net)
+                with _suppress_pandapower_interop_noise():
+                    ppc, ppci = _pd2ppc(pp_net)
             except Exception:
                 raise e
         bus = np.asarray(ppci["bus"], dtype=float)

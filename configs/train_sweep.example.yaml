@@ -10,11 +10,23 @@ model:
   activation: relu
   dropout: 0.1
   group_shared_sizes: [64]
+  # Optional architecture-specific knobs:
+  # group_head_indices: [[0, 1], [2, 3, 4, 5]]
+  # attention_hidden_dim: 32
+  # attention_temperature: 1.0
+  # attention_dropout: 0.0
+  # kan_grid_size: 8
+  # kan_grid_min: -1.0
+  # kan_grid_max: 1.0
+  # PICNN / PICNN_MTLSH only:
+  # u_feature_cols: [M_1, D_1, M_2, D_2, M_3, D_3, M_4, D_4]
 
 data:
   csv_path: results/to_export/simulation_results.csv
   target_cols: [rocof_COI, dev_COI]
-  drop_cols: [sim_id, seed, success, time_max_dev, plotter_csv]
+  drop_cols: [sim_id, seed, success, time_max_dev]
+  # Optional: remove whole column families by prefix to avoid label leakage.
+  # drop_prefixes: [Delta_P_IBR_abs_, rocof_abs_, dev_abs_]
   use_recommended_scalers: true
 
 split:
@@ -39,4 +51,12 @@ sweep:
   losses: ["mse"]
   scalers: ["minmax"]
   seeds: [42, 1337]
+  # Grid blocks:
+  # - sweep.model for architecture knobs
+  # - sweep.training for optimizer/batch knobs
+  # - sweep.data for dataset-side toggles
+  #
+  # For nested list values such as shared_sizes, use {"values": [[128, 64], [256, 128]]}.
+  model: {}
   training: {}
+  data: {}

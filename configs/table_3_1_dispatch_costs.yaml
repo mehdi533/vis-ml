@@ -1,0 +1,27 @@
+table: "3.1"
+description: "Fixed generator dispatch coefficients from Table 3.1 of the thesis."
+source_case: "Modified IEEE-39 with 4 IBRs"
+
+# Source of truth for generator coefficients.
+generators:
+  - {bus: 30, label: "IBR1", type: "IBR", a: 0.001, b: 1.0, c: 50.0, b_r: 20.61}
+  - {bus: 31, label: "SG1",  type: "SG",  a: 0.0200, b: 20.0, c: 380.0, b_r: 10.0}
+  - {bus: 32, label: "SG2",  type: "SG",  a: 0.0194, b: 20.0, c: 42.0,  b_r: 10.0}
+  - {bus: 33, label: "SG3",  type: "SG",  a: 0.0200, b: 20.0, c: 380.0, b_r: 10.0}
+  - {bus: 34, label: "SG4",  type: "SG",  a: 0.0255, b: 20.0, c: 295.0, b_r: 10.0}
+  - {bus: 35, label: "IBR2", type: "IBR", a: 0.001, b: 1.0, c: 50.0, b_r: 18.96}
+  - {bus: 36, label: "SG5",  type: "SG",  a: 0.0230, b: 20.0, c: 350.0, b_r: 10.0}
+  - {bus: 37, label: "IBR3", type: "IBR", a: 0.001, b: 1.0, c: 50.0, b_r: 19.15}
+  - {bus: 38, label: "IBR4", type: "IBR", a: 0.001, b: 1.0, c: 50.0, b_r: 20.06}
+  - {bus: 39, label: "SG6",  type: "SG",  a: 0.0140, b: 20.0, c: 500.0, b_r: 10.0}
+
+# Convenience arrays for the current PV+Slack dispatch order used by this case:
+# buses = [30, 31, 32, 33, 34, 35, 36, 37, 38, 39]
+dispatch_order_reference:
+  buses:   [30, 31, 32, 33, 34, 35, 36, 37, 38, 39]
+  labels:  ["IBR1", "SG1", "SG2", "SG3", "SG4", "IBR2", "SG5", "IBR3", "IBR4", "SG6"]
+  a:       [0.001, 0.0200, 0.0194, 0.0200, 0.0255, 0.001, 0.0230, 0.001, 0.001, 0.0140]
+  b:       [1.0,   20.0,   20.0,   20.0,   20.0,   1.0,   20.0,   1.0,   1.0,   20.0]
+  c:       [50.0,  380.0,  42.0,   380.0,  295.0,  50.0,  350.0,  50.0,  50.0,  500.0]
+  b_r:     [20.61, 10.0,   10.0,   10.0,   10.0,   18.96, 10.0,   19.15, 20.06, 10.0]
+  b_total: [21.61, 30.0,   30.0,   30.0,   30.0,   19.96, 30.0,   20.15, 21.06, 30.0]

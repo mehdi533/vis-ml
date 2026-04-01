@@ -66,7 +66,8 @@ Core metadata:
 - `sim_id`, `seed`, `success`
 - `cont_type` in `{none, load, line, line_plus_load}`
 - `contingency_time`
-- `line_uid`, `line_name`, `line_from_bus`, `line_to_bus`
+- `line_uid`, `line_from_bus`, `line_to_bus`
+- line metadata is set to `-1` when no line toggle is applied
 
 Base line metrics:
 
@@ -91,6 +92,7 @@ Frequency/response labels:
 - `rocof_COI` (signed largest-magnitude ROCOF)
 - `dev_COI` (signed largest-magnitude frequency deviation)
 - `Delta_P_IBR_i` (peak signed REGCV1 active-power delta)
+- Per-bus dynamics: `bus_freq_max_abs_dev_<bus>`, `bus_v_max_abs_dev_<bus>`, `bus_rocof_max_abs_<bus>`
 
 Extended line/topology/DC metrics (`line_utils.line_extra_fieldnames(...)`):
 
@@ -101,16 +103,18 @@ Extended line/topology/DC metrics (`line_utils.line_extra_fieldnames(...)`):
 - `pre_flow_direction_p` (`sign(pre_p_from)`)
 - Bus states: `pre_v_from`, `pre_v_to`, `pre_theta_from`, `pre_theta_to`, `pre_delta_theta`
 - Graph criticality: `bus_degree_from`, `bus_degree_to`, `is_bridge`, `n_components_after_trip`, `largest_component_fraction_after_trip`
-- System stress: `total_load_p_prefault`, `total_gen_p_prefault`, `reserve_proxy_prefault`, `system_max_loading_prefault`, `system_mean_loading_prefault`, `system_top5_loading_mean_prefault`
+- System stress: `total_load_p_prefault`, `total_gen_p_prefault`, `reserve_p_total_prefault`, `reserve_q_total_prefault`, `system_max_loading_prefault`, `system_mean_loading_prefault`, `system_top5_loading_mean_prefault`
 - DC sensitivity: `ptdf_l1_norm_outaged_line`, `max_abs_lodf_row`, `predicted_max_post_cont_loading_dc` (%, invalid -> `-1`)
 - One-hot outage identity: `line_oh_uid_<uid>` in `{0,1}`
 
 Sampling/ED diagnostics:
 
 - `step_bin_label`, `M_bin_label`, `D_bin_label`
-- `ed_cost_genrou_a`, `ed_cost_genrou_b`, `ed_cost_genrou_c`
-- `ed_cost_ibr_a`, `ed_cost_ibr_b`, `ed_cost_ibr_c`
-- Optional: `plotter_csv`
+- `ed_enabled`, `ed_solver`, `ed_status`
+- `ed_total_cost`, `ed_constant_cost`, `ed_energy_cost`, `ed_reserve_cost`, `ed_quadratic_cost`
+- Prefault reserve aggregates: `reserve_p_genrou`, `reserve_p_ibr`, `reserve_q_genrou`, `reserve_q_ibr`
+- Per-unit schedulable active reserves: `P_GENROU_RESERVE_i`, `P_REGCV1_RESERVE_i`
+- Initial dynamic-state columns are written inline to the main CSV with the configured `x0__` prefix.
 
 ## How key quantities are computed
 

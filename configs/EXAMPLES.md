@@ -6,6 +6,7 @@ Copy any example to your working location and tweak values. Each example matches
 - `configs/cost_mtlsh_convex.example.yaml` → cost/model config for convex scheduling (flag `--cost-config` in `experiments/*` and `scheduling/*`).
 - `configs/cost_icnn_convex.example.yaml` → cost/model config for ICNN-based scheduling.
 - `configs/train_sweep.example.yaml` → training sweep for `models/train_sweep.py` and similar jobs.
+- `thesis_model_results/configs/*.yaml` → curated Chapter 5 model-side experiment pack (see `thesis_model_results/README.md`).
 
 Usage:
 1. Copy the example: `cp configs/sim_generation.example.yaml experiments/generation.yaml` (or another path).

@@ -36,7 +36,7 @@ line_flow:
 
 bounds:
   training_data: results/to_export/simulation_results.csv
-  drop_cols: [sim_id, seed, success, load_step_time, time_max_dev, plotter_csv, step_bin_label, M_bin_label, D_bin_label]
+  drop_cols: [sim_id, seed, success, load_step_time, time_max_dev, step_bin_label, M_bin_label, D_bin_label]
   use_scaler_for_bounds: true
   M_bounds: [2,8]
   D_bounds: [0,6]
