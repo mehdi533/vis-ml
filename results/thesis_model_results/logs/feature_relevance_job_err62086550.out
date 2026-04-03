@@ -1,0 +1,8 @@
+Traceback (most recent call last):
+  File "/cluster/home/mabdallahi/vis-ml/models/feature_relevance.py", line 386, in <module>
+    main()
+  File "/cluster/home/mabdallahi/vis-ml/models/feature_relevance.py", line 259, in main
+    X, y, feature_cols, target_cols = load_dataset(
+  File "/cluster/home/mabdallahi/vis-ml/models/data_utils.py", line 248, in load_dataset
+    X = df[feature_cols].values.astype(np.float32)
+ValueError: could not convert string to float: 'OSQP'

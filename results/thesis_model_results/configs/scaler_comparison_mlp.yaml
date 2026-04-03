@@ -1,4 +1,4 @@
-output_dir: thesis_model_results/outputs/scaler_comparison_mlp
+output_dir: results/thesis_model_results/outputs/scaler_comparison_mlp
 skip_if_exists: true
 seed: 42
 
@@ -9,6 +9,10 @@ model:
 
 data:
   csv_path: results/to_export/simulation_results.csv
+  feature_names_path: configs/data_generation_feature_names.yaml
+  use_registry_feature_allowlist: true
+  drop_metadata_fields: true
+  drop_diagnostic_fields: true
   target_cols: [rocof_COI, dev_COI, Delta_P_IBR_1, Delta_P_IBR_2, Delta_P_IBR_3, Delta_P_IBR_4]
   drop_cols:
     - sim_id

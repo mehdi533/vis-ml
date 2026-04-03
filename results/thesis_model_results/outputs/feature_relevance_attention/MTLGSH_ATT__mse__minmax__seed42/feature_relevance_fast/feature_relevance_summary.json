@@ -1,0 +1,8 @@
+{
+  "mode": "attention",
+  "split": "all",
+  "n_rows": 10000,
+  "n_features": 1206,
+  "n_targets": 6,
+  "interpretation_note": "Attention scores and permutation scores are explanatory diagnostics. They do not imply causality and should not be read as physical proofs."
+}

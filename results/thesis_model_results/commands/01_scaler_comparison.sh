@@ -1,47 +1,64 @@
-#!/usr/bin/env bash
+#!/bin/bash
+#SBATCH --job-name=tm_scalers
+#SBATCH --mail-user=mehdi.abdallahi@epfl.ch
+#SBATCH --mail-type=END,FAIL
+#SBATCH --output=/cluster/home/mabdallahi/vis-ml/results/thesis_model_results/logs/scaler_comparison_job_out%j.out
+#SBATCH --error=/cluster/home/mabdallahi/vis-ml/results/thesis_model_results/logs/scaler_comparison_job_err%j.out
+#SBATCH --chdir=/cluster/home/mabdallahi/vis-ml
+#SBATCH --ntasks=1
+#SBATCH --cpus-per-task=8
+#SBATCH --mem-per-cpu=4G
+#SBATCH --time=12:00:00
+
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-cd "$ROOT"
+export MPLCONFIGDIR="${MPLCONFIGDIR:-/tmp/matplotlib}"
+export KMP_DUPLICATE_LIB_OK="${KMP_DUPLICATE_LIB_OK:-TRUE}"
+export KMP_USE_SHM="${KMP_USE_SHM:-0}"
+export OMP_NUM_THREADS="${SLURM_CPUS_PER_TASK:-1}"
 
-mkdir -p thesis_model_results/tables
+mkdir -p results/thesis_model_results/logs results/thesis_model_results/tables
 
-python3 models/train_sweep.py --config thesis_model_results/configs/scaler_comparison_mlp.yaml
-python3 models/train_sweep.py --config thesis_model_results/configs/scaler_comparison_mtlsh.yaml
-python3 models/train_sweep.py --config thesis_model_results/configs/scaler_comparison_mtlgsh.yaml
-python3 models/train_sweep.py --config thesis_model_results/configs/scaler_comparison_picnn.yaml
+echo "STARTING AT $(date)"
 
-python3 models/summarize_sweep.py \
-  --input-dir thesis_model_results/outputs/scaler_comparison_mlp \
+python models/train_sweep.py --config results/thesis_model_results/configs/scaler_comparison_mlp.yaml
+python models/train_sweep.py --config results/thesis_model_results/configs/scaler_comparison_mtlsh.yaml
+python models/train_sweep.py --config results/thesis_model_results/configs/scaler_comparison_mtlgsh.yaml
+python models/train_sweep.py --config results/thesis_model_results/configs/scaler_comparison_picnn.yaml
+
+python models/summarize_sweep.py \
+  --input-dir results/thesis_model_results/outputs/scaler_comparison_mlp \
   --source run \
   --group-by scaler \
   --value-cols agg_rmse_mean agg_mae_mean best_val_loss \
-  --output-csv thesis_model_results/tables/scaler_comparison_mlp.csv
+  --output-csv results/thesis_model_results/tables/scaler_comparison_mlp.csv
 
-python3 models/summarize_sweep.py \
-  --input-dir thesis_model_results/outputs/scaler_comparison_mlp \
+python models/summarize_sweep.py \
+  --input-dir results/thesis_model_results/outputs/scaler_comparison_mlp \
   --source label \
   --group-by scaler label \
   --value-cols rmse mae \
-  --output-csv thesis_model_results/tables/scaler_comparison_mlp_by_label.csv
+  --output-csv results/thesis_model_results/tables/scaler_comparison_mlp_by_label.csv
 
-python3 models/summarize_sweep.py \
-  --input-dir thesis_model_results/outputs/scaler_comparison_mtlsh \
+python models/summarize_sweep.py \
+  --input-dir results/thesis_model_results/outputs/scaler_comparison_mtlsh \
   --source run \
   --group-by scaler \
   --value-cols agg_rmse_mean agg_mae_mean best_val_loss \
-  --output-csv thesis_model_results/tables/scaler_comparison_mtlsh.csv
+  --output-csv results/thesis_model_results/tables/scaler_comparison_mtlsh.csv
 
-python3 models/summarize_sweep.py \
-  --input-dir thesis_model_results/outputs/scaler_comparison_mtlgsh \
+python models/summarize_sweep.py \
+  --input-dir results/thesis_model_results/outputs/scaler_comparison_mtlgsh \
   --source run \
   --group-by scaler \
   --value-cols agg_rmse_mean agg_mae_mean best_val_loss \
-  --output-csv thesis_model_results/tables/scaler_comparison_mtlgsh.csv
+  --output-csv results/thesis_model_results/tables/scaler_comparison_mtlgsh.csv
 
-python3 models/summarize_sweep.py \
-  --input-dir thesis_model_results/outputs/scaler_comparison_picnn \
+python models/summarize_sweep.py \
+  --input-dir results/thesis_model_results/outputs/scaler_comparison_picnn \
   --source run \
   --group-by scaler \
   --value-cols agg_rmse_mean agg_mae_mean best_val_loss \
-  --output-csv thesis_model_results/tables/scaler_comparison_picnn.csv
+  --output-csv results/thesis_model_results/tables/scaler_comparison_picnn.csv
+
+echo "FINISHED AT $(date)"

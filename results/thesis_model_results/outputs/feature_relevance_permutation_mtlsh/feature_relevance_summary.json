@@ -1,0 +1,16 @@
+{
+  "mode": "permutation",
+  "split": "all",
+  "n_rows": 1024,
+  "n_features": 1206,
+  "n_targets": 6,
+  "interpretation_note": "Attention scores and permutation scores are explanatory diagnostics. They do not imply causality and should not be read as physical proofs.",
+  "baseline_mse_norm": {
+    "rocof_COI": 2.8851141905761324e-05,
+    "dev_COI": 3.918500442523509e-05,
+    "Delta_P_IBR_1": 0.00010412266419734806,
+    "Delta_P_IBR_2": 4.669243935495615e-05,
+    "Delta_P_IBR_3": 0.0004212454950902611,
+    "Delta_P_IBR_4": 7.46037476346828e-05
+  }
+}

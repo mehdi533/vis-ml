@@ -3,6 +3,20 @@ baseline_id: ed
 
 results_root: ../../results/formulations
 
+# Optional future scenario expansion:
+# scenarios:
+#   - id: chapter5_nominal
+#     name: Chapter 5 nominal load-step case
+#     overrides:
+#       scenario:
+#         base_scale: 0.6
+#         step_scale: 1.2
+#         load_step_time: 3.0
+#
+# Optional thesis-relevant embedding-mode sensitivities can be added by cloning a
+# surrogate run and overriding `constraints.nn_mode` to `fixed_pattern` or
+# `epigraph` where that comparison is part of the final chapter narrative.
+
 output:
   summary_csv: ../../results/formulation_comparison_summary.csv
   summary_markdown: ../../results/formulation_comparison_summary.md

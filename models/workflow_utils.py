@@ -156,6 +156,30 @@ def _target_uses_prefix(targets: Sequence[str], prefix: str) -> bool:
     return any(str(target).startswith(prefix) for target in targets)
 
 
+def _collect_registry_input_allowlist(
+    registry: Dict,
+    include_groups: Optional[Sequence[str]] = None,
+) -> tuple[list[str], list[str]]:
+    group_names = list(include_groups or ["x_op", "x_cont", "x_sched"])
+    allowed_cols: list[str] = []
+    allowed_prefixes: list[str] = []
+
+    for group_name in group_names:
+        group_cfg = registry.get(group_name, {})
+        if not isinstance(group_cfg, dict):
+            continue
+
+        for key, value in group_cfg.items():
+            if key == "prefixes" and isinstance(value, dict):
+                _append_unique(allowed_prefixes, [str(prefix) for prefix in value.values()])
+                continue
+
+            if key.endswith("_fields") and isinstance(value, list):
+                _append_unique(allowed_cols, [str(field) for field in value])
+
+    return allowed_cols, allowed_prefixes
+
+
 def resolve_data_config(data_cfg: Dict) -> Dict:
     resolved = deepcopy(data_cfg)
     registry = load_feature_name_registry(resolved.get("feature_names_path"))
@@ -191,6 +215,14 @@ def resolve_data_config(data_cfg: Dict) -> Dict:
             prefix_value = prefix_map.get(prefix_key)
             if prefix_value:
                 _append_unique(drop_prefixes, [prefix_value])
+
+    if registry and resolved.get("use_registry_feature_allowlist", False):
+        allowed_cols, allowed_prefixes = _collect_registry_input_allowlist(
+            registry,
+            include_groups=resolved.get("registry_feature_groups"),
+        )
+        resolved["allowed_feature_cols"] = allowed_cols
+        resolved["allowed_feature_prefixes"] = allowed_prefixes
 
     resolved["drop_cols"] = drop_cols
     resolved["drop_prefixes"] = drop_prefixes

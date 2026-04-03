@@ -15,7 +15,12 @@ import torch
 
 from models.data_utils import load_dataset, split_data
 from models.models import create_model
-from models.workflow_utils import build_model_kwargs, load_yaml
+from models.workflow_utils import (
+    build_model_kwargs,
+    load_feature_name_registry,
+    load_yaml,
+    resolve_data_config,
+)
 
 
 def _resolve_state_dict_path(model_dir: Path, explicit_path: str | None) -> Path:
@@ -205,13 +210,17 @@ def _group_permutation_importance(
             deltas.append(perm_mse - baseline_mse)
 
         delta_mean = np.mean(np.vstack(deltas), axis=0)
+        n_features = len(idx)
         row = {
             "group": group_name,
-            "n_features": len(idx),
+            "n_features": n_features,
             "importance_mse_norm_mean": float(np.mean(delta_mean)),
+            "importance_mse_norm_avg_per_feature": float(np.mean(delta_mean) / n_features),
         }
         for target_idx, target_name in enumerate(target_cols):
-            row[f"importance_mse_norm__{target_name}"] = float(delta_mean[target_idx])
+            delta_value = float(delta_mean[target_idx])
+            row[f"importance_mse_norm__{target_name}"] = delta_value
+            row[f"importance_mse_norm_avg_per_feature__{target_name}"] = delta_value / n_features
         rows.append(row)
 
     return rows
@@ -249,9 +258,11 @@ def main() -> None:
     out_dir = Path(args.out_dir) if args.out_dir else model_dir / "feature_relevance"
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    data_cfg = cfg["data"]
+    data_cfg = resolve_data_config(cfg["data"])
+    feature_name_registry = load_feature_name_registry(data_cfg.get("feature_names_path"))
     csv_path = args.csv or data_cfg["csv_path"]
     targets = list(data_cfg.get("target_cols", []))
+    feature_cols_cfg = list(data_cfg.get("feature_cols", [])) or None
     drops = list(data_cfg.get("drop_cols", []))
     drop_prefixes = list(data_cfg.get("drop_prefixes", []))
     fill = data_cfg.get("missing_fill_value")
@@ -259,6 +270,7 @@ def main() -> None:
     X, y, feature_cols, target_cols = load_dataset(
         csv_path,
         target_cols=targets,
+        feature_cols=feature_cols_cfg,
         remove_cols=drops,
         remove_prefixes=drop_prefixes,
         ignore_missing_remove_cols=bool(data_cfg.get("ignore_missing_drop_cols", False)),
@@ -296,7 +308,12 @@ def main() -> None:
         model_type,
         in_dim=len(feature_cols),
         out_dim=len(target_cols),
-        **build_model_kwargs(model_cfg, feature_cols, train_cfg=cfg.get("training", {})),
+        **build_model_kwargs(
+            model_cfg,
+            feature_cols,
+            train_cfg=cfg.get("training", {}),
+            feature_name_registry=feature_name_registry,
+        ),
     )
 
     state_path = _resolve_state_dict_path(model_dir, args.state_dict)
@@ -369,8 +386,15 @@ def main() -> None:
                 int(args.num_repeats),
                 rng,
             )
-            group_fieldnames = ["group", "n_features", "importance_mse_norm_mean"] + [
+            group_fieldnames = [
+                "group",
+                "n_features",
+                "importance_mse_norm_mean",
+                "importance_mse_norm_avg_per_feature",
+            ] + [
                 f"importance_mse_norm__{target}" for target in target_cols
+            ] + [
+                f"importance_mse_norm_avg_per_feature__{target}" for target in target_cols
             ]
             _write_csv(out_dir / "permutation_group_relevance.csv", group_rows, group_fieldnames)
 

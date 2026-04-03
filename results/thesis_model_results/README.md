@@ -7,9 +7,12 @@ It does **not** cover optimization tables, scheduling comparisons, or ANDES repl
 ## Structure
 
 - `configs/`: YAML configs for each model-side experiment family
-- `commands/`: exact shell commands to run the experiments and export thesis tables
+- `commands/`: cluster-oriented launcher scripts for the experiments and thesis table exports
+- `scripts/`: additional cluster-oriented launcher scripts for thesis analysis sweeps
+- `src/`: small thesis-specific aggregation and analysis utilities
 - `tables/`: recommended destination for aggregated CSV tables created by `models/summarize_sweep.py`
 - `exports/`: recommended destination for the retained-model bundle exported by `models/export_retained_model.py`
+- `logs/`: SLURM stdout/stderr logs on the cluster
 
 ## Assumptions
 
@@ -38,15 +41,30 @@ It does **not** cover optimization tables, scheduling comparisons, or ANDES repl
 | Shortlisted detailed error analysis | `configs/shortlist_detailed_eval.yaml` | `commands/04_shortlist_detailed_eval.sh` |
 | Feature relevance | `configs/feature_relevance_attention.yaml`, `configs/feature_groups.yaml` | `commands/05_feature_relevance.sh` |
 | Retained surrogate export | `configs/architecture_comparison_core.yaml` + its sweep outputs | `commands/06_export_retained_model.sh` |
+| MTLSH embeddability / complexity tradeoff | `configs/mtlsh_embeddability_tradeoff.yaml` | `commands/07_mtlsh_embeddability_tradeoff.sh` |
+| Two-MLP comparison in the style of She et al. | `configs/mlp_she_style_comparison.yaml` | `commands/08_mlp_she_style_comparison.sh` |
+| Shortlist seed robustness | `configs/seed_robustness_shortlist.yaml` | `scripts/09_seed_robustness_shortlist.sh` |
+| Boundary / stress-region evaluation | `configs/boundary_region_eval.yaml` + `configs/shortlist_detailed_eval.yaml` outputs | `scripts/10_boundary_region_eval.sh` |
+| Architecture complexity / fairness summary | reuses `configs/architecture_comparison_core.yaml` outputs | produced by `commands/03_architecture_comparison.sh` via `src/complexity_summary.py` |
+| Alternate architecture comparison under retained preprocessing/loss candidate | `configs/architecture_comparison_core_kendall_standard.yaml`, `configs/architecture_comparison_exploratory_kendall_standard.yaml` | `commands/11_architecture_comparison_kendall_standard.sh` |
+| Optimization-ready surrogate handoff | `configs/optimization_ready_mtlsh.yaml` | `commands/12_optimization_ready_mtlsh.sh` |
 
 ## Recommended run order
 
-1. `commands/01_scaler_comparison.sh`
-2. `commands/02_loss_comparison.sh`
-3. `commands/03_architecture_comparison.sh`
-4. `commands/04_shortlist_detailed_eval.sh`
-5. `commands/05_feature_relevance.sh`
-6. `commands/06_export_retained_model.sh`
+1. Submit one job at a time with `sbatch results/thesis_model_results/commands/01_scaler_comparison.sh`
+2. Continue with `sbatch results/thesis_model_results/commands/02_loss_comparison.sh`
+3. Then `sbatch results/thesis_model_results/commands/03_architecture_comparison.sh`
+4. Then `sbatch results/thesis_model_results/commands/04_shortlist_detailed_eval.sh`
+5. Then `sbatch results/thesis_model_results/commands/05_feature_relevance.sh`
+6. Finish with `sbatch results/thesis_model_results/commands/06_export_retained_model.sh`
+7. Run `sbatch results/thesis_model_results/commands/07_mtlsh_embeddability_tradeoff.sh` for the MTLSH complexity figure
+8. Run `sbatch results/thesis_model_results/commands/08_mlp_she_style_comparison.sh` for the two-MLP comparison
+9. Run `sbatch results/thesis_model_results/scripts/09_seed_robustness_shortlist.sh` for ranking robustness across seeds
+10. Run `sbatch results/thesis_model_results/scripts/10_boundary_region_eval.sh` for stressed-subset evaluation
+11. Run `sbatch results/thesis_model_results/commands/11_architecture_comparison_kendall_standard.sh` to compare architectures under `kendall + standard`
+12. Run `sbatch results/thesis_model_results/commands/12_optimization_ready_mtlsh.sh` to train and export the optimizer-compatible surrogate bundle
+
+For bulk submission, use `results/thesis_model_results/commands/submit_all.sh`.
 
 ## Notes on the outputs
 
@@ -63,3 +81,7 @@ It does **not** cover optimization tables, scheduling comparisons, or ANDES repl
   - `sweep_run_summary.csv` for per-run aggregate metrics
 
 The table-generation commands use `models/summarize_sweep.py` so the thesis tables can be rebuilt from the run outputs without manual editing.
+
+The retained-family ablation is not packaged as a separate sweep because `mtlsh_embeddability_tradeoff.yaml` already provides the retained-family size sweep; the new complexity summary and tradeoff table are intended to present that result directly.
+
+`configs/optimization_ready_mtlsh.yaml` is intentionally different from the full thesis shortlist configs: it pins the exact ordered feature contract that the current scheduling optimizer can build, rather than training on every available column in `results/to_export/simulation_results.csv`.

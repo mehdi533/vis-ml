@@ -133,12 +133,16 @@ def train_one(
     data_cfg = resolve_data_config(run_cfg["data"])
     feature_name_registry = load_feature_name_registry(data_cfg.get("feature_names_path"))
     targets = normalize_arg_list(data_cfg.get("target_cols"))
+    feature_cols_cfg = normalize_arg_list(data_cfg.get("feature_cols"))
     drops = normalize_arg_list(data_cfg.get("drop_cols"))
     drop_prefixes = normalize_arg_list(data_cfg.get("drop_prefixes"), default=[])
 
     X, y, feature_cols, target_cols = load_dataset(
         data_cfg["csv_path"],
         target_cols=targets,
+        feature_cols=feature_cols_cfg,
+        allowed_feature_cols=data_cfg.get("allowed_feature_cols"),
+        allowed_feature_prefixes=data_cfg.get("allowed_feature_prefixes"),
         remove_cols=drops,
         remove_prefixes=drop_prefixes,
         ignore_missing_remove_cols=bool(data_cfg.get("ignore_missing_drop_cols", False)),
@@ -336,6 +340,12 @@ def train_one(
             "rmse": row["rmse"],
             "mae": row["mae"],
             "mse": row["mse"],
+            "raw_unit": row["raw_unit"],
+            "display_unit": row["display_unit"],
+            "display_scale": row["display_scale"],
+            "rmse_display": row["rmse_display"],
+            "mae_display": row["mae_display"],
+            "mse_display": row["mse_display"],
             "rmse_norm": row["rmse_norm"],
             "mae_norm": row["mae_norm"],
             "mse_norm": row["mse_norm"],
@@ -419,9 +429,15 @@ def main() -> None:
         "scaler",
         "seed",
         "label",
+        "raw_unit",
+        "display_unit",
+        "display_scale",
         "rmse",
         "mae",
         "mse",
+        "rmse_display",
+        "mae_display",
+        "mse_display",
         "rmse_norm",
         "mae_norm",
         "mse_norm",

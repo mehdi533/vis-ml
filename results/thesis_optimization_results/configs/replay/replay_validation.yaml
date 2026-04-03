@@ -25,14 +25,11 @@ output_metric_map:
   Delta_P_IBR_4: "ibr_response.Delta_P_IBR_4"
 
 runs:
-  - run_id: ed_surrogate
-    summary_json: ../../results/formulations/ed_surrogate/ed_surrogate_summary.json
-
-  - run_id: ed_line_n1_surrogate
-    summary_json: ../../results/formulations/ed_line_n1_surrogate/ed_line_n1_surrogate_summary.json
-
-  - run_id: ed_line_n1_surrogate_redispatch
-    summary_json: ../../results/formulations/ed_line_n1_surrogate_redispatch/ed_line_n1_surrogate_redispatch_summary.json
+  - suite_summary_json: ../../results/formulation_comparison_summary.json
+    formulation_ids:
+      - ed_surrogate
+      - ed_line_n1_surrogate
+      - ed_line_n1_surrogate_redispatch
 
 output:
   summary_csv: ../../results/replay_validation_summary.csv

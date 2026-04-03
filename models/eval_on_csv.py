@@ -71,6 +71,7 @@ def main():
     data_cfg = resolve_data_config(cfg["data"])
     feature_name_registry = load_feature_name_registry(data_cfg.get("feature_names_path"))
     targets = list(data_cfg.get("target_cols", []))
+    feature_cols_cfg = list(data_cfg.get("feature_cols", [])) or None
     drops = list(data_cfg.get("drop_cols", []))
     drop_prefixes = list(data_cfg.get("drop_prefixes", []))
     fill = data_cfg.get("missing_fill_value")
@@ -78,6 +79,9 @@ def main():
     X, y, feature_cols, target_cols = load_dataset(
         args.csv,
         target_cols=targets,
+        feature_cols=feature_cols_cfg,
+        allowed_feature_cols=data_cfg.get("allowed_feature_cols"),
+        allowed_feature_prefixes=data_cfg.get("allowed_feature_prefixes"),
         remove_cols=drops,
         remove_prefixes=drop_prefixes,
         ignore_missing_remove_cols=bool(data_cfg.get("ignore_missing_drop_cols", False)),

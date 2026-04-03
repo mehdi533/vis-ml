@@ -24,6 +24,10 @@ seed:
   D: 2.0
 
 model:
+  # This must point to an optimization-ready surrogate artifact bundle.
+  # The full thesis shortlist models under results/thesis_model_results/... are trained on
+  # 1206 inputs, including ~998 x0__ initial-state channels and line-contingency fields.
+  # Those are not directly buildable by the current scheduling optimizer.
   type: MTLSharedHeads
   model_dir: __simpqareas/MTLSH__mse__minmax__seed42
   retain_reason: "Retained surrogate: best accuracy/complexity compromise among embeddable candidates."
@@ -35,7 +39,11 @@ model:
   convex: true
 
 features:
+  # This list is the optimizer-buildable surrogate contract, not a dump of every dataset column.
+  # If you retrain the optimization surrogate, replace this with the exact training feature order
+  # for that optimization-ready model.
   x_features: ["base_load_scale","load_step_scale","base_load_p_total","base_load_q_total","DELTA_PQ_tot","M_1","D_1","M_2","D_2","M_3","D_3","M_4","D_4","DELTA_P_PQ_1","DELTA_P_PQ_2","DELTA_P_PQ_3","DELTA_P_PQ_4","DELTA_P_PQ_5","DELTA_P_PQ_6","DELTA_P_PQ_7","DELTA_P_PQ_8","DELTA_P_PQ_9","DELTA_P_PQ_10","DELTA_P_PQ_11","DELTA_P_PQ_12","DELTA_P_PQ_13","DELTA_P_PQ_14","DELTA_P_PQ_15","DELTA_P_PQ_16","DELTA_P_PQ_17","DELTA_P_PQ_18","DELTA_P_PQ_19","DELTA_P_OWNER_1","DELTA_P_OWNER_2","DELTA_P_OWNER_3","DELTA_P_OWNER_4","P_GENROU_1","P_GENROU_2","P_GENROU_3","P_GENROU_4","P_GENROU_5","P_GENROU_6","P_REGCV1_1","P_REGCV1_2","P_REGCV1_3","P_REGCV1_4"]
+  allow_missing_features: false
   missing_fill_value: 0.0
 
 outputs:
@@ -80,7 +88,7 @@ solver:
 
 plots:
   enabled: false
-  dir: thesis_optimization_results/results/plots
+  dir: results/thesis_optimization_results/results/plots
   m_d: false
   pred_vs_opt: false
   dispatch: false
@@ -88,7 +96,7 @@ plots:
   network_layout: kamada
 
 output:
-  results_dir: thesis_optimization_results/results/formulations
+  results_dir: results/thesis_optimization_results/results/formulations
   run_tag: base
-  log_file: thesis_optimization_results/results/formulations/base/base.log
+  log_file: results/thesis_optimization_results/results/formulations/base/base.log
   fail_on_infeasible: false

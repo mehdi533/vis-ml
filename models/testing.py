@@ -6,6 +6,36 @@ import numpy as np
 import torch
 
 
+SYSTEM_BASE_MVA = 100.0
+
+
+def _target_metric_metadata(name: str) -> dict:
+    label = str(name)
+    if label == "rocof_COI":
+        return {
+            "raw_unit": "Hz/s",
+            "display_unit": "Hz/s",
+            "display_scale": 1.0,
+        }
+    if label == "dev_COI":
+        return {
+            "raw_unit": "Hz",
+            "display_unit": "Hz",
+            "display_scale": 1.0,
+        }
+    if label.startswith("Delta_P_IBR_"):
+        return {
+            "raw_unit": "p.u.",
+            "display_unit": "MW",
+            "display_scale": SYSTEM_BASE_MVA,
+        }
+    return {
+        "raw_unit": "",
+        "display_unit": "",
+        "display_scale": 1.0,
+    }
+
+
 def compute_prediction_metrics(y_true, y_pred, y_true_norm, y_pred_norm, target_cols):
     diff = y_pred - y_true
     diff_norm = y_pred_norm - y_true_norm
@@ -20,6 +50,8 @@ def compute_prediction_metrics(y_true, y_pred, y_true_norm, y_pred_norm, target_
 
     metrics_by_target = []
     for idx, name in enumerate(target_cols):
+        meta = _target_metric_metadata(name)
+        display_scale = float(meta["display_scale"])
         metrics_by_target.append(
             {
                 "label": str(name),
@@ -29,6 +61,12 @@ def compute_prediction_metrics(y_true, y_pred, y_true_norm, y_pred_norm, target_
                 "rmse_norm": float(rmse_norm[idx]),
                 "mae_norm": float(mae_norm[idx]),
                 "mse_norm": float(mse_norm[idx]),
+                "raw_unit": meta["raw_unit"],
+                "display_unit": meta["display_unit"],
+                "display_scale": display_scale,
+                "rmse_display": float(rmse[idx] * display_scale),
+                "mae_display": float(mae[idx] * display_scale),
+                "mse_display": float(mse[idx] * (display_scale ** 2)),
             }
         )
 
@@ -53,9 +91,12 @@ def _write_metrics_files(output_dir: Path, target_cols, metrics_by_target) -> No
 
     with rmse_path.open("w", encoding="utf-8") as f:
         for row in metrics_by_target:
+            unit_suffix = f" {row['display_unit']}" if row["display_unit"] else ""
             line = (
                 f"Test RMSE({row['label']}) = {row['rmse']:.4f} | "
-                f"norm: {row['rmse_norm']:.4f} | real_diff: {row['mae']:.4f}"
+                f"norm: {row['rmse_norm']:.4f} | "
+                f"mean_abs_diff: {row['mae']:.4f} {row['raw_unit']} | "
+                f"display_rmse: {row['rmse_display']:.4f}{unit_suffix}"
             )
             print(line)
             f.write(line + "\n")
@@ -63,7 +104,21 @@ def _write_metrics_files(output_dir: Path, target_cols, metrics_by_target) -> No
     with metrics_csv.open("w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(
             f,
-            fieldnames=["label", "rmse", "mae", "mse", "rmse_norm", "mae_norm", "mse_norm"],
+            fieldnames=[
+                "label",
+                "raw_unit",
+                "display_unit",
+                "display_scale",
+                "rmse",
+                "mae",
+                "mse",
+                "rmse_display",
+                "mae_display",
+                "mse_display",
+                "rmse_norm",
+                "mae_norm",
+                "mse_norm",
+            ],
         )
         writer.writeheader()
         writer.writerows(metrics_by_target)

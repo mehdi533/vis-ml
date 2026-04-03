@@ -1,0 +1,67 @@
+{
+  "n_targets": 6,
+  "agg_rmse_mean": Infinity,
+  "agg_mae_mean": Infinity,
+  "agg_mse_mean": Infinity,
+  "agg_rmse_norm_mean": 232.6778564453125,
+  "agg_mae_norm_mean": 11.176012992858887,
+  "agg_mse_norm_mean": 54140.1875,
+  "max_rmse": Infinity,
+  "max_mae": Infinity,
+  "targets": [
+    {
+      "label": "rocof_COI",
+      "rmse": Infinity,
+      "mae": Infinity,
+      "mse": Infinity,
+      "rmse_norm": 234.02061462402344,
+      "mae_norm": 11.216156005859375,
+      "mse_norm": 54765.64453125
+    },
+    {
+      "label": "dev_COI",
+      "rmse": Infinity,
+      "mae": Infinity,
+      "mse": Infinity,
+      "rmse_norm": 231.0133514404297,
+      "mae_norm": 11.030830383300781,
+      "mse_norm": 53367.16796875
+    },
+    {
+      "label": "Delta_P_IBR_1",
+      "rmse": Infinity,
+      "mae": Infinity,
+      "mse": Infinity,
+      "rmse_norm": 231.52833557128906,
+      "mae_norm": 11.10398006439209,
+      "mse_norm": 53605.3671875
+    },
+    {
+      "label": "Delta_P_IBR_2",
+      "rmse": Infinity,
+      "mae": Infinity,
+      "mse": Infinity,
+      "rmse_norm": 233.33656311035156,
+      "mae_norm": 11.171096801757812,
+      "mse_norm": 54445.953125
+    },
+    {
+      "label": "Delta_P_IBR_3",
+      "rmse": Infinity,
+      "mae": Infinity,
+      "mse": Infinity,
+      "rmse_norm": 232.5302734375,
+      "mae_norm": 11.379956245422363,
+      "mse_norm": 54070.328125
+    },
+    {
+      "label": "Delta_P_IBR_4",
+      "rmse": Infinity,
+      "mae": Infinity,
+      "mse": Infinity,
+      "rmse_norm": 233.6378936767578,
+      "mae_norm": 11.154052734375,
+      "mse_norm": 54586.6640625
+    }
+  ]
+}

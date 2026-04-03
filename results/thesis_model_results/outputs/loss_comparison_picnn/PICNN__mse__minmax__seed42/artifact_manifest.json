@@ -1,0 +1,9 @@
+{
+  "model_type": "PICNN",
+  "checkpoint_files": {
+    "best_state_dict": "picnn_state_dict_best.pt",
+    "final_state_dict": "picnn_state_dict.pt"
+  },
+  "primary_best_state_dict": "picnn_state_dict_best.pt",
+  "primary_final_state_dict": "picnn_state_dict.pt"
+}

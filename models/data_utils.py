@@ -209,6 +209,9 @@ def list_recommended_scalers():
 def load_dataset(
     csv_path: str,
     target_cols: Optional[Sequence[str]] = None,
+    feature_cols: Optional[Sequence[str]] = None,
+    allowed_feature_cols: Optional[Sequence[str]] = None,
+    allowed_feature_prefixes: Optional[Sequence[str]] = None,
     remove_cols: Optional[Sequence[str]] = None,
     remove_prefixes: Optional[Sequence[str]] = None,
     ignore_missing_remove_cols: bool = False,
@@ -219,6 +222,16 @@ def load_dataset(
     targets = list(target_cols) if target_cols is not None else ["max_rocof", "f_nadir", "f_max"]
     drops = list(remove_cols) if remove_cols is not None else []
     drop_prefixes = [str(prefix) for prefix in remove_prefixes] if remove_prefixes is not None else []
+    allowed_cols = (
+        {str(col) for col in allowed_feature_cols}
+        if allowed_feature_cols is not None
+        else None
+    )
+    allowed_prefixes = (
+        [str(prefix) for prefix in allowed_feature_prefixes]
+        if allowed_feature_prefixes is not None
+        else []
+    )
 
     missing_targets = [c for c in targets if c not in df.columns]
     if missing_targets:
@@ -232,11 +245,39 @@ def load_dataset(
             raise ValueError(f"Missing remove_cols in CSV: {missing_drops}")
 
     blocked = set(targets + drops)
-    feature_cols = [
-        c
-        for c in df.columns
-        if c not in blocked and not any(str(c).startswith(prefix) for prefix in drop_prefixes)
-    ]
+    explicit_feature_cols = list(feature_cols) if feature_cols is not None else None
+    if explicit_feature_cols is not None:
+        missing_features = [c for c in explicit_feature_cols if c not in df.columns]
+        if missing_features:
+            raise ValueError(f"Missing explicit feature_cols in CSV: {missing_features}")
+        blocked_features = [c for c in explicit_feature_cols if c in blocked]
+        if blocked_features:
+            raise ValueError(
+                f"Explicit feature_cols cannot overlap with targets/remove_cols: {blocked_features}"
+            )
+        blocked_by_prefix = [
+            c
+            for c in explicit_feature_cols
+            if any(str(c).startswith(prefix) for prefix in drop_prefixes)
+        ]
+        if blocked_by_prefix:
+            raise ValueError(
+                f"Explicit feature_cols cannot match remove_prefixes: {blocked_by_prefix}"
+            )
+        feature_cols = explicit_feature_cols
+    else:
+        feature_cols = [
+            c
+            for c in df.columns
+            if c not in blocked
+            and not any(str(c).startswith(prefix) for prefix in drop_prefixes)
+            and (
+                allowed_cols is None
+                and not allowed_prefixes
+                or c in allowed_cols
+                or any(str(c).startswith(prefix) for prefix in allowed_prefixes)
+            )
+        ]
     if not feature_cols:
         raise ValueError("No feature columns left after removing targets/drops.")
 
