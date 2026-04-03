@@ -1,9 +1,28 @@
-venv
-ieee39_full_ibrs_*
-results/
-outputs/
-*__pycache__
 MTLSH__mse__robust__seed42__batch_eval128__batch_train128__epochs200__lr0.0005__use_lr_schedulerFalse__weight_decay1e-05
+__models_trained
+__convex_opt
+__simpqareas
+venv
+__results
+__outputs
+ieee39_full_*
+*__pycache__
 *.csv
-models_trained
-convex_opt
+*.pkl
+*.txt
+*.pt
+optimization/plots
+optimization/results
+notebooks
+experiments
+*.pytest_cache
+tests
+# results
+optimization
+tests
+tmp/*
+tmp
+# results
+LaTeX
+*.png
+*.pdf

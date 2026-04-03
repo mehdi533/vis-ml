@@ -1,719 +1,708 @@
-# Write this file that is based on the other ones but make sure that the pb is written correctly. Specifically for a small trained MLP (2 layers)
+from __future__ import annotations
 
-"""
-Write the MILP end-to-end:
-- equality constraints on input features (pre-defined)
-- inequality constraints on the output features (pre-defined)
-- inequality constraints on the line flows (see convex opt. line flow class + smart grids technology class)
-- ineq. / eq. constraints on layer by layer output (with small MLP)
-- eq. constraints power dispatch and prod. of REGCV1S
-
-
-Takes too long to solve, was correct in the other
-"""
-f_scale = 1000/1000
-
-import cvxpy as cp
-import numpy as np
-import torch
-import andes
 import argparse
 import csv
+import json
+import re
+import sys
+import time
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any, Mapping
+
+import andes
+import cvxpy as cp
+import numpy as np
 import yaml
-import joblib
 
-from typing import Dict, List, Sequence, Tuple
+# Support both:
+# - python -m scheduling.problem
+# - python scheduling/problem.py
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
-from andes.interop.pandapower import to_pandapower
-from pandapower.pd2ppc import _pd2ppc
-from pandapower.pypower.makePTDF import makePTDF
-from pandapower.pypower.makeLODF import makeLODF
-from pandapower.pd2ppc import _pd2ppc
-from pandapower import auxiliary as aux
-
-from models.models import MTLSharedHeads
-
-from scheduling.diagnostics import plot_m_d_ibrs, plot_pred_vs_opt
+try:
+    from scheduling.constraints import (
+        build_basecase_line_constraints,
+        build_ed_constraints,
+        build_input_feature_constraints,
+        build_n1_constraints,
+        build_n1_redispatch_constraints,
+        build_output_feature_constraints,
+        evaluate_line_security_metrics,
+    )
+    from scheduling.constraints_nn import build_nn_constraints
+except ModuleNotFoundError:
+    from final_optimization_folder.constraints import (
+        build_basecase_line_constraints,
+        build_ed_constraints,
+        build_input_feature_constraints,
+        build_n1_constraints,
+        build_n1_redispatch_constraints,
+        build_output_feature_constraints,
+        evaluate_line_security_metrics,
+    )
+    from final_optimization_folder.constraints_nn import build_nn_constraints
 from scheduling.utils import (
-    build_features,
-    compute_y_bounds,
     add_measurement_devices,
-    _extract_linear_layers,
-    activation_masks_mtlshared,
-    _sanitize_label,
+    build_features,
+    build_model_from_cfg,
+    load_optimization_config,
+    load_scalers,
+    parse_constraint_switches,
+    parse_plot_options,
+    parse_solver_options,
+    setup_logger,
 )
 
 
-def _load_csv_header(csv_path: Path) -> list[str]:
-    with csv_path.open("r", encoding="utf-8-sig", newline="") as f:
-        reader = csv.reader(f)
-        header = next(reader)
-    return [str(col).strip() for col in header if str(col).strip()]
+def _sanitize_token(value: str) -> str:
+    safe = re.sub(r"[^A-Za-z0-9_]+", "_", str(value)).strip("_")
+    return safe or "default"
 
 
-def _resolve_x_features(cost_cfg: dict) -> list[str]:
+def _scenario_id_from_cfg(cfg: Mapping[str, Any]) -> str:
+    scenario_cfg = dict(cfg.get("scenario", {}) or {})
+    raw = str(scenario_cfg.get("id", "")).strip()
+    if raw:
+        return _sanitize_token(raw)
+
+    base_scale = scenario_cfg.get("base_scale")
+    step_scale = scenario_cfg.get("step_scale")
+    load_step_time = scenario_cfg.get("load_step_time")
+    parts = []
+    if base_scale is not None:
+        parts.append(f"b{float(base_scale):.3f}".replace(".", "p"))
+    if step_scale is not None:
+        parts.append(f"s{float(step_scale):.3f}".replace(".", "p"))
+    if load_step_time is not None:
+        parts.append(f"t{float(load_step_time):.3f}".replace(".", "p"))
+    return _sanitize_token("_".join(parts) or "default")
+
+
+def _resolve_model_dir(model_cfg: Mapping[str, Any]) -> Path:
+    raw = str(model_cfg.get("model_dir", model_cfg.get("state_dict", ""))).strip()
+    if not raw:
+        raise ValueError("Missing model.model_dir or model.state_dict in optimization config.")
+    path = Path(raw)
+    return path.parent if path.suffix else path
+
+
+def _load_feature_contract_from_model_dir(model_cfg: Mapping[str, Any]) -> list[str]:
+    model_dir = _resolve_model_dir(model_cfg)
+    run_cfg_path = model_dir / "run_config.yaml"
+    if not run_cfg_path.exists():
+        raise FileNotFoundError(
+            f"features.x_features_from_model_dir=true but run_config.yaml was not found at {run_cfg_path}"
+        )
+    with run_cfg_path.open("r", encoding="utf-8") as f:
+        payload = yaml.safe_load(f) or {}
+
+    feature_cols = list((payload.get("resolved", {}) or {}).get("feature_cols") or [])
+    feature_cols = [str(name) for name in feature_cols if str(name).strip()]
+    if not feature_cols:
+        raise ValueError(
+            f"run_config.yaml does not contain resolved.feature_cols at {run_cfg_path}"
+        )
+    return feature_cols
+
+
+def _load_missing_feature_reference_values(
+    *,
+    cfg: Mapping[str, Any],
+    x_features: list[str],
+) -> dict[str, float]:
     """
-    Resolve the input feature ordering.
-
-    Priority:
-    1) If cost_cfg.data.csv_path is provided, use CSV column order and drop:
-       - cost_cfg.data.target_cols
-       - cost_cfg.data.drop_cols
-    2) Fall back to cost_cfg.features.x_features.
+    Load fixed values for non-buildable features from a reference dataset row.
     """
-    data_cfg = cost_cfg.get("data") or {}
-    csv_path = data_cfg.get("csv_path")
-    if csv_path:
-        header = _load_csv_header(Path(csv_path))
-        target_cols = set(data_cfg.get("target_cols") or [])
-        drop_cols = set(data_cfg.get("drop_cols") or [])
-        x_features = [c for c in header if c not in target_cols and c not in drop_cols]
-        if not x_features:
-            raise ValueError(
-                f"No x_features left after excluding target_cols/drop_cols from {csv_path}."
+    feature_cfg = dict(cfg.get("features", {}) or {})
+    source = str(feature_cfg.get("missing_feature_source", "")).strip().lower()
+    if not source or source == "none":
+        return {}
+
+    csv_path: Path | None = None
+    if source == "model_data_first_row":
+        model_dir = _resolve_model_dir(cfg.get("model", {}) or {})
+        run_cfg_path = model_dir / "run_config.yaml"
+        if not run_cfg_path.exists():
+            raise FileNotFoundError(
+                f"Missing feature source '{source}' requires run_config.yaml in model_dir: {run_cfg_path}"
             )
-        return x_features
-
-    features_cfg = cost_cfg.get("features") or {}
-    x_features = list(features_cfg.get("x_features") or [])
-    if not x_features:
-        raise ValueError("Missing features.x_features in cost config (and no data.csv_path provided).")
-    return x_features
-
-
-def input_features_constraints(x_val_sc: np.ndarray, 
-                               x_features: list[str], 
-                               m_idx: list[int], 
-                               d_idx: list[int],
-                               m_min_sc: float,
-                               m_max_sc: float,
-                               d_min_sc: float,
-                               d_max_sc: float,
-                               pg: cp.Expression | np.ndarray,
-                               free_idx: Sequence[int] | None = None,
-                               pg_link_order: Sequence[int] | None = None,
-                               pg_link_scales: np.ndarray | None = None,
-                               pg_link_offsets: np.ndarray | None = None):
-    
-    # TODO: maybe I should redefine the variables because I only need the M and Ds to be changing, not the rest no matter if I add limits
-    x = cp.Variable(len(x_val_sc), name="features")
-    
-    n_feat = len(x_val_sc)
-    free = set(m_idx) | set(d_idx)
-    if free_idx:
-        free.update(((idx + n_feat) if idx < 0 else idx) for idx in free_idx)
-
-    pg_n = int(pg.shape[0]) if getattr(pg, "shape", None) else int(np.size(pg))
-    # Optionally link dispatch setpoint features to the dispatch decision variable pg.
-    #
-    # This repo's feature pipeline adds dispatch features as:
-    #   P_GENROU_1..n_genrou then P_REGCV1_1..n_regcv1
-    # These are typically the last 10 features for the ETH demo cases (6 GENROU + 4 REGCV1),
-    # but we support locating them by name if possible.
-    # Simpler, case-agnostic linking: assume the last k dispatch features correspond
-    # to generator setpoints, where k = len(pg_link_order) or 10 by default.
-    k = len(pg_link_order) if pg_link_order is not None else min(10, n_feat)
-    x_pg_idx = list(range(n_feat - k, n_feat)) if k and n_feat >= k else []
-
-    link_pg = bool(x_pg_idx) and pg_n >= len(x_pg_idx)
-    if link_pg:
-        free.update(x_pg_idx)
-
-    eq_idx = [i for i in range(n_feat) if i not in free]
-    constraints = [x[eq_idx] == x_val_sc[eq_idx]]
-    constraints += [x[m_idx] >= m_min_sc, x[m_idx] <= m_max_sc]
-    constraints += [x[d_idx] >= d_min_sc, x[d_idx] <= d_max_sc]
-
-    if link_pg:
-        k = len(x_pg_idx)
-        if pg_link_order is None:
-            pg_link_order = tuple(range(k))
-
-        if len(pg_link_order) != k:
-            raise ValueError(f"pg_link_order must have length {k} (got {len(pg_link_order)}).")
-        if max(pg_link_order) >= pg_n:
-            raise ValueError(f"pg_link_order has index >= len(pg) ({pg_n}): {pg_link_order}")
-
-        pg_link = cp.hstack([pg[i] for i in tuple(pg_link_order)])
-        if pg_link_scales is not None and pg_link_offsets is not None:
-            pg_link_scales = np.asarray(pg_link_scales, dtype=float).reshape(-1)
-            pg_link_offsets = np.asarray(pg_link_offsets, dtype=float).reshape(-1)
-            if pg_link_scales.size != k or pg_link_offsets.size != k:
-                raise ValueError(
-                    f"pg_link_scales/offsets must have length {k} (got {pg_link_scales.size}/{pg_link_offsets.size})."
-                )
-            pg_link = cp.multiply(pg_link, pg_link_scales) + pg_link_offsets
-
-        constraints += [x[x_pg_idx] == pg_link]
-
-    return x, constraints
-
-
-def output_features_constraints(y_min_sc: np.ndarray, 
-                                y_max_sc: np.ndarray,
-                                p_min_sc: np.ndarray,
-                                p_max_sc: np.ndarray,
-                                dp_sc: np.ndarray,): # TODO not sure if p_scaled is np.darray
-    
-    y = cp.Variable(len(y_min_sc), name="output_features")
-
-    constraints = []
-
-    # Constraints on min and max value for freq. values and /\P_IBR values
-    constraints += [y >= y_min_sc]
-    constraints += [y <= y_max_sc]
-
-    # Constraints on (/\P_IBR)_sc <= y[4:8]
-    # constraints += [y[4:8] >= dp_ibr_sc]
-    # TODO: need to fix this bcs we actually do not put the delta p ibr max but the delta p ibr, the extra prod. of the ibr doesn't go back down, are we actually predicting delta p ibr? 
-    constraints += [y[2:6] >= dp_sc]
-    constraints += [y[2:6] >= p_min_sc] # the negative difference cannot be greater than the difference between power output and 
-    constraints += [y[2:6] <= p_max_sc]
-
-    return y, constraints
-
-
-def inequality_line_flows(ss: andes.System, 
-                          pg: cp.Expression | np.ndarray,
-                          pd: cp.Expression | np.ndarray):
-
-    # Convert andes system to pandapower format to compute line flow limits constraints
-    pp_net = to_pandapower(ss, verify=False) # TODO what if i put true here? 
-
-    # Compute PTDF matrix
-    pp_net._options = {}
-    aux._add_ppc_options(
-        pp_net,
-        calculate_voltage_angles=True,
-        trafo_model="pi",
-        check_connectivity=False,
-        mode="opf",
-        switch_rx_ratio=2,
-        enforce_q_lims=False,
-        recycle=None,
-    )
-    _, ppci = _pd2ppc(pp_net)
-    branch = ppci["branch"]
-    fmax = np.asarray(branch[:, 5], dtype=float)  # RATE_A TODO why is this up to 5? 
-    ptdf = makePTDF(ppci["baseMVA"], ppci["bus"], ppci["branch"], using_sparse_solver=False) # TODO what if i put true here? 
-    
-    bus_ids = pp_net.bus.index.to_numpy()
-    line_ids = pp_net.line.index.to_numpy() # TODO: why is this not used? 
-
-    # Compute Cd and Cg matrices to map generator and load injections to bus power injections
-    bus_df = ss.Bus.as_df()[["idx"]]
-    bus_nums = bus_df["idx"].to_numpy(dtype=int)
-    bus_uids = bus_df.index.to_numpy(dtype=int)
-    bus_pos = {int(bus): i for i, bus in enumerate(bus_ids)}
-    bus_num_to_pos = {int(num): bus_pos[int(uid)] for num, uid in zip(bus_nums, bus_uids)}
-
-    gen_buses = np.concatenate([np.asarray(ss.PV.bus.v, dtype=int), np.asarray(ss.Slack.bus.v, dtype=int)])
-    load_buses = np.asarray(ss.PQ.bus.v, dtype=int)
-
-    gen_rows = np.fromiter((bus_num_to_pos[int(bus)] for bus in gen_buses), dtype=int, count=len(gen_buses))
-    load_rows = np.fromiter((bus_num_to_pos[int(bus)] for bus in load_buses), dtype=int, count=len(load_buses))
-
-    Cg = np.zeros((len(bus_ids), len(gen_buses)), dtype=float)
-    Cd = np.zeros((len(bus_ids), len(load_buses)), dtype=float)
-    Cg[gen_rows, np.arange(len(gen_buses))] = 1.0
-    Cd[load_rows, np.arange(len(load_buses))] = 1.0
-
-    # Compute net injections (Cg, pg_var, Cd, pd_vec)
-    injections = Cg @ pg - Cd @ pd
-    
-    """
-    if shunt: # TODO: double check that
-        p = p - shunt
-    if bus_inj:
-        p = p - bus_inj
-    """
-
-    # Compute line flows (ptdf, injections)
-    flows = ptdf @ injections
-
-    # Build constraints (flows, fmax)
-    constraints = [flows <= fmax * f_scale, flows >= -fmax * f_scale]
-
-    return flows, constraints
-
-
-def preventive_n1_line_flow_constraints(
-    ss: andes.System,
-    pg: cp.Expression | np.ndarray,
-    pd: cp.Expression | np.ndarray,
-):
-    """
-    Preventive DC N-1 constraints with PTDF + LODF:
-    f_post(l) = f + LODF[:, l] * f[l] for each single-line outage l.
-    """
-    pp_net = to_pandapower(ss, verify=False)
-    pp_net._options = {}
-    aux._add_ppc_options(
-        pp_net,
-        calculate_voltage_angles=True,
-        trafo_model="pi",
-        check_connectivity=False,
-        mode="opf",
-        switch_rx_ratio=2,
-        enforce_q_lims=False,
-        recycle=None,
-    )
-    _, ppci = _pd2ppc(pp_net)
-    branch = ppci["branch"]
-    fmax = np.asarray(branch[:, 5], dtype=float)
-    ptdf = makePTDF(ppci["baseMVA"], ppci["bus"], branch, using_sparse_solver=False)
-    try:
-        lodf = np.asarray(makeLODF(branch, ptdf), dtype=float)
-    except TypeError:
-        lodf = np.asarray(makeLODF(ptdf, branch), dtype=float)
-
-    bus_ids = pp_net.bus.index.to_numpy()
-    bus_df = ss.Bus.as_df()[["idx"]]
-    bus_nums = bus_df["idx"].to_numpy(dtype=int)
-    bus_uids = bus_df.index.to_numpy(dtype=int)
-    bus_pos = {int(bus): i for i, bus in enumerate(bus_ids)}
-    bus_num_to_pos = {int(num): bus_pos[int(uid)] for num, uid in zip(bus_nums, bus_uids)}
-
-    gen_buses = np.concatenate([np.asarray(ss.PV.bus.v, dtype=int), np.asarray(ss.Slack.bus.v, dtype=int)])
-    load_buses = np.asarray(ss.PQ.bus.v, dtype=int)
-
-    gen_rows = np.fromiter((bus_num_to_pos[int(bus)] for bus in gen_buses), dtype=int, count=len(gen_buses))
-    load_rows = np.fromiter((bus_num_to_pos[int(bus)] for bus in load_buses), dtype=int, count=len(load_buses))
-
-    Cg = np.zeros((len(bus_ids), len(gen_buses)), dtype=float)
-    Cd = np.zeros((len(bus_ids), len(load_buses)), dtype=float)
-    Cg[gen_rows, np.arange(len(gen_buses))] = 1.0
-    Cd[load_rows, np.arange(len(load_buses))] = 1.0
-
-    injections = Cg @ pg - Cd @ pd
-    flows = ptdf @ injections
-
-    constraints = []
-    n_lines = int(len(fmax))
-    for l in range(n_lines):
-        col = lodf[:, l]
-        if not np.all(np.isfinite(col)):
-            continue
-        f_post = flows + cp.multiply(col, flows[l])
-        constraints += [f_post <= fmax * f_scale, f_post >= -fmax * f_scale]
-    return constraints
-
-
-def masks_equal(masks_a, masks_b): # Can i replace this????
-    if masks_a is masks_b:
-        return True
-    if masks_a is None or masks_b is None:
-        return False
-    if len(masks_a) != len(masks_b):
-        return False
-    for part_a, part_b in zip(masks_a, masks_b):
-        if len(part_a) != len(part_b):
-            return False
-        for a, b in zip(part_a, part_b):
-            if a.shape != b.shape or not np.array_equal(a, b):
-                return False
-    return True
-
-
-def solve_fixed_pattern_iter(
-        model,
-        x,
-        x_val_sc,
-        y,
-        max_iter=10,
-        base_constraints=None,
-        objective=None,
-        solver="GUROBI",
-        ):
-    # if x_init is None:
-    #     x_init = x_var.value
-    #     if x_init is None:
-    #         raise ValueError("x_init must be provided or x_var must have a value.")
-    masks = activation_masks_mtlshared(model, x_val_sc)
-    base_constraints = list(base_constraints) if base_constraints is not None else []
-    objective = objective if objective is not None else cp.Minimize(0)
-
-    for it in range(max_iter):
-        constraints_nn = surrogate_constraints_fixed_activation(model, x, x_val_sc, y, masks)
-        prob = cp.Problem(objective, base_constraints + constraints_nn)
-        prob.solve(solver=solver)
-        if prob.status == "infeasible_or_unbounded" and solver.upper() == "GUROBI":
-            prob.solve(solver=solver, reoptimize=True)
-
-        x_sol = x.value
-        if x_sol is None:
-            print(f"[solve_fixed_pattern_iter] No x solution (status={prob.status}) at iter={it}; returning current constraints.")
-            return constraints_nn
-
-        new_masks = activation_masks_mtlshared(model, np.asarray(x_sol, dtype=float))
-
-        if masks_equal(new_masks, masks):
-        # if masks is new_masks:
-            print(f"Did {it} iterations to find consistent pattern given the values")
-            return constraints_nn  # consistent pattern
-
-        masks = new_masks
-
-    print(f"Couldn't reach stable result after {max_iter} iterations")
-
-    return constraints_nn  # best effort
-
-
-def surrogate_constraints_fixed_activation(
-        model, 
-        x,
-        x_val_sc,
-        y, # TODO: add type
-        masks=None,
-        ):
-    constraints = []
-    h = x
-    
-    # Extracting masks based on activation
-    if masks is None:
-        shared_masks, head_masks = activation_masks_mtlshared(model, x_val_sc) 
+        with run_cfg_path.open("r", encoding="utf-8") as f:
+            model_run_cfg = yaml.safe_load(f) or {}
+        raw_csv = str((model_run_cfg.get("data", {}) or {}).get("csv_path", "")).strip()
+        if not raw_csv:
+            raise ValueError(
+                f"Missing feature source '{source}' requires data.csv_path in {run_cfg_path}"
+            )
+        csv_path = Path(raw_csv)
+    elif source == "csv_first_row":
+        raw_csv = str(feature_cfg.get("missing_feature_csv_path", "")).strip()
+        if not raw_csv:
+            raise ValueError(
+                "features.missing_feature_source=csv_first_row requires features.missing_feature_csv_path"
+            )
+        csv_path = Path(raw_csv)
     else:
-        shared_masks, head_masks = masks
+        raise ValueError(
+            f"Unsupported features.missing_feature_source='{source}'. "
+            "Supported: none, model_data_first_row, csv_first_row."
+        )
 
-    # === Shared layers ====
+    assert csv_path is not None
+    if not csv_path.is_absolute():
+        csv_path = (ROOT / csv_path).resolve()
+    if not csv_path.exists():
+        raise FileNotFoundError(f"Missing feature reference CSV not found: {csv_path}")
 
-    shared_layers = _extract_linear_layers(model.shared)
+    requested = set(str(name) for name in x_features)
+    fixed: dict[str, float] = {}
+    with csv_path.open("r", encoding="utf-8-sig", newline="") as f:
+        reader = csv.DictReader(f)
+        first = next(reader, None)
+    if first is None:
+        raise ValueError(f"Missing feature reference CSV is empty: {csv_path}")
 
-    for idx, (W, b) in enumerate(shared_layers):
-        z = W @ h + b
-        out = cp.Variable(len(b), name=f"shared_{idx}")
-        mask = shared_masks[idx]
-        if np.all(mask):
-            constraints += [z >= 0, out == z]
-        elif np.all(~mask):
-            constraints += [z <= 0, out == 0]
-        else:
-            constraints += [
-                z[mask] >= 0,
-                out[mask] == z[mask],
-                z[~mask] <= 0,
-                out[~mask] == 0,
-            ]
-        h = out
-
-    # === Heads (label specific) ====
-
-    head_relu_idx = 0
-    for i, head in enumerate(model.heads):
-        head_layers = _extract_linear_layers(head)
-        hh = h
-        for idx, (W, b) in enumerate(head_layers):
-            z = W @ hh + b
-
-            if idx == len(head_layers) - 1: # last layer of the head, we want to constrain it to be equal to the output variable y
-                constraints.append(y[i] == z[0])
-                continue
-
-            out = cp.Variable(len(b), name=f"head{i}_{idx}")
-            
-            mask = head_masks[head_relu_idx]
-            head_relu_idx += 1
-            if np.all(mask):
-                constraints += [z >= 0, out == z]
-            elif np.all(~mask):
-                constraints += [z <= 0, out == 0]
-            else:
-                constraints += [
-                    z[mask] >= 0,
-                    out[mask] == z[mask],
-                    z[~mask] <= 0,
-                    out[~mask] == 0,
-                ]
-            hh = out
-
-    return constraints
+    for key, raw in first.items():
+        if key is None:
+            continue
+        name = str(key).strip()
+        if not name or name not in requested:
+            continue
+        text = str(raw).strip()
+        if not text:
+            continue
+        try:
+            val = float(text)
+        except Exception:
+            continue
+        if np.isfinite(val):
+            fixed[name] = float(val)
+    return fixed
 
 
-def surrogate_constraints_milp(model, 
-                               x,
-                               x_min_sc,
-                               x_max_sc,
-                               y, # TODO: add type
-                               ):
-    
-    constraints = []
-
-    # defining the input to the first layer as the variable x (features)
-    h, h_min, h_max = x, x_min_sc.copy(), x_max_sc.copy() 
-
-    # === Shared layers ====
-
-    shared_layers = _extract_linear_layers(model.shared) # Shared layers are the same for all outputs
-
-    for idx, (W, b) in enumerate(shared_layers):
-        z = W @ h + b
-        z_min = W.clip(min=0) @ h_min + W.clip(max=0) @ h_max + b
-        z_max = W.clip(min=0) @ h_max + W.clip(max=0) @ h_min + b
-        out = cp.Variable(len(b), name=f"shared_{idx}")
-
-        if np.any(z_min >= 0): # always active
-            idx = np.flatnonzero(z_min >= 0)
-            constraints += [out[idx] == z[idx], z[idx] >= 0]
-        if np.any(z_max <= 0): # always inactive
-            idx = np.flatnonzero(z_max <= 0)
-            constraints += [out[idx] == 0, z[idx] <= 0]
-        if np.any( ~((z_min >= 0) | (z_max <= 0)) ): # uncertain if z_min < 0 < z_max
-            idx = np.flatnonzero( ~((z_min >= 0) | (z_max <= 0)) )
-            a = cp.Variable(len(idx), boolean=True, name=f"mlp_{idx}_bin")
-            constraints += [
-                            out[idx] >= 0,
-                            out[idx] >= z[idx],
-                            out[idx] <= z[idx] - cp.multiply(z_min[idx], 1 - a), # loose upper bound since z_min is negative
-                            out[idx] <= cp.multiply(z_max[idx], a)
-                    ]
-            
-        h, h_min, h_max = out, np.maximum(0, z_min), np.maximum(0, z_max)
-    
-
-    # === Heads (label specific) ====
-
-    for i, head in enumerate(model.heads): # Heads are unique for all outputs so we need to treat them separately
-        head_layers = _extract_linear_layers(head)
-        hh, hh_min, hh_max = h, h_min.copy(), h_max.copy() # input to the head is the output of the shared layers
-        for idx, (W, b) in enumerate(head_layers):
-            z = W @ hh + b
-            
-            if idx == len(head_layers) - 1: # last layer of the head, we want to constrain it to be equal to the output variable y
-                constraints.append(y[i] == z)
-                continue 
-            
-            # TODO: rewrite the rest as an inner func. since it's used multiple times and it's the same as for the shared layers
-            z_min = W.clip(min=0) @ hh_min + W.clip(max=0) @ hh_max + b
-            z_max = W.clip(min=0) @ hh_max + W.clip(max=0) @ hh_min + b
-            out = cp.Variable(len(b), name=f"head{i}_{idx}")
-            
-            if np.any(z_min >= 0): # always active
-                idx = np.flatnonzero(z_min >= 0)
-                constraints += [out[idx] == z[idx], z[idx] >= 0]
-            if np.any(z_max <= 0): # always inactive
-                idx = np.flatnonzero(z_max <= 0)
-                constraints += [out[idx] == 0, z[idx] <= 0]
-            if np.any( ~((z_min >= 0) | (z_max <= 0)) ): # uncertain if z_min < 0 < z_max
-                idx = np.flatnonzero( ~((z_min >= 0) | (z_max <= 0)) )
-                a = cp.Variable(len(idx), boolean=True, name=f"mlp_{idx}_bin")
-                constraints += [
-                                out[idx] >= 0,
-                                out[idx] >= z[idx],
-                                out[idx] <= z[idx] - cp.multiply(z_min[idx], 1 - a), 
-                                out[idx] <= cp.multiply(z_max[idx], a)
-                        ]
-            
-            hh, hh_min, hh_max = out, np.maximum(0, z_min), np.maximum(0, z_max)
-    
-    return constraints
-
-
-def define_rted_vis(ss: andes.System, model,
-                    x_val_sc: np.ndarray,
-                    m_idx: list[int], d_idx: list[int],
-                    m_min_sc: float | np.ndarray, m_max_sc: float | np.ndarray,
-                    d_min_sc: float | np.ndarray, d_max_sc: float | np.ndarray,
-                    x_min_sc: np.ndarray, x_max_sc: np.ndarray,
-                    y_min_sc: np.ndarray, y_max_sc: np.ndarray,
-                    p_min_sc: np.ndarray, p_max_sc: np.ndarray, dp_sc: np.ndarray,
-                    a: np.ndarray, b: np.ndarray, c: np.ndarray,
-                    pg: cp.Variable, pg_min: np.ndarray, pg_max: np.ndarray,
-                    pd: np.ndarray,
-                    mask_max_iter: int = 10,
-                    pg_link_scales: np.ndarray | None = None,
-                    pg_link_offsets: np.ndarray | None = None):
-    """
-    function to define the problem end to end, it should 1. test constraints one by one to see if feasible. 2. provide the entire problem with constraints... 
-    Define obj. func. (minimize cost, load from yaml file) and constraints (input features, output features, line flows, surrogate model) and solve the problem with a MILP solver (e.g., Gurobi).
-    """
-
-    if pd is None:
-        pd = np.asarray(ss.PQ.p0.v, dtype=float) if ss.PQ.n > 0 else np.zeros(0, dtype=float)
-
-    if pg_min is None or pg_max is None:
-        pg_min = np.asarray([ss.PV.pmin.v[i] for i in range(ss.PV.n)] + [ss.Slack.pmin.v[i] for i in range(ss.Slack.n)], dtype=float)
-        pg_max = np.asarray([ss.PV.pmax.v[i] for i in range(ss.PV.n)] + [ss.Slack.pmax.v[i] for i in range(ss.Slack.n)], dtype=float)
-
-    constraints = []
-
-    x, constraints_x = input_features_constraints(
-        x_val_sc,
-        np.arange(len(x_val_sc)),
-        m_idx,
-        d_idx,
-        m_min_sc,
-        m_max_sc,
-        d_min_sc,
-        d_max_sc,
-        pg,
-        free_idx=[-10, -9, -8, -7, -6, -5, -4, -3, -2, -1], # TODO: this is very hacky, need to find a better way to link the features to the pg variables, maybe with a dict of feature name to variable?
-        pg_link_scales=pg_link_scales,
-        pg_link_offsets=pg_link_offsets,
+def _collect_buildable_feature_names(
+    ss: andes.System,
+    *,
+    base_scale: float,
+    step_scale: float,
+    load_step_time: float,
+    m_seed: np.ndarray,
+    d_seed: np.ndarray,
+    feature_names_path: str | None = None,
+) -> set[str]:
+    feat = build_features(
+        ss,
+        base_scale=base_scale,
+        step_scale=step_scale,
+        load_step_time=load_step_time,
+        M_vec=m_seed,
+        D_vec=d_seed,
+        feature_names_path=feature_names_path,
     )
+    genrou = getattr(ss, "GENROU", None)
+    regcv1 = getattr(ss, "REGCV1", None)
+    genrou_pg = (
+        np.asarray(getattr(genrou, "Pg", np.zeros(0)), dtype=float).reshape(-1)
+        if genrou is not None
+        else np.zeros(0, dtype=float)
+    )
+    if genrou is not None and genrou_pg.size == 0 and hasattr(genrou, "p0"):
+        genrou_pg = np.asarray(genrou.p0.v, dtype=float).reshape(-1)
+    regcv1_pg = (
+        np.asarray(regcv1.pref.v, dtype=float).reshape(-1)
+        if regcv1 is not None and hasattr(regcv1, "pref")
+        else np.zeros(0, dtype=float)
+    )
+    for i, val in enumerate(genrou_pg, start=1):
+        feat[f"P_GENROU_{i}"] = float(val)
+    for i, val in enumerate(regcv1_pg, start=1):
+        feat[f"P_REGCV1_{i}"] = float(val)
+    return {str(name) for name in feat.keys()}
 
-    y, constraints_y = output_features_constraints(y_min_sc, y_max_sc, p_min_sc, p_max_sc, dp_sc)
-    constraints_nn = surrogate_constraints_milp(model, x, x_min_sc, x_max_sc, y)
-    flows, constraints_line = inequality_line_flows(ss, pg, pd)
-    constraints_n1 = preventive_n1_line_flow_constraints(ss, pg, pd)
-    constraints_ed = [pg >= pg_min, pg <= pg_max, cp.sum(pg) == float(np.sum(pd))]
 
-    objective = cp.Minimize(cp.sum(a + cp.multiply(b, pg) + cp.multiply(c, cp.square(pg))))
-    base_constraints = constraints_x + constraints_y + constraints_line + constraints_ed
-    # constraints_nn = solve_fixed_pattern_iter(
-    #     model,
-    #     x,
-    #     x_val_sc,
-    #     y,
-    #     max_iter=int(mask_max_iter),
-    #     base_constraints=base_constraints,
-    #     objective=objective,
-    # )
+def _load_x_features_from_registry(
+    *,
+    feature_cfg: Mapping[str, Any],
+    ss: andes.System,
+    base_scale: float,
+    step_scale: float,
+    load_step_time: float,
+    m_seed: np.ndarray,
+    d_seed: np.ndarray,
+    model_feature_order: list[str] | None = None,
+) -> list[str]:
+    raw_path = str(feature_cfg.get("feature_names_path", "configs/data_generation_feature_names.yaml")).strip()
+    reg_path = Path(raw_path)
+    if not reg_path.is_absolute():
+        reg_path = (ROOT / reg_path).resolve()
+    if not reg_path.exists():
+        raise FileNotFoundError(f"Feature registry YAML not found: {reg_path}")
 
-    constraints += constraints_x # if isinstance(constraints_x, list) else [constraints_x]
-    constraints += constraints_y
-    constraints += constraints_nn
-    constraints += constraints_line
-    constraints += constraints_n1
-    constraints += constraints_ed # Constraints on generator outputs and ED cosntraint
+    with reg_path.open("r", encoding="utf-8") as f:
+        registry = yaml.safe_load(f) or {}
 
-    feasibility = {}
+    groups = [str(v) for v in list(feature_cfg.get("registry_feature_groups") or ["x_op", "x_cont", "x_sched"])]
+    exclude_prefixes = [str(v) for v in list(feature_cfg.get("exclude_prefixes") or ["x0__"])]
 
-    checks = {
-        "input": constraints_x + constraints_ed, # eq. and ineq.
-        "output": constraints_y + constraints_ed, # 20 (ineq.)
-        "nn": constraints_nn + constraints_ed,
-        "line_flows": constraints_line + constraints_ed, # 92 (ineq. ==> 2 per line)
-        "line_flows_n1": constraints_line + constraints_n1 + constraints_ed,
-        "all_but_nn": constraints_line + constraints_n1 + constraints_ed + constraints_x + constraints_y,
-        "combined": constraints, # 6762 constraints (21 constraints for sum(pg) = sum(pd) (1), pg_max and pg_min ineq. (10 each)
+    pq_names = [str(v) for v in list(getattr(ss.PQ, "name", {}).v)] if getattr(ss, "PQ", None) is not None else []
+    pq_owners = (
+        sorted({_sanitize_token(v) for v in list(getattr(ss.PQ, "owner", {}).v)})
+        if getattr(ss, "PQ", None) is not None
+        else []
+    )
+    n_genrou = int(getattr(getattr(ss, "GENROU", None), "n", 0))
+    n_regcv1 = int(getattr(getattr(ss, "REGCV1", None), "n", 0))
+    n_line = int(getattr(getattr(ss, "Line", None), "n", 0))
+
+    candidates: list[str] = []
+    for group in groups:
+        group_cfg = dict(registry.get(group, {}) or {})
+        for key, value in group_cfg.items():
+            if key == "prefixes":
+                continue
+            if isinstance(value, list):
+                for name in value:
+                    s = str(name).strip()
+                    if s:
+                        candidates.append(s)
+
+        prefixes = dict(group_cfg.get("prefixes", {}) or {})
+        for pref_key, pref_val in prefixes.items():
+            pref = str(pref_val)
+            if pref_key in {"pq_p_base", "pq_q_base", "pq_delta_p"}:
+                candidates.extend(f"{pref}{name}" for name in pq_names)
+            elif pref_key == "owner_delta_p":
+                candidates.extend(f"{pref}{owner}" for owner in pq_owners)
+            elif pref_key in {"M", "D", "p_regcv1", "p_regcv1_reserve"}:
+                candidates.extend(f"{pref}{i}" for i in range(1, n_regcv1 + 1))
+            elif pref_key in {"p_genrou", "p_genrou_reserve"}:
+                candidates.extend(f"{pref}{i}" for i in range(1, n_genrou + 1))
+            elif pref_key == "line_one_hot":
+                candidates.extend(f"{pref}{i}" for i in range(0, n_line))
+
+    def _keep(name: str) -> bool:
+        return bool(name) and not any(name.startswith(pfx) for pfx in exclude_prefixes)
+
+    deduped: list[str] = []
+    seen = set()
+    for name in candidates:
+        if not _keep(name):
+            continue
+        if name in seen:
+            continue
+        seen.add(name)
+        deduped.append(name)
+
+    if bool(feature_cfg.get("registry_filter_to_buildable", True)):
+        buildable = _collect_buildable_feature_names(
+            ss,
+            base_scale=base_scale,
+            step_scale=step_scale,
+            load_step_time=load_step_time,
+            m_seed=m_seed,
+            d_seed=d_seed,
+            feature_names_path=str(feature_cfg.get("feature_names_path", "configs/data_generation_feature_names.yaml")),
+        )
+        deduped = [name for name in deduped if name in buildable]
+
+    if model_feature_order:
+        registry_set = set(deduped)
+        missing_in_registry = [name for name in model_feature_order if name not in registry_set]
+        if missing_in_registry:
+            if bool(feature_cfg.get("registry_include_unbuildable_model_features", False)):
+                # Preserve full model/scaler contract even when some features are not buildable
+                # by the scheduler; those can be fixed later via missing-fill logic.
+                deduped = [name for name in model_feature_order if _keep(name)]
+            else:
+                preview = ", ".join(missing_in_registry[:12])
+                if len(missing_in_registry) > 12:
+                    preview += ", ..."
+                raise ValueError(
+                    "Model feature contract is not fully covered by registry-derived features. "
+                    f"{len(missing_in_registry)} missing, examples: {preview}"
+                )
+        else:
+            # Keep model/scaler feature order for strict compatibility.
+            deduped = [name for name in model_feature_order if name in registry_set]
+
+    if not deduped:
+        raise ValueError(
+            f"No optimization x_features resolved from feature registry {reg_path} "
+            f"for groups={groups}. Check registry settings and filters."
+        )
+    return deduped
+
+
+def _scale_subset(values: np.ndarray, scaler, idx: list[int]) -> np.ndarray:
+    idx_arr = np.asarray(idx, dtype=int)
+    return values * scaler.scale_[idx_arr] + scaler.min_[idx_arr]
+
+
+def _unscale_subset(values: np.ndarray, scaler, idx: list[int]) -> np.ndarray:
+    idx_arr = np.asarray(idx, dtype=int)
+    return (values - scaler.min_[idx_arr]) / scaler.scale_[idx_arr]
+
+
+def _save_results_csv(
+    path: Path,
+    *,
+    status: str,
+    objective: float | None,
+    pg: np.ndarray,
+    m: np.ndarray,
+    d: np.ndarray,
+):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    header = (
+        ["status", "objective"]
+        + [f"pg_{i + 1}" for i in range(pg.size)]
+        + [f"M_{i + 1}" for i in range(m.size)]
+        + [f"D_{i + 1}" for i in range(d.size)]
+    )
+    row = [status, "" if objective is None else float(objective)] + pg.tolist() + m.tolist() + d.tolist()
+    with path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(header)
+        writer.writerow(row)
+
+
+def _problem_stats(prob: cp.Problem, solver_name: str) -> tuple[int, int | None]:
+    metrics = prob.size_metrics
+    n_constraints = int(metrics.num_scalar_eq_constr + metrics.num_scalar_leq_constr)
+
+    nnz_total: int | None = None
+    try:
+        data, _, _ = prob.get_problem_data(solver_name)
+        nnz = 0
+        for value in data.values():
+            if hasattr(value, "nnz"):
+                nnz += int(value.nnz)
+            elif isinstance(value, np.ndarray):
+                nnz += int(np.count_nonzero(value))
+        nnz_total = nnz
+    except Exception:
+        nnz_total = None
+    return n_constraints, nnz_total
+
+
+def _scalar_constraint_count(constraints: list[cp.Constraint]) -> int:
+    total = 0
+    for cons in constraints:
+        size = getattr(cons, "size", None)
+        if size is None:
+            shape = getattr(cons, "shape", ())
+            size = int(np.prod(shape)) if shape else 1
+        total += int(size)
+    return int(total)
+
+
+def _variable_type_counts(prob: cp.Problem) -> dict[str, int]:
+    n_binary = 0
+    n_integer = 0
+    n_total = 0
+    for var in prob.variables():
+        n = int(np.prod(var.shape))
+        n_total += n
+        attrs = getattr(var, "attributes", {})
+        if bool(attrs.get("boolean", False)):
+            n_binary += n
+        elif bool(attrs.get("integer", False)):
+            n_integer += n
+    n_cont = n_total - n_binary - n_integer
+    return {
+        "n_variables_total": int(n_total),
+        "n_variables_continuous": int(n_cont),
+        "n_variables_binary": int(n_binary),
+        "n_variables_integer_nonbinary": int(n_integer),
     }
 
-    solver_kwargs = {"solver": "GUROBI", "verbose": True, "reoptimize": False}
 
-    for name, cons in checks.items():
-        cons_list = cons if isinstance(cons, list) else [cons]
-        prob_check = cp.Problem(objective, cons_list)
-        prob_check.solve(**(solver_kwargs))
-        feasibility[name] = prob_check.status
-        print(f"Problem {name} is {prob_check.status} with values of {prob_check.value}")
+def _build_solver_kwargs(cfg: Mapping[str, Any], solver_name: str, verbose: bool, reoptimize: bool) -> dict[str, Any]:
+    solver_cfg = cfg.get("solver", {}) if isinstance(cfg, Mapping) else {}
+    solver_name_u = str(solver_name).upper()
+    kwargs: dict[str, Any] = {
+        "solver": solver_name,
+        "verbose": bool(verbose),
+    }
+    if solver_name_u == "GUROBI":
+        kwargs["reoptimize"] = bool(reoptimize)
 
-    prob = cp.Problem(objective, constraints)
+    extra = solver_cfg.get("extra_kwargs", {})
+    if isinstance(extra, Mapping):
+        kwargs.update(dict(extra))
 
-    prob.solve(**(solver_kwargs))
+    alias_map = {
+        "time_limit": "TimeLimit",
+        "mip_gap": "MIPGap",
+        "threads": "Threads",
+    }
+    for key, target in alias_map.items():
+        if key in solver_cfg and target not in kwargs:
+            kwargs[target] = solver_cfg[key]
 
-    return prob, {"x": x, "y": y, "flows": flows, "pg": pg, "constraints": constraints, "feasibility": feasibility}
+    # Keep GUROBI-specific knobs out of non-GUROBI solver calls (e.g. OSQP).
+    if solver_name_u != "GUROBI":
+        for bad_key in ("reoptimize", "TimeLimit", "MIPGap", "Threads"):
+            kwargs.pop(bad_key, None)
+    return kwargs
 
 
-def main():
-    """
-    define and run rted vis
-    """
+def _default_output_paths(output_cfg: Mapping[str, Any], formulation_id: str) -> dict[str, Path]:
+    results_csv = Path(str(output_cfg.get("results_csv", "results/thesis_optimization_results/results/optimization_results.csv")))
+    run_tag = str(output_cfg.get("run_tag", formulation_id)).strip() or formulation_id
+    results_dir = Path(str(output_cfg.get("results_dir", results_csv.parent)))
+    results_dir.mkdir(parents=True, exist_ok=True)
 
-    parser = argparse.ArgumentParser(description="Scan step_scale to find ED differences with NN convex constraints.")
-    parser.add_argument("--config", default="experiments/generation.yaml", help="Path to sim YAML.")
-    parser.add_argument("--cost-config", default="scheduling/mtlsh_convex.yaml", help="Path to cost YAML.")
-    parser.add_argument("--base-scale", type=float, default=1, help="Base load scale.")
-    parser.add_argument(
-        "--step-scale-by-owner",
-        type=str,
-        default=None,
-        help="Comma-separated owner_id:step_scale overrides applied on top of --step-scale (e.g. 1:0.9,3:1.1).",
+    def _p(name: str, default: Path) -> Path:
+        raw = output_cfg.get(name)
+        return Path(str(raw)) if raw else default
+
+    return {
+        "results_csv": _p("results_csv", results_dir / f"{run_tag}_decisions.csv"),
+        "summary_json": _p("summary_json", results_dir / f"{run_tag}_summary.json"),
+        "summary_csv": _p("summary_csv", results_dir / f"{run_tag}_summary.csv"),
+        "predicted_metrics_csv": _p("predicted_metrics_csv", results_dir / f"{run_tag}_predicted_metrics.csv"),
+        "dispatch_impact_csv": _p("dispatch_impact_csv", results_dir / f"{run_tag}_dispatch_impact.csv"),
+        "constraint_blocks_csv": _p("constraint_blocks_csv", results_dir / f"{run_tag}_constraint_blocks.csv"),
+    }
+
+
+def _write_json(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8") as f:
+        json.dump(payload, f, indent=2, sort_keys=False, ensure_ascii=False)
+
+
+def _write_dict_rows_csv(path: Path, rows: list[dict[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not rows:
+        with path.open("w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(["empty"])
+        return
+    headers: list[str] = []
+    seen = set()
+    for row in rows:
+        for key in row.keys():
+            if key not in seen:
+                headers.append(key)
+                seen.add(key)
+    with path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=headers)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(row)
+
+
+def _summary_row_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    solver_stats = payload.get("solver_stats", {})
+    problem_size = payload.get("problem_size", {})
+    return {
+        "run_id": payload.get("run_id"),
+        "formulation_id": payload.get("formulation_id"),
+        "formulation_name": payload.get("formulation_name"),
+        "scenario_id": payload.get("scenario_id"),
+        "scenario_name": payload.get("scenario_name"),
+        "status": payload.get("status"),
+        "objective": payload.get("objective"),
+        "objective_dispatch_only": payload.get("objective_dispatch_only"),
+        "solve_time_sec": solver_stats.get("solve_time_sec"),
+        "num_iters": solver_stats.get("num_iters"),
+        "n_variables_total": problem_size.get("n_variables_total"),
+        "n_variables_binary": problem_size.get("n_variables_binary"),
+        "n_constraints_total": problem_size.get("n_constraints_total"),
+        "n_constraints_scalar_total": problem_size.get("n_constraints_scalar_total"),
+        "nnz_total": problem_size.get("nnz_total"),
+        "system_case": payload.get("system_case"),
+        "model_type": payload.get("model_type"),
+        "nn_mode": payload.get("nn_mode"),
+        "solver_modeling_mode": payload.get("solver_modeling_mode"),
+    }
+
+
+def _build_x_seed(
+    ss: andes.System,
+    *,
+    x_features: list[str],
+    base_scale: float,
+    step_scale: float,
+    load_step_time: float,
+    m_seed: np.ndarray,
+    d_seed: np.ndarray,
+    fixed_feature_values: Mapping[str, float] | None = None,
+    missing_fill_value: float = 0.0,
+    allow_missing_features: bool = False,
+    allow_constant_fill_for_unresolved_missing: bool = True,
+    fixed_source_override_non_sched: bool = False,
+) -> np.ndarray:
+    feat = build_features(
+        ss,
+        base_scale=base_scale,
+        step_scale=step_scale,
+        load_step_time=load_step_time,
+        M_vec=m_seed,
+        D_vec=d_seed,
     )
-    parser.add_argument("--step-scale", type=float, default=1, help="Load step scale.")
-    parser.add_argument(
-        "--init-m",
-        type=str,
-        default=None,
-        help="Comma-separated initial M values (unscaled) to initialize the MTLSH activation pattern (length 1 or n_REGCV1).",
-    )
-    parser.add_argument(
-        "--init-d",
-        type=str,
-        default=None,
-        help="Comma-separated initial D values (unscaled) to initialize the MTLSH activation pattern (length 1 or n_REGCV1).",
-    )
-    parser.add_argument(
-        "--mask-max-iter",
-        type=int,
-        default=25,
-        help="Max iterations for alternating solve -> recompute ReLU masks.",
-    )
-    # parser.add_argument("--plot-dir", type=str, default="experiments", help="Directory to save plots.")
-    args = parser.parse_args()
+    fixed_map = {
+        str(k): float(v)
+        for k, v in dict(fixed_feature_values or {}).items()
+        if np.isfinite(float(v))
+    }
 
-    # ==== load configs =======
+    genrou = getattr(ss, "GENROU", None)
+    regcv1 = getattr(ss, "REGCV1", None)
+    genrou_pg = (
+        np.asarray(getattr(genrou, "Pg", np.zeros(0)), dtype=float).reshape(-1)
+        if genrou is not None
+        else np.zeros(0, dtype=float)
+    )
+    if genrou is not None and genrou_pg.size == 0 and hasattr(genrou, "p0"):
+        genrou_pg = np.asarray(genrou.p0.v, dtype=float).reshape(-1)
+    regcv1_pg = (
+        np.asarray(regcv1.pref.v, dtype=float).reshape(-1)
+        if regcv1 is not None and hasattr(regcv1, "pref")
+        else np.zeros(0, dtype=float)
+    )
 
-    def load_yaml(path: Path) -> Dict:
-        with path.open("r", encoding="utf-8") as f:
-            return yaml.safe_load(f)
-    
-    def parse_owner_scales(text: str | None) -> Dict[str, float]:
-        if not text:
-            return {}
-        scales: Dict[str, float] = {}
-        for entry in text.split(","):
-            item = entry.strip()
-            if not item:
+    for i, val in enumerate(genrou_pg, start=1):
+        feat[f"P_GENROU_{i}"] = float(val)
+    for i, val in enumerate(regcv1_pg, start=1):
+        feat[f"P_REGCV1_{i}"] = float(val)
+
+    if fixed_source_override_non_sched and fixed_map:
+        n_genrou = int(getattr(genrou, "n", 0)) if genrou is not None else int(genrou_pg.size)
+        n_regcv1 = int(getattr(regcv1, "n", 0)) if regcv1 is not None else int(regcv1_pg.size)
+        mutable = set()
+        mutable.update({f"M_{i + 1}" for i in range(n_regcv1)})
+        mutable.update({f"D_{i + 1}" for i in range(n_regcv1)})
+        mutable.update({f"P_GENROU_{i + 1}" for i in range(n_genrou)})
+        mutable.update({f"P_REGCV1_{i + 1}" for i in range(n_regcv1)})
+        for name in x_features:
+            if name in mutable:
                 continue
-            owner, sep, scale = item.partition(":")
-            if not sep:
+            if name in fixed_map:
+                feat[name] = float(fixed_map[name])
+
+    # If a buildable feature is present but non-finite, prefer the configured fixed reference value.
+    for name in x_features:
+        if name not in feat:
+            continue
+        try:
+            val = float(feat[name])
+        except Exception:
+            val = float("nan")
+        if np.isfinite(val):
+            continue
+        if name in fixed_map:
+            feat[name] = float(fixed_map[name])
+
+    missing = [name for name in x_features if name not in feat]
+    if missing:
+        unresolved: list[str] = []
+        for name in missing:
+            if name in fixed_map and np.isfinite(float(fixed_map[name])):
+                feat[name] = float(fixed_map[name])
+            else:
+                unresolved.append(name)
+
+        if unresolved:
+            if not allow_missing_features:
+                preview = ", ".join(unresolved[:12])
+                if len(unresolved) > 12:
+                    preview += ", ..."
                 raise ValueError(
-                    f"Invalid --step-scale-by-owner entry '{item}'. Use owner_id:scale."
+                    "Optimization feature contract mismatch: the configured surrogate expects input columns "
+                    "that the current optimizer does not build and that were not available in the configured "
+                    f"fixed-feature source ({len(unresolved)} unresolved). "
+                    f"Examples: {preview}. "
+                    "Use an optimization-ready surrogate trained on buildable scheduling features, or extend "
+                    "the optimization feature builder / fixed-feature source before embedding this model."
                 )
-            owner_key = owner.strip()
-            if not owner_key:
+            if allow_constant_fill_for_unresolved_missing:
+                for name in unresolved:
+                    feat[name] = float(missing_fill_value)
+            else:
+                preview = ", ".join(unresolved[:12])
+                if len(unresolved) > 12:
+                    preview += ", ..."
                 raise ValueError(
-                    f"Invalid --step-scale-by-owner entry '{item}'. Owner id is empty."
+                    "Missing features remained unresolved after applying fixed feature source. "
+                    f"{len(unresolved)} unresolved, examples: {preview}. "
+                    "Provide a reference source that contains these columns, or enable "
+                    "allow_constant_fill_for_unresolved_missing."
                 )
-            scales[owner_key] = float(scale.strip())
-        return scales
 
-    cfg = load_yaml(Path(args.config))
-    cost_cfg = load_yaml(Path(args.cost_config))
+    nonfinite = [name for name in x_features if not np.isfinite(float(feat[name]))]
+    if nonfinite:
+        if allow_missing_features and allow_constant_fill_for_unresolved_missing:
+            for name in nonfinite:
+                feat[name] = float(missing_fill_value)
+            nonfinite = []
+        if nonfinite:
+            preview = ", ".join(nonfinite[:12])
+            if len(nonfinite) > 12:
+                preview += ", ..."
+            raise ValueError(
+                "Non-finite values detected in resolved optimization feature vector after "
+                "build + fixed-feature injection. "
+                f"{len(nonfinite)} features are non-finite; examples: {preview}."
+            )
+    return np.asarray([feat[name] for name in x_features], dtype=float)
 
-    # ==== load model =======
 
-    model_cfg = cost_cfg.get("model", {})
-    state_path = Path(model_cfg.get("state_dict", "")) / "vis_mlp_state_dict_best.pt"
-    
-    if not state_path.exists():
-        raise FileNotFoundError(f"Model state_dict not found at {state_path}")
+def _is_convex_epigraph_model(model) -> bool:
+    name = model.__class__.__name__
+    if name in {"FICNN", "TabularPICNN", "TabularPICNNMTLSH"}:
+        return True
+    if hasattr(model, "picnn") or hasattr(model, "picnn_mtlsh"):
+        return True
+    return False
 
-    model = MTLSharedHeads(
-        in_dim=int(model_cfg["in_dim"]),
-        n_tasks=int(model_cfg["n_tasks"]),
-        shared_sizes=model_cfg.get("shared_sizes"),
-        head_sizes=model_cfg.get("head_sizes"),
-        dropout=float(model_cfg.get("dropout", 0.0)),
-        # convex=bool(model_cfg.get("convex", False)),
-    )
-    model.load_state_dict(torch.load(state_path, map_location="cpu"))
-    model.eval()
 
-    # ==== load scalers =======
+def run_optimization(cfg: dict[str, Any], *, config_path: str | None = None):
+    wall_start = time.perf_counter()
 
-    scalers_cfg = cost_cfg.get("scalers", {})
-    x_scaler = joblib.load(scalers_cfg.get("x_scaler_path"))
-    y_scaler = joblib.load(scalers_cfg.get("y_scaler_path"))
+    formulation_cfg = cfg.get("formulation", {})
+    output_cfg = cfg.get("output", {})
+    formulation_id = str(formulation_cfg.get("id", output_cfg.get("run_tag", "run"))).strip() or "run"
+    run_id = str(output_cfg.get("run_tag", formulation_id)).strip() or formulation_id
+    formulation_name = str(formulation_cfg.get("name", formulation_id))
+    equation_map = formulation_cfg.get("equation_map", {})
+    scenario_cfg = dict(cfg.get("scenario", {}) or {})
+    scenario_id = _scenario_id_from_cfg(cfg)
+    scenario_name = str(scenario_cfg.get("name", scenario_id))
+    scenario_description = str(scenario_cfg.get("description", ""))
 
-    # ==== andes system =======
+    output_paths = _default_output_paths(output_cfg, run_id)
+    logger = setup_logger(Path(output_cfg.get("log_file", output_paths["summary_json"].with_suffix(".log"))))
 
-    ss = andes.load(cfg["case"], setup=False)
-    ss.config.freq = float(50)
+    switches = parse_constraint_switches(cfg)
+    solver = parse_solver_options(cfg)
+    plot_options = parse_plot_options(cfg)
+
+    ss = andes.load(cfg["system"]["case"], setup=False)
+    ss.config.freq = float(cfg.get("system", {}).get("frequency_hz", 50.0))
     add_measurement_devices(ss)
 
-    m_vec = np.full(ss.REGCV1.n, 0)
-    d_vec = np.full(ss.REGCV1.n, 0)
+    base_scale = float(cfg["scenario"]["base_scale"])
+    step_scale = float(cfg["scenario"]["step_scale"])
+    load_step_time = float(cfg["scenario"]["load_step_time"])
 
     for uid in range(ss.PQ.n):
-        ss.PQ.p0.v[uid] = ss.PQ.p0.v[uid] * args.base_scale
-        ss.PQ.q0.v[uid] = ss.PQ.q0.v[uid] * args.base_scale
+        ss.PQ.p0.v[uid] = ss.PQ.p0.v[uid] * base_scale
+        ss.PQ.q0.v[uid] = ss.PQ.q0.v[uid] * base_scale
     for uid in range(ss.PV.n):
-        ss.PV.p0.v[uid] = ss.PV.p0.v[uid] * args.base_scale
-        ss.PV.q0.v[uid] = ss.PV.q0.v[uid] * args.base_scale
+        ss.PV.p0.v[uid] = ss.PV.p0.v[uid] * base_scale
+        ss.PV.q0.v[uid] = ss.PV.q0.v[uid] * base_scale
 
-    ss.REGCV1.M.v, ss.REGCV1.D.v = m_vec, d_vec
+    n_ibr = int(ss.REGCV1.n)
+    seed_cfg = cfg.get("seed", {})
+    m_seed = np.full(n_ibr, float(seed_cfg.get("M", 4.0)), dtype=float)
+    d_seed = np.full(n_ibr, float(seed_cfg.get("D", 2.0)), dtype=float)
+    ss.REGCV1.M.v = m_seed.tolist()
+    ss.REGCV1.D.v = d_seed.tolist()
 
     ss.PQ.config.p2p = 1
     ss.PQ.config.q2q = 1
@@ -722,231 +711,682 @@ def main():
     ss.PQ.config.p2i = 0
     ss.PQ.config.q2i = 0
     ss.PQ.config.pq2z = 0
-
     ss.setup()
-    # ==== build constraints from cfg file ======
+
+    cfg.setdefault("features", {})
+    feature_cfg = cfg["features"]
+    x_features = list(feature_cfg.get("x_features") or [])
+    model_contract_features: list[str] | None = None
+    if bool(feature_cfg.get("registry_align_to_model_contract", True)):
+        try:
+            model_contract_features = _load_feature_contract_from_model_dir(cfg.get("model", {}))
+        except Exception:
+            model_contract_features = None
+
+    if bool(feature_cfg.get("x_features_from_registry", False)):
+        x_features = _load_x_features_from_registry(
+            feature_cfg=feature_cfg,
+            ss=ss,
+            base_scale=base_scale,
+            step_scale=step_scale,
+            load_step_time=load_step_time,
+            m_seed=m_seed,
+            d_seed=d_seed,
+            model_feature_order=model_contract_features,
+        )
+        feature_cfg["x_features"] = x_features
+        logger.info("Loaded %s x_features from feature registry.", len(x_features))
+    elif bool(feature_cfg.get("x_features_from_model_dir", False)):
+        x_features = _load_feature_contract_from_model_dir(cfg.get("model", {}))
+        feature_cfg["x_features"] = x_features
+        logger.info("Loaded %s x_features from model_dir/run_config.yaml", len(x_features))
+    elif not x_features:
+        raise ValueError(
+            "features.x_features is empty; set x_features_from_registry=true, "
+            "x_features_from_model_dir=true, or provide explicit x_features."
+        )
+
+    cfg.setdefault("model", {})
+    model_cfg = cfg["model"]
+    configured_in_dim = int(model_cfg.get("in_dim", 0) or 0)
+    inferred_in_dim = int(len(x_features))
+    if configured_in_dim != inferred_in_dim:
+        logger.info(
+            "Adjusting model.in_dim from %s to %s to match optimization feature contract.",
+            configured_in_dim,
+            inferred_in_dim,
+        )
+        model_cfg["in_dim"] = inferred_in_dim
+
+    model = build_model_from_cfg(model_cfg)
+    x_scaler, y_scaler = load_scalers(cfg)
+    if int(getattr(x_scaler, "scale_", np.asarray([])).shape[0]) != int(len(x_features)):
+        raise ValueError(
+            "Scaler/model feature mismatch: x_scaler dimension does not match resolved x_features length "
+            f"({int(getattr(x_scaler, 'scale_', np.asarray([])).shape[0])} vs {len(x_features)})."
+        )
+
+    fixed_feature_values = _load_missing_feature_reference_values(cfg=cfg, x_features=x_features)
+
+    x_seed = _build_x_seed(
+        ss,
+        x_features=x_features,
+        base_scale=base_scale,
+        step_scale=step_scale,
+        load_step_time=load_step_time,
+        m_seed=m_seed,
+        d_seed=d_seed,
+        fixed_feature_values=fixed_feature_values,
+        missing_fill_value=float(cfg.get("features", {}).get("missing_fill_value", 0.0)),
+        allow_missing_features=bool(cfg.get("features", {}).get("allow_missing_features", False)),
+        allow_constant_fill_for_unresolved_missing=bool(
+            cfg.get("features", {}).get("allow_constant_fill_for_unresolved_missing", True)
+        ),
+        fixed_source_override_non_sched=bool(
+            cfg.get("features", {}).get("fixed_source_override_non_sched", False)
+        ),
+    )
+    x_seed_sc = x_seed * x_scaler.scale_ + x_scaler.min_
 
     pg_min = np.asarray(ss.PV.pmin.v.tolist() + ss.Slack.pmin.v.tolist(), dtype=float)
     pg_max = np.asarray(ss.PV.pmax.v.tolist() + ss.Slack.pmax.v.tolist(), dtype=float)
+    pd = np.asarray(ss.PQ.p0.v, dtype=float) * step_scale
+    pg_base = np.asarray(ss.PV.p0.v.tolist() + ss.Slack.p0.v.tolist(), dtype=float)
 
-    x_features = _resolve_x_features(cost_cfg)
-    if hasattr(x_scaler, "n_features_in_") and int(getattr(x_scaler, "n_features_in_")) != len(x_features):
-        raise ValueError(
-            f"x_features length ({len(x_features)}) does not match x_scaler.n_features_in_ "
-            f"({int(getattr(x_scaler, 'n_features_in_'))})."
-        )
-    if hasattr(x_scaler, "scale_") and len(getattr(x_scaler, "scale_")) != len(x_features):
-        raise ValueError(
-            f"x_features length ({len(x_features)}) does not match x_scaler.scale_ length "
-            f"({len(getattr(x_scaler, 'scale_'))})."
-        )
-
-    a = np.asarray(cost_cfg["ed_costs"]["a"], dtype=float)
-    b = np.asarray(cost_cfg["ed_costs"]["b"], dtype=float)
-    c = np.asarray(cost_cfg["ed_costs"]["c"], dtype=float)
-
-    bounds_cfg = cost_cfg.get("bounds", {})
-    m_min, m_max = bounds_cfg["M_bounds"]
-    d_min, d_max = bounds_cfg["D_bounds"]
-    m_names = [f"M_{i+1}" for i in range(ss.REGCV1.n)]
-    d_names = [f"D_{i+1}" for i in range(ss.REGCV1.n)]
     name_to_idx = {name: i for i, name in enumerate(x_features)}
-    m_idx = [name_to_idx[n] for n in m_names]
-    d_idx = [name_to_idx[n] for n in d_names]
+    try:
+        m_idx = [name_to_idx[f"M_{i + 1}"] for i in range(n_ibr)]
+        d_idx = [name_to_idx[f"D_{i + 1}"] for i in range(n_ibr)]
+    except KeyError as exc:
+        raise ValueError(
+            f"Missing schedulable feature in x_features: {exc}. "
+            "Expected M_i and D_i entries for each REGCV1 unit."
+        ) from exc
 
-    def scale_minmax(values, scaler, idx):
-        idx = np.asarray(idx, dtype=int)
-        return values * scaler.scale_[idx] + scaler.min_[idx]
-
-    def unscale_minmax(values, scaler, idx):
-        idx = np.asarray(idx, dtype=int)
-        return (values - scaler.min_[idx]) / scaler.scale_[idx]
-
-    m_min_sc = scale_minmax(m_min, x_scaler, m_idx)
-    m_max_sc = scale_minmax(m_max, x_scaler, m_idx)
-    d_min_sc = scale_minmax(d_min, x_scaler, d_idx)
-    d_max_sc = scale_minmax(d_max, x_scaler, d_idx)
-
-    y_min_raw = np.asarray(bounds_cfg.get("y_min", []), dtype=float).reshape(-1)
-    y_max_raw = np.asarray(bounds_cfg.get("y_max", []), dtype=float).reshape(-1)
-    y_min_sc = scale_minmax(y_min_raw, y_scaler, np.arange(len(y_min_raw)))
-    y_max_sc = scale_minmax(y_max_raw, y_scaler, np.arange(len(y_min_raw)))
-
-    pg = cp.Variable(ss.PV.n + ss.Slack.n, name="pg")  # generator outputs
-    pg_base = np.array(ss.PV.p0.v.tolist() + ss.Slack.p0.v.tolist())
-    
-    ibr_idx = np.asarray(cost_cfg.get("ibr_idx", []), dtype=int)
-    p_ibr_min = pg_min[ibr_idx] - pg_base[ibr_idx] # pg[ibr_idx]
-    p_ibr_max = pg_max[ibr_idx] - pg_base[ibr_idx] # pg[ibr_idx]
-    dp_ibr = pg[ibr_idx] - pg_base[ibr_idx] # - pg_base[ibr_idx]
-    ibr_out_idx = np.arange(2,6)
-    p_ibr_sc_min = cp.multiply(p_ibr_min, y_scaler.scale_[ibr_out_idx]) + y_scaler.min_[ibr_out_idx] 
-    p_ibr_sc_max = cp.multiply(p_ibr_max, y_scaler.scale_[ibr_out_idx]) + y_scaler.min_[ibr_out_idx] 
-    dp_ibr_sc = cp.multiply(dp_ibr, y_scaler.scale_[ibr_out_idx]) + y_scaler.min_[ibr_out_idx] 
-
-    step_scales_by_owner = parse_owner_scales(args.step_scale_by_owner)
-
-    pq_p_before = np.asarray(ss.PQ.p0.v, dtype=float)
-    pq_step_scale = np.full(ss.PQ.n, float(args.step_scale), dtype=float)
-    for uid in range(ss.PQ.n):
-        pq_step_scale[uid] = step_scales_by_owner.get(str(ss.PQ.owner.v[uid]), pq_step_scale[uid])
-
-    pd = pq_p_before * pq_step_scale
-
-    # ==== extract features ======
-    
-    x_val = build_features(
-        ss,
-        base_scale=args.base_scale,
-        step_scale=args.step_scale,
-        load_step_time=float(cfg["tds"]["load_step_time"]),
-        M_vec=m_vec,
-        D_vec=d_vec,
+    n_genrou = int(getattr(getattr(ss, "GENROU", None), "n", 0))
+    n_regcv1 = int(getattr(getattr(ss, "REGCV1", None), "n", 0))
+    dispatch_feature_names = [f"P_GENROU_{i + 1}" for i in range(n_genrou)] + [
+        f"P_REGCV1_{i + 1}" for i in range(n_regcv1)
+    ]
+    missing_dispatch = [name for name in dispatch_feature_names if name not in name_to_idx]
+    if missing_dispatch:
+        preview = ", ".join(missing_dispatch[:12])
+        if len(missing_dispatch) > 12:
+            preview += ", ..."
+        raise ValueError(
+            "Missing dispatch-linked features in x_features required for pg linking "
+            f"({len(missing_dispatch)} missing). Examples: {preview}"
+        )
+    pg_feat_idx = [name_to_idx[name] for name in dispatch_feature_names]
+    auto_pg_link_order: tuple[int, ...] | None = None
+    if cfg.get("constraints", {}).get("pg_link_order") is None:
+        dispatch_n = int(pg_min.size)
+        raw_ibr_pos = np.asarray(cfg.get("ibr", {}).get("indices", []), dtype=int).reshape(-1)
+        ibr_pos = [int(i) for i in raw_ibr_pos.tolist() if 0 <= int(i) < dispatch_n]
+        if len(set(ibr_pos)) == len(ibr_pos) and len(ibr_pos) <= dispatch_n:
+            ibr_set = set(ibr_pos)
+            gen_pos = [i for i in range(dispatch_n) if i not in ibr_set]
+            candidate = gen_pos + ibr_pos
+            if len(candidate) == dispatch_n and len(set(candidate)) == dispatch_n:
+                # Feature order is [P_GENROU_1..n_genrou, P_REGCV1_1..n_regcv1].
+                # Dispatch decision order is [PV..., Slack], where IBR entries are given by cfg.ibr.indices.
+                # Reorder pg linkage so each feature tracks the correct generator variable.
+                auto_pg_link_order = tuple(int(i) for i in candidate)
+                logger.info("Auto pg_link_order from ibr.indices: %s", list(auto_pg_link_order))
+    configured_pg_link_order = (
+        tuple(int(i) for i in list(cfg.get("constraints", {}).get("pg_link_order") or []))
+        if cfg.get("constraints", {}).get("pg_link_order") is not None
+        else auto_pg_link_order
+    )
+    effective_pg_link_order = (
+        configured_pg_link_order
+        if configured_pg_link_order is not None
+        else tuple(range(int(pg_min.size)))
     )
 
-    # Add dispatch setpoints (matches data_generation.extract_metrics feature naming).
-    genrou = getattr(ss, "GENROU", None)
-    regcv1 = getattr(ss, "REGCV1", None)
+    bounds = cfg["bounds"]
+    m_min_sc = _scale_subset(np.full(n_ibr, float(bounds["M_bounds"][0])), x_scaler, m_idx)
+    m_max_sc = _scale_subset(np.full(n_ibr, float(bounds["M_bounds"][1])), x_scaler, m_idx)
+    d_min_sc = _scale_subset(np.full(n_ibr, float(bounds["D_bounds"][0])), x_scaler, d_idx)
+    d_max_sc = _scale_subset(np.full(n_ibr, float(bounds["D_bounds"][1])), x_scaler, d_idx)
 
-    genrou_pg = np.zeros(int(getattr(genrou, "n", 0) or 0), dtype=float) if genrou is not None else np.zeros(0, dtype=float)
-    if genrou is not None and getattr(genrou, "n", 0):
-        genrou_pg = np.asarray(getattr(genrou, "Pg", np.zeros(0)), dtype=float).reshape(-1)
-        if genrou_pg.size == 0 and hasattr(genrou, "p0"):
-            genrou_pg = np.asarray(genrou.p0.v, dtype=float).reshape(-1)
+    y_min_raw = np.asarray(bounds["y_min"], dtype=float)
+    y_max_raw = np.asarray(bounds["y_max"], dtype=float)
+    y_min_sc = y_min_raw * y_scaler.scale_ + y_scaler.min_
+    y_max_sc = y_max_raw * y_scaler.scale_ + y_scaler.min_
 
-    regcv1_pg = np.zeros(int(getattr(regcv1, "n", 0) or 0), dtype=float) if regcv1 is not None else np.zeros(0, dtype=float)
-    if regcv1 is not None and getattr(regcv1, "n", 0):
-        if hasattr(regcv1, "pref"):
-            try:
-                regcv1_pg = np.asarray(regcv1.pref.v, dtype=float).reshape(-1)
-            except Exception:
-                regcv1_pg = np.zeros(int(getattr(regcv1, "n", 0) or 0), dtype=float)
-
-    for i, val in enumerate(genrou_pg, start=1):
-        x_val[f"P_GENROU_{i}"] = float(val)
-    for i, val in enumerate(regcv1_pg, start=1):
-        x_val[f"P_REGCV1_{i}"] = float(val)
-
-    if ss.PQ.n:
-        pq_delta = pq_p_before * (pq_step_scale - 1.0)
-        # For N-1 extraction parity: DELTA_PQ_tot is sum of active-power deltas only.
-        x_val["DELTA_PQ_tot"] = float(np.sum(pq_delta))
-        owner_delta_totals: Dict[str, float] = {}
-        for uid, name in enumerate(ss.PQ.name.v):
-            owner_key = _sanitize_label(ss.PQ.owner.v[uid])
-            dp = float(pq_delta[uid])
-            x_val[f"DELTA_P_{name}"] = dp
-            owner_delta_totals[owner_key] = owner_delta_totals.get(owner_key, 0.0) + dp
-        for owner_key, total in owner_delta_totals.items():
-            x_val[f"DELTA_P_OWNER_{owner_key}"] = float(total)
-
-    missing = [name for name in x_features if name not in x_val]
-    if missing:
-        preview = ", ".join(missing[:25])
-        more = f" (+{len(missing) - 25} more)" if len(missing) > 25 else ""
-        raise KeyError(f"Missing {len(missing)} input features required by x_features: {preview}{more}")
-
-    feat_vec = np.array([x_val[name] for name in x_features], dtype=float).reshape(-1)
-
-    # ==== define features bounds (big M for the MILP) ======
-    x_val_sc = scale_minmax(feat_vec, x_scaler, np.arange(len(feat_vec)))
-
-    def _parse_csv_floats(text: str | None) -> np.ndarray | None:
-        if not text:
-            return None
-        vals = [v.strip() for v in text.split(",") if v.strip()]
-        if not vals:
-            return None
-        return np.asarray([float(v) for v in vals], dtype=float).reshape(-1)
-
-    init_m = _parse_csv_floats(args.init_m)
-    init_d = _parse_csv_floats(args.init_d)
-    if init_m is not None:
-        if init_m.size == 1:
-            init_m = np.full(len(m_idx), float(init_m[0]), dtype=float)
-        elif init_m.size != len(m_idx):
-            raise ValueError(f"--init-m must have length 1 or {len(m_idx)} (got {init_m.size}).")
-    if init_d is not None:
-        if init_d.size == 1:
-            init_d = np.full(len(d_idx), float(init_d[0]), dtype=float)
-        elif init_d.size != len(d_idx):
-            raise ValueError(f"--init-d must have length 1 or {len(d_idx)} (got {init_d.size}).")
-
-    # Optional warm-start for the activation mask selection.
-    if init_m is not None or init_d is not None:
-        x_val_sc = x_val_sc.copy()
-        if init_m is not None:
-            x_val_sc[m_idx] = scale_minmax(init_m, x_scaler, m_idx)
-        if init_d is not None:
-            x_val_sc[d_idx] = scale_minmax(init_d, x_scaler, d_idx)
-
-    x_min_sc, x_max_sc = x_val_sc.copy(), x_val_sc.copy()
+    x_min_sc = x_seed_sc.copy()
+    x_max_sc = x_seed_sc.copy()
     x_min_sc[m_idx], x_max_sc[m_idx] = m_min_sc, m_max_sc
     x_min_sc[d_idx], x_max_sc[d_idx] = d_min_sc, d_max_sc
-    if len(x_features) >= 10 and pg_min.size >= 10 and pg_max.size >= 10:
-        pg_link_order = np.asarray([1, 2, 3, 4, 6, 9, 0, 5, 7, 8], dtype=int)
-        x_pg_idx = np.arange(len(x_features) - 10, len(x_features), dtype=int)
-        pg_link_scales = np.asarray(x_scaler.scale_[x_pg_idx], dtype=float)
-        pg_link_offsets = np.asarray(x_scaler.min_[x_pg_idx], dtype=float)
-        pg_link_min_sc = pg_min[pg_link_order] * pg_link_scales + pg_link_offsets
-        pg_link_max_sc = pg_max[pg_link_order] * pg_link_scales + pg_link_offsets
-        x_min_sc[x_pg_idx] = np.minimum(pg_link_min_sc, pg_link_max_sc)
-        x_max_sc[x_pg_idx] = np.maximum(pg_link_min_sc, pg_link_max_sc)
+    if len(pg_feat_idx) != int(pg_min.size):
+        raise ValueError(
+            "Dispatch feature link mismatch between x_features and dispatch decision size "
+            f"({len(pg_feat_idx)} vs {int(pg_min.size)})."
+        )
+    for k, idx in enumerate(pg_feat_idx):
+        src_k = int(effective_pg_link_order[k]) if k < len(effective_pg_link_order) else int(k)
+        lo = pg_min[src_k] * x_scaler.scale_[idx] + x_scaler.min_[idx]
+        hi = pg_max[src_k] * x_scaler.scale_[idx] + x_scaler.min_[idx]
+        x_min_sc[idx] = min(lo, hi)
+        x_max_sc[idx] = max(lo, hi)
+
+    pg = cp.Variable(pg_min.size, name="pg")
+    x = cp.Variable(x_seed_sc.size, name="x")
+    y = cp.Variable(y_min_sc.size, name="y")
+
+    constraint_blocks: dict[str, list[cp.Constraint]] = {}
+    constraint_blocks["input"] = build_input_feature_constraints(
+        x=x,
+        x_seed_sc=x_seed_sc,
+        m_idx=m_idx,
+        d_idx=d_idx,
+        m_min_sc=m_min_sc,
+        m_max_sc=m_max_sc,
+        d_min_sc=d_min_sc,
+        d_max_sc=d_max_sc,
+        pg=pg,
+        pg_feature_idx=pg_feat_idx,
+        x_scaler=x_scaler,
+        pg_link_order=configured_pg_link_order,
+        x_feature_names=x_features,
+        n_genrou=n_genrou,
+        n_regcv1=n_regcv1,
+        genrou_m_fixed=np.asarray(getattr(getattr(ss, "GENROU", None), "M", {}).v, dtype=float)
+        if getattr(ss, "GENROU", None) is not None and hasattr(ss.GENROU, "M")
+        else np.zeros(0, dtype=float),
+        genrou_d_fixed=np.asarray(getattr(getattr(ss, "GENROU", None), "D", {}).v, dtype=float)
+        if getattr(ss, "GENROU", None) is not None and hasattr(ss.GENROU, "D")
+        else np.zeros(0, dtype=float),
+        pg_max=pg_max,
+    )
+
+    constraint_blocks["output"] = build_output_feature_constraints(
+        y=y,
+        y_min_sc=y_min_sc,
+        y_max_sc=y_max_sc,
+        enforce_dispatch_output_link=bool(cfg.get("constraints", {}).get("enforce_dispatch_output_link", True)),
+        y_ibr_idx=np.asarray(cfg.get("constraints", {}).get("y_ibr_idx", [2, 3, 4, 5]), dtype=int),
+        pg=pg,
+        pg_base=pg_base,
+        pg_min=pg_min,
+        pg_max=pg_max,
+        ibr_idx=np.asarray(cfg["ibr"]["indices"], dtype=int),
+        y_scaler=y_scaler,
+    )
+
+    nn_mode = str(cfg.get("constraints", {}).get("nn_mode", "milp"))
+    if switches.nn:
+        y_nn, constraints_nn = build_nn_constraints(
+            model=model,
+            x=x,
+            x_seed_sc=x_seed_sc,
+            x_min_sc=x_min_sc,
+            x_max_sc=x_max_sc,
+            mode=nn_mode,
+        )
+        constraint_blocks["nn"] = constraints_nn + [y == y_nn]
     else:
-        pg_link_scales = None
-        pg_link_offsets = None
+        constraint_blocks["nn"] = []
 
-    # === continue with pb definition and solving ====
-    prob, values = define_rted_vis(
-        ss, model, x_val_sc,
-        m_idx, d_idx, m_min_sc, m_max_sc, d_min_sc, d_max_sc,
-        x_min_sc, x_max_sc, y_min_sc, y_max_sc,
-        p_ibr_sc_min, p_ibr_sc_max, dp_ibr_sc,
-        a, b, c, pg, pg_min, pg_max, pd,
-        mask_max_iter=int(args.mask_max_iter),
-        pg_link_scales=pg_link_scales,
-        pg_link_offsets=pg_link_offsets,
-    )  
+    flows = None
+    line_artifacts = None
+    n1_stats: dict[str, int | bool] | None = None
+    n1_redispatch_stats: dict[str, int | bool] | None = None
+    constraint_blocks["line"] = []
+    constraint_blocks["n1"] = []
+    constraint_blocks["n1_redispatch"] = []
+    if switches.line:
+        flows, line_constraints, line_artifacts = build_basecase_line_constraints(ss, pg=pg, pd=pd)
+        constraint_blocks["line"] = line_constraints
+
+        if switches.n1:
+            exclude_islanding_critical = bool(cfg.get("constraints", {}).get("exclude_islanding_critical_n1", True))
+            constraints_n1, n1_stats = build_n1_constraints(
+                flows,
+                line_artifacts.ppci,
+                line_artifacts.ptdf,
+                line_artifacts.fmax,
+                critical_bus_nums=line_artifacts.critical_bus_nums,
+                exclude_islanding_critical=exclude_islanding_critical,
+                collect_stats=True,
+            )
+            logger.info("n1_stats=%s", n1_stats)
+            constraint_blocks["n1"] = constraints_n1
+
+            if bool(cfg.get("constraints", {}).get("use_n1_redispatch", False)):
+                constraints_n1_r, n1_redispatch_stats, _ = build_n1_redispatch_constraints(
+                    pg=pg,
+                    pd=pd,
+                    Cg=line_artifacts.Cg,
+                    Cd=line_artifacts.Cd,
+                    ptdf=line_artifacts.ptdf,
+                    ppci=line_artifacts.ppci,
+                    fmax=line_artifacts.fmax,
+                    pg_min=pg_min,
+                    pg_max=pg_max,
+                    critical_bus_nums=line_artifacts.critical_bus_nums,
+                    exclude_islanding_critical=exclude_islanding_critical,
+                    collect_stats=True,
+                )
+                logger.info("n1_redispatch_stats=%s", n1_redispatch_stats)
+                constraint_blocks["n1_redispatch"] = constraints_n1_r
+
+    constraint_blocks["ed"] = build_ed_constraints(
+        pg=pg,
+        pg_min=pg_min,
+        pg_max=pg_max,
+        pd=pd,
+        step_scale=step_scale,
+    )
+
+    use_n1_redispatch = switches.n1 and bool(cfg.get("constraints", {}).get("use_n1_redispatch", False))
+    block_enabled = {
+        "input": bool(switches.input),
+        "output": bool(switches.output),
+        "nn": bool(switches.nn),
+        "line": bool(switches.line),
+        "n1": bool(switches.n1),
+        "n1_redispatch": bool(use_n1_redispatch),
+        "ed": bool(switches.ed),
+    }
+
+    active_constraints: list[cp.Constraint] = []
+    for key in ("input", "output", "nn", "line", "n1", "n1_redispatch", "ed"):
+        if block_enabled.get(key, False):
+            active_constraints += constraint_blocks.get(key, [])
+
+    for name, block in constraint_blocks.items():
+        logger.info("constraint_block=%s n_constraints=%s n_scalar=%s", name, len(block), _scalar_constraint_count(block))
+
+    a = np.asarray(cfg["ed_costs"]["a"], dtype=float)
+    b = np.asarray(cfg["ed_costs"]["b"], dtype=float)
+    c = np.asarray(cfg["ed_costs"]["c"], dtype=float)
+
+    tie_breaker = float(cfg.get("constraints", {}).get("epigraph_tie_breaker", 0.0))
+    if tie_breaker == 0.0 and switches.nn and nn_mode.lower() == "epigraph" and _is_convex_epigraph_model(model):
+        tie_breaker = 1e-6
+    objective_dispatch = cp.sum(a + cp.multiply(b, pg) + cp.multiply(c, cp.square(pg)))
+    objective_expr = objective_dispatch + (float(tie_breaker) * cp.sum(y) if tie_breaker > 0 else 0)
+    objective = cp.Minimize(objective_expr)
+
+    solver_kwargs = _build_solver_kwargs(cfg, solver.name, solver.verbose, solver.reoptimize)
+
+    if solver.feasibility_checks:
+        checks = {
+            "input": constraint_blocks["input"] + (constraint_blocks["ed"] if switches.ed else []),
+            "output": constraint_blocks["output"] + (constraint_blocks["ed"] if switches.ed else []),
+            "nn": constraint_blocks["nn"] + (constraint_blocks["ed"] if switches.ed else []),
+            "input_nn": constraint_blocks["input"] + constraint_blocks["nn"] + (constraint_blocks["ed"] if switches.ed else []),
+            "input_nn_output": constraint_blocks["input"]
+            + constraint_blocks["nn"]
+            + constraint_blocks["output"]
+            + (constraint_blocks["ed"] if switches.ed else []),
+            "line": constraint_blocks["line"] + (constraint_blocks["ed"] if switches.ed else []),
+            "line_n1": constraint_blocks["line"] + constraint_blocks["n1"] + (constraint_blocks["ed"] if switches.ed else []),
+            "line_n1_redispatch": constraint_blocks["line"]
+            + constraint_blocks["n1"]
+            + constraint_blocks["n1_redispatch"]
+            + (constraint_blocks["ed"] if switches.ed else []),
+            "combined": active_constraints,
+        }
+        for name, cons in checks.items():
+            if not cons:
+                continue
+            p = cp.Problem(objective, cons)
+            p.solve(**solver_kwargs)
+            n_constraints, nnz = _problem_stats(p, solver.name)
+            logger.info(
+                "check=%s status=%s objective=%s n_constraints=%s nnz=%s",
+                name,
+                p.status,
+                p.value,
+                n_constraints,
+                nnz,
+            )
+            if (
+                name == "input_nn"
+                and bool(switches.output)
+                and str(p.status) in {"optimal", "optimal_inaccurate"}
+                and y.value is not None
+            ):
+                y_sc_chk = np.asarray(y.value, dtype=float).reshape(-1)
+                y_lo_viol = np.maximum(y_min_sc - y_sc_chk, 0.0)
+                y_hi_viol = np.maximum(y_sc_chk - y_max_sc, 0.0)
+                y_viol = np.maximum(y_lo_viol, y_hi_viol)
+                y_n_viol = int(np.sum(y_viol > 1e-9))
+                if y_n_viol > 0:
+                    y_raw_chk = (y_sc_chk - y_scaler.min_) / y_scaler.scale_
+                    viol_idx = np.where(y_viol > 1e-9)[0].astype(int).tolist()
+                    max_idx = int(np.argmax(y_viol))
+                    logger.info(
+                        "nn_only_output_bound_conflict n_viol=%s viol_indices=%s max_violation_sc=%s max_idx=%s "
+                        "y_raw_at_max=%s y_raw_low=%s y_raw_high=%s",
+                        y_n_viol,
+                        viol_idx,
+                        float(y_viol[max_idx]),
+                        max_idx,
+                        float(y_raw_chk[max_idx]),
+                        float(y_min_raw[max_idx]),
+                        float(y_max_raw[max_idx]),
+                    )
+
+    prob = cp.Problem(objective, active_constraints)
+    solve_start = time.perf_counter()
+    prob.solve(**solver_kwargs)
+    solve_wall_sec = time.perf_counter() - solve_start
+    n_constraints, nnz = _problem_stats(prob, solver.name)
+    logger.info(
+        "status=%s objective=%s n_constraints=%s nnz=%s solve_wall_sec=%s",
+        prob.status,
+        prob.value,
+        n_constraints,
+        nnz,
+        solve_wall_sec,
+    )
+
+    if (
+        str(prob.status) == "infeasible_or_unbounded"
+        and str(solver.name).upper() == "GUROBI"
+        and not bool(solver_kwargs.get("reoptimize", False))
+    ):
+        retry_kwargs = dict(solver_kwargs)
+        retry_kwargs["reoptimize"] = True
+        retry_start = time.perf_counter()
+        prob.solve(**retry_kwargs)
+        retry_wall_sec = time.perf_counter() - retry_start
+        solve_wall_sec += retry_wall_sec
+        n_constraints, nnz = _problem_stats(prob, solver.name)
+        logger.info(
+            "status_after_reoptimize=%s objective=%s n_constraints=%s nnz=%s retry_wall_sec=%s",
+            prob.status,
+            prob.value,
+            n_constraints,
+            nnz,
+            retry_wall_sec,
+        )
+
+    status = str(prob.status)
+    infeasible_status = {"infeasible", "infeasible_inaccurate", "unbounded", "infeasible_or_unbounded"}
+    is_infeasible = status in infeasible_status
+
+    pg_opt = (
+        np.asarray(pg.value, dtype=float).reshape(-1)
+        if pg.value is not None
+        else np.full(pg_min.size, np.nan, dtype=float)
+    )
+    if x.value is not None:
+        x_opt_sc = np.asarray(x.value, dtype=float).reshape(-1)
+    elif is_infeasible:
+        x_opt_sc = np.full(x_seed_sc.size, np.nan, dtype=float)
+    else:
+        x_opt_sc = x_seed_sc.copy()
+
+    y_opt_sc = (
+        np.asarray(y.value, dtype=float).reshape(-1)
+        if y.value is not None
+        else np.full(y_min_sc.size, np.nan, dtype=float)
+    )
+
+    m_opt = _unscale_subset(x_opt_sc[m_idx], x_scaler, m_idx) if m_idx else np.zeros(0, dtype=float)
+    d_opt = _unscale_subset(x_opt_sc[d_idx], x_scaler, d_idx) if d_idx else np.zeros(0, dtype=float)
+    y_opt = (y_opt_sc - y_scaler.min_) / y_scaler.scale_
+
+    _save_results_csv(
+        output_paths["results_csv"],
+        status=status,
+        objective=float(prob.value) if prob.value is not None else None,
+        pg=pg_opt,
+        m=m_opt,
+        d=d_opt,
+    )
+
+    block_rows = []
+    for name in ("input", "output", "nn", "line", "n1", "n1_redispatch", "ed"):
+        cons = constraint_blocks.get(name, [])
+        block_rows.append(
+            {
+                "block": name,
+                "enabled": int(bool(block_enabled.get(name, False))),
+                "n_constraints": int(len(cons)),
+                "n_scalar_constraints": int(_scalar_constraint_count(cons)),
+            }
+        )
+    _write_dict_rows_csv(output_paths["constraint_blocks_csv"], block_rows)
+
+    output_names = list(cfg.get("outputs", {}).get("y_names") or [f"y_{i + 1}" for i in range(int(y_opt.size))])
+    if len(output_names) != int(y_opt.size):
+        output_names = [f"y_{i + 1}" for i in range(int(y_opt.size))]
+    pred_rows = []
+    for i, name in enumerate(output_names):
+        val = float(y_opt[i]) if i < y_opt.size else np.nan
+        lo = float(y_min_raw[i]) if i < y_min_raw.size else np.nan
+        hi = float(y_max_raw[i]) if i < y_max_raw.size else np.nan
+        sat = int(np.isfinite(val) and np.isfinite(lo) and np.isfinite(hi) and (val >= lo - 1e-8) and (val <= hi + 1e-8))
+        pred_rows.append(
+            {
+                "output_idx": int(i),
+                "output_name": name,
+                "predicted_value": val,
+                "limit_low": lo,
+                "limit_high": hi,
+                "is_within_limits": sat,
+                "lower_margin": (val - lo) if np.isfinite(val) and np.isfinite(lo) else np.nan,
+                "upper_margin": (hi - val) if np.isfinite(val) and np.isfinite(hi) else np.nan,
+            }
+        )
+    _write_dict_rows_csv(output_paths["predicted_metrics_csv"], pred_rows)
+
+    ibr_idx = np.asarray(cfg["ibr"]["indices"], dtype=int)
+    dp_dispatch = pg_opt[ibr_idx] - pg_base[ibr_idx] if ibr_idx.size else np.zeros(0, dtype=float)
+    headroom_up = pg_max[ibr_idx] - pg_opt[ibr_idx] if ibr_idx.size else np.zeros(0, dtype=float)
+    headroom_down = pg_opt[ibr_idx] - pg_min[ibr_idx] if ibr_idx.size else np.zeros(0, dtype=float)
+    y_ibr_idx = np.asarray(cfg.get("constraints", {}).get("y_ibr_idx", [2, 3, 4, 5]), dtype=int)
+
+    dispatch_rows = []
+    for i in range(pg_opt.size):
+        dispatch_rows.append(
+            {
+                "row_type": "generator_dispatch",
+                "index": int(i),
+                "pg_base": float(pg_base[i]),
+                "pg_opt": float(pg_opt[i]),
+                "pg_delta": float(pg_opt[i] - pg_base[i]),
+                "pg_min": float(pg_min[i]),
+                "pg_max": float(pg_max[i]),
+            }
+        )
+    for local_i, gen_i in enumerate(ibr_idx):
+        pred_dp = float(y_opt[y_ibr_idx[local_i]]) if (local_i < y_ibr_idx.size and y_ibr_idx[local_i] < y_opt.size) else np.nan
+        pmin_delta = float(pg_min[gen_i] - pg_base[gen_i])
+        pmax_delta = float(pg_max[gen_i] - pg_base[gen_i])
+        dispatch_rows.append(
+            {
+                "row_type": "ibr_summary",
+                "index": int(local_i),
+                "gen_index": int(gen_i),
+                "M_opt": float(m_opt[local_i]) if local_i < m_opt.size else np.nan,
+                "D_opt": float(d_opt[local_i]) if local_i < d_opt.size else np.nan,
+                "delta_p_dispatch": float(dp_dispatch[local_i]),
+                "delta_p_predicted": pred_dp,
+                "delta_p_pred_minus_dispatch": pred_dp - float(dp_dispatch[local_i]) if np.isfinite(pred_dp) else np.nan,
+                "delta_p_physical_min": pmin_delta,
+                "delta_p_physical_max": pmax_delta,
+                "delta_p_margin_to_max": (pmax_delta - pred_dp) if np.isfinite(pred_dp) else np.nan,
+                "delta_p_margin_to_min": (pred_dp - pmin_delta) if np.isfinite(pred_dp) else np.nan,
+                "headroom_up": float(headroom_up[local_i]),
+                "headroom_down": float(headroom_down[local_i]),
+            }
+        )
+    _write_dict_rows_csv(output_paths["dispatch_impact_csv"], dispatch_rows)
+
+    line_security = {}
+    if line_artifacts is not None and np.all(np.isfinite(pg_opt)):
+        line_security = evaluate_line_security_metrics(
+            pg_value=pg_opt,
+            pd=pd,
+            artifacts=line_artifacts,
+            include_n1=bool(switches.n1),
+            exclude_islanding_critical=bool(cfg.get("constraints", {}).get("exclude_islanding_critical_n1", True)),
+        )
+
+    dispatch_objective_value = (
+        float(np.sum(a + b * pg_opt + c * np.square(pg_opt)))
+        if np.all(np.isfinite(pg_opt))
+        else np.nan
+    )
+
+    metrics_arr = np.asarray([row["is_within_limits"] for row in pred_rows], dtype=float) if pred_rows else np.zeros(0)
+    output_limits_ok = bool(np.all(metrics_arr > 0.5)) if metrics_arr.size else False
+    output_violation_count = int(np.sum(metrics_arr < 0.5)) if metrics_arr.size else 0
+
+    size_metrics = prob.size_metrics
+    problem_size = {
+        **_variable_type_counts(prob),
+        "n_constraints_total": int(size_metrics.num_scalar_eq_constr + size_metrics.num_scalar_leq_constr),
+        "n_constraints_scalar_total": int(
+            sum(_scalar_constraint_count(constraint_blocks[name]) for name in constraint_blocks if block_enabled.get(name, False))
+        ),
+        "n_constraints_eq": int(size_metrics.num_scalar_eq_constr),
+        "n_constraints_leq": int(size_metrics.num_scalar_leq_constr),
+        "nnz_total": nnz,
+    }
+
+    solver_stats = {
+        "solver_name": solver.name,
+        "status": status,
+        "solve_time_sec": float(getattr(prob.solver_stats, "solve_time", np.nan)),
+        "solve_wall_time_sec": float(solve_wall_sec),
+        "num_iters": int(getattr(prob.solver_stats, "num_iters", -1)) if getattr(prob.solver_stats, "num_iters", None) is not None else -1,
+        "solver_kwargs": {k: v for k, v in solver_kwargs.items() if k != "solver"},
+    }
+
+    summary_payload: dict[str, Any] = {
+        "run_id": run_id,
+        "formulation_id": formulation_id,
+        "formulation_name": formulation_name,
+        "scenario_id": scenario_id,
+        "scenario_name": scenario_name,
+        "scenario_description": scenario_description,
+        "description": str(formulation_cfg.get("description", "")),
+        "equation_map": equation_map,
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+        "status": status,
+        "objective": float(prob.value) if prob.value is not None else None,
+        "objective_dispatch_only": dispatch_objective_value if np.isfinite(dispatch_objective_value) else None,
+        "objective_tie_breaker": float(tie_breaker),
+        "system_case": str(cfg["system"]["case"]),
+        "model_type": str(cfg["model"].get("type", "")),
+        "model_dir": str(cfg["model"].get("model_dir", cfg["model"].get("state_dict", ""))),
+        "model_retain_reason": str(cfg["model"].get("retain_reason", "")),
+        "nn_mode": nn_mode,
+        "solver_modeling_mode": f"{solver.name}:{nn_mode if switches.nn else 'disabled'}",
+        "config_path": str(config_path) if config_path else "",
+        "scenario": dict(cfg.get("scenario", {})),
+        "solver_stats": solver_stats,
+        "problem_size": problem_size,
+        "constraint_blocks": block_rows,
+        "constraint_switches": {
+            "use_input": bool(switches.input),
+            "use_output": bool(switches.output),
+            "use_nn": bool(switches.nn),
+            "use_line": bool(switches.line),
+            "use_n1": bool(switches.n1),
+            "use_n1_redispatch": bool(use_n1_redispatch),
+            "use_ed": bool(switches.ed),
+        },
+        "n1_stats": n1_stats or {},
+        "n1_redispatch_stats": n1_redispatch_stats or {},
+        "security_checks": {
+            "line_security": line_security,
+            "predicted_outputs_within_limits": bool(output_limits_ok),
+            "predicted_output_violation_count": int(output_violation_count),
+        },
+        "dispatch_summary": {
+            "pg_base": pg_base.tolist(),
+            "pg_opt": pg_opt.tolist(),
+            "pg_delta": (pg_opt - pg_base).tolist(),
+            "m_opt": m_opt.tolist(),
+            "d_opt": d_opt.tolist(),
+            "delta_p_dispatch_ibr": dp_dispatch.tolist(),
+            "headroom_up_ibr": headroom_up.tolist(),
+            "headroom_down_ibr": headroom_down.tolist(),
+        },
+        "predicted_metrics": {
+            "names": output_names,
+            "values": y_opt.tolist(),
+            "values_scaled": y_opt_sc.tolist(),
+            "limits_low": y_min_raw.tolist(),
+            "limits_high": y_max_raw.tolist(),
+        },
+        "artifacts": {
+            "results_csv": str(output_paths["results_csv"]),
+            "summary_csv": str(output_paths["summary_csv"]),
+            "constraint_blocks_csv": str(output_paths["constraint_blocks_csv"]),
+            "predicted_metrics_csv": str(output_paths["predicted_metrics_csv"]),
+            "dispatch_impact_csv": str(output_paths["dispatch_impact_csv"]),
+        },
+        "wall_runtime_sec": float(time.perf_counter() - wall_start),
+    }
+
+    _write_json(output_paths["summary_json"], summary_payload)
+    _write_dict_rows_csv(output_paths["summary_csv"], [_summary_row_from_payload(summary_payload)])
+
+    if plot_options.enabled and np.all(np.isfinite(pg_opt)) and np.all(np.isfinite(x_opt_sc)) and np.all(np.isfinite(y_opt_sc)):
+        try:
+            from optimization.plots import maybe_make_plots
+
+            maybe_make_plots(
+                options=plot_options,
+                model=model,
+                x_opt_sc=x_opt_sc,
+                y_opt_sc=y_opt_sc,
+                y_scaler=y_scaler,
+                m_opt=m_opt,
+                d_opt=d_opt,
+                ibr_idx=np.asarray(cfg["ibr"]["indices"], dtype=int),
+                pg_opt=pg_opt,
+                ss=ss,
+                pd=pd,
+            )
+        except Exception as exc:
+            logger.warning("plotting_failed=%s", exc)
+
+    if is_infeasible and bool(output_cfg.get("fail_on_infeasible", False)):
+        raise RuntimeError(f"Optimization failed with status={status}")
+
+    return {
+        "run_id": run_id,
+        "formulation_id": formulation_id,
+        "status": status,
+        "objective": float(prob.value) if prob.value is not None else None,
+        "objective_dispatch_only": dispatch_objective_value if np.isfinite(dispatch_objective_value) else None,
+        "summary_json": str(output_paths["summary_json"]),
+        "summary_csv": str(output_paths["summary_csv"]),
+        "results_csv": str(output_paths["results_csv"]),
+        "pg_opt": pg_opt,
+        "m_opt": m_opt,
+        "d_opt": d_opt,
+        "y_opt": y_opt,
+        "y_opt_sc": y_opt_sc,
+    }
 
 
-    if values["x"].value is None:
-        print(f"Solve status: {prob.status}")
-        print("Feasibility checks:", values.get("feasibility", {}))
-        return prob, values
+def main():
+    parser = argparse.ArgumentParser(description="Final optimization problem with separated constraint blocks.")
+    parser.add_argument(
+        "--config",
+        default="results/thesis_optimization_results/configs/base_optimization.yaml",
+        help="Path to optimization config YAML.",
+    )
+    args = parser.parse_args()
 
-    x_unscaled = (values["x"].value - x_scaler.min_) / x_scaler.scale_
-    y_unscaled = (values["y"].value - y_scaler.min_) / y_scaler.scale_
-    values["x_unscaled"] = x_unscaled
-    values["y_unscaled"] = y_unscaled
-    values["delta_pg"] = values["pg"] - pg_base
-
-    for key, val in values.items():
-        if hasattr(val, "value"):
-            print(f"{key}:\n{val.value}\n")
-        elif isinstance(val, list):
-            print(f"{key}: {len(val)}")
-        else:
-            print(f"{key}: {val}")
-
-    print("m: ", unscale_minmax(values["x"][m_idx].value, x_scaler, m_idx))
-    print("d: ", unscale_minmax(values["x"][d_idx].value, x_scaler, d_idx))
-
-    plot_dir = Path("experiments")
-    plot_dir.mkdir(parents=True, exist_ok=True)
-
-    x_opt_sc = np.asarray(values["x"].value, dtype=float).reshape(-1)
-    m_opt = unscale_minmax(x_opt_sc[m_idx], x_scaler, m_idx)
-    d_opt = unscale_minmax(x_opt_sc[d_idx], x_scaler, d_idx)
-    plot_m_d_ibrs(m_opt, d_opt, ibr_idx, plot_dir)
-
-    y_nn_scaled = np.asarray(values["y"].value, dtype=float).reshape(-1)
-    y_nn_unscaled = unscale_minmax(y_nn_scaled, y_scaler, np.arange(len(y_nn_scaled)))
-    with torch.no_grad():
-        y_pred_scaled = model(torch.tensor(x_opt_sc, dtype=torch.float32).unsqueeze(0)).cpu().numpy().reshape(-1)
-    y_pred_unscaled = unscale_minmax(y_pred_scaled, y_scaler, np.arange(len(y_pred_scaled)))
-    plot_pred_vs_opt(y_nn_scaled, y_nn_unscaled, y_pred_scaled, y_pred_unscaled, plot_dir)
-
-    return prob, values
+    cfg = load_optimization_config(args.config)
+    res = run_optimization(cfg, config_path=str(Path(args.config).resolve()))
+    print(
+        f"[scheduling.problem] status={res['status']} "
+        f"objective={res['objective']} summary={res['summary_json']}"
+    )
 
 
 if __name__ == "__main__":
