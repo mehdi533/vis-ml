@@ -1,5 +1,5 @@
 output_dir: results/thesis_model_results/outputs/architecture_comparison_exploratory_kendall_standard
-skip_if_exists: true
+skip_if_exists: false
 seed: 42
 
 model:

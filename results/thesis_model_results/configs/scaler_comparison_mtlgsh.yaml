@@ -1,5 +1,5 @@
 output_dir: results/thesis_model_results/outputs/scaler_comparison_mtlgsh
-skip_if_exists: true
+skip_if_exists: false
 seed: 42
 
 model:

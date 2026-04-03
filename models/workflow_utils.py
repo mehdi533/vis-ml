@@ -303,8 +303,16 @@ def build_model_kwargs(
                 prefix_value = prefix_map.get(prefix_name)
                 if prefix_value is None:
                     raise KeyError(f"Unknown x_sched prefix '{prefix_name}' in u_feature_spec.")
-                indices = prefix_entry.get("indices", [])
-                _append_unique(resolved_u_cols, [f"{prefix_value}{idx}" for idx in indices])
+                indices = prefix_entry.get("indices")
+                if indices:
+                    _append_unique(resolved_u_cols, [f"{prefix_value}{idx}" for idx in indices])
+                else:
+                    matching_cols = [col for col in feature_cols if str(col).startswith(prefix_value)]
+                    if not matching_cols:
+                        raise KeyError(
+                            f"No feature columns matched x_sched prefix '{prefix_name}' ({prefix_value})."
+                        )
+                    _append_unique(resolved_u_cols, matching_cols)
         resolved_model_cfg["u_feature_cols"] = resolved_u_cols
 
     return {

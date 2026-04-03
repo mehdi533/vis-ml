@@ -1,5 +1,5 @@
 output_dir: results/thesis_model_results/outputs/mtlsh_embeddability_tradeoff
-skip_if_exists: true
+skip_if_exists: false
 seed: 42
 
 model:

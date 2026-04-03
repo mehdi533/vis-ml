@@ -271,6 +271,8 @@ def main() -> None:
         csv_path,
         target_cols=targets,
         feature_cols=feature_cols_cfg,
+        allowed_feature_cols=data_cfg.get("allowed_feature_cols"),
+        allowed_feature_prefixes=data_cfg.get("allowed_feature_prefixes"),
         remove_cols=drops,
         remove_prefixes=drop_prefixes,
         ignore_missing_remove_cols=bool(data_cfg.get("ignore_missing_drop_cols", False)),

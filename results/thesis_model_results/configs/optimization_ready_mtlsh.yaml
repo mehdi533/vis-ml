@@ -1,5 +1,5 @@
 output_dir: results/thesis_model_results/outputs/optimization_ready_mtlsh
-skip_if_exists: true
+skip_if_exists: false
 seed: 42
 
 model:
@@ -13,56 +13,15 @@ data:
   csv_path: results/to_export/simulation_results.csv
   feature_names_path: configs/data_generation_feature_names.yaml
   use_registry_feature_allowlist: true
-  # Exact optimizer-buildable feature contract.
-  # Keep this list aligned with thesis optimization x_features unless the
-  # optimization builder is extended and both sides are updated together.
-  feature_cols:
-    - base_load_scale
-    - load_step_scale
-    - base_load_p_total
-    - base_load_q_total
-    - DELTA_PQ_tot
-    - M_1
-    - D_1
-    - M_2
-    - D_2
-    - M_3
-    - D_3
-    - M_4
-    - D_4
-    - DELTA_P_PQ_1
-    - DELTA_P_PQ_2
-    - DELTA_P_PQ_3
-    - DELTA_P_PQ_4
-    - DELTA_P_PQ_5
-    - DELTA_P_PQ_6
-    - DELTA_P_PQ_7
-    - DELTA_P_PQ_8
-    - DELTA_P_PQ_9
-    - DELTA_P_PQ_10
-    - DELTA_P_PQ_11
-    - DELTA_P_PQ_12
-    - DELTA_P_PQ_13
-    - DELTA_P_PQ_14
-    - DELTA_P_PQ_15
-    - DELTA_P_PQ_16
-    - DELTA_P_PQ_17
-    - DELTA_P_PQ_18
-    - DELTA_P_PQ_19
-    - DELTA_P_OWNER_1
-    - DELTA_P_OWNER_2
-    - DELTA_P_OWNER_3
-    - DELTA_P_OWNER_4
-    - P_GENROU_1
-    - P_GENROU_2
-    - P_GENROU_3
-    - P_GENROU_4
-    - P_GENROU_5
-    - P_GENROU_6
-    - P_REGCV1_1
-    - P_REGCV1_2
-    - P_REGCV1_3
-    - P_REGCV1_4
+  registry_feature_groups: [x_op, x_cont, x_sched]
+  # Keep the schema-defined x_op/x_cont/x_sched inputs, but exclude the
+  # x0__ initial-state channels. On the current export this yields 208 inputs.
+  drop_metadata_fields: true
+  drop_diagnostic_fields: true
+  drop_unused_y_fields: true
+  drop_cols: [line_name, plotter_csv]
+  drop_prefixes: [x0__]
+  ignore_missing_drop_cols: true
   target_cols:
     - rocof_COI
     - dev_COI
@@ -92,7 +51,7 @@ training:
 
 sweep:
   models: [MTLSH]
-  losses: [mse]
+  losses: [kendall]
   scalers: [minmax]
   seeds: [42]
   model: {}

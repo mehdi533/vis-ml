@@ -1,21 +1,22 @@
-output_dir: results/thesis_model_results/outputs/architecture_comparison_exploratory
+output_dir: results/thesis_model_results/outputs/convex_family_favorable
 skip_if_exists: false
 seed: 42
 
 model:
-  hidden_sizes: [256, 128, 64]
-  shared_sizes: [256, 128]
-  group_shared_sizes: [128, 64]
-  head_sizes: [64]
-  group_head_indices: [[0, 1], [2, 3, 4, 5]]
+  hidden_sizes: [512, 256, 128]
+  shared_sizes: [512, 256]
+  head_sizes: [256, 128]
   activation: relu
   dropout: 0.0
-  attention_hidden_dim: 64
-  attention_temperature: 1.0
-  attention_dropout: 0.0
-  kan_grid_size: 8
-  kan_grid_min: -1.0
-  kan_grid_max: 1.0
+  u_feature_spec:
+    scalar_fields: [M_agg, D_agg, P_GENROU_TOTAL, P_REGCV1_TOTAL, P_DISPATCH_TOTAL, P_REGCV1_SHARE]
+    prefixes:
+      - {name: M}
+      - {name: D}
+      - {name: p_genrou}
+      - {name: p_regcv1}
+      - {name: p_genrou_reserve}
+      - {name: p_regcv1_reserve}
 
 data:
   csv_path: results/to_export/simulation_results.csv
@@ -84,7 +85,7 @@ training:
   lr_scheduler_min_lr: 1e-7
 
 sweep:
-  models: [MTLGSH_ATT, MTLGSH_KAN_SHARED, MTLGSH_KAN]
+  models: [FICNN, PICNN, PICNN_MTLSH]
   losses: [mse]
   scalers: [minmax]
   seeds: [42]

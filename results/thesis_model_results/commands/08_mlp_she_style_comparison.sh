@@ -33,8 +33,8 @@ python models/summarize_sweep.py \
 python models/summarize_sweep.py \
   --input-dir results/thesis_model_results/outputs/mlp_she_style_comparison \
   --source label \
-  --group-by data_target_cols label \
-  --value-cols rmse mae \
+  --group-by data_target_cols label raw_unit display_unit display_scale \
+  --value-cols rmse mae rmse_display mae_display \
   --output-csv results/thesis_model_results/tables/mlp_she_style_comparison_by_label.csv
 
 echo "FINISHED AT $(date)"

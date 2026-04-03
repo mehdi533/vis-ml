@@ -25,7 +25,8 @@ It does **not** cover optimization tables, scheduling comparisons, or ANDES repl
   - `Delta_P_IBR_3`
   - `Delta_P_IBR_4`
 - `ignore_missing_drop_cols: true` is enabled so optional metadata columns can be listed safely.
-- If your exported dataset uses different control-feature names for PICNN `u_feature_cols`, adjust the PICNN configs before training.
+- If your exported dataset uses different control-feature names for PICNN/PICNN\_MTLSH schedule variables, adjust the `u_feature_spec` blocks before training.
+- The current PICNN/PICNN\_MTLSH configs treat the full `x_sched` block as the convex `u` family: scheduled inertia, damping, generator dispatch, converter dispatch, and reserve-related fields.
 
 ## Experiment map
 
@@ -48,6 +49,7 @@ It does **not** cover optimization tables, scheduling comparisons, or ANDES repl
 | Architecture complexity / fairness summary | reuses `configs/architecture_comparison_core.yaml` outputs | produced by `commands/03_architecture_comparison.sh` via `src/complexity_summary.py` |
 | Alternate architecture comparison under retained preprocessing/loss candidate | `configs/architecture_comparison_core_kendall_standard.yaml`, `configs/architecture_comparison_exploratory_kendall_standard.yaml` | `commands/11_architecture_comparison_kendall_standard.sh` |
 | Optimization-ready surrogate handoff | `configs/optimization_ready_mtlsh.yaml` | `commands/12_optimization_ready_mtlsh.sh` |
+| Convex-family favorable comparison | `configs/convex_family_favorable.yaml` | `commands/13_convex_family_favorable.sh` |
 
 ## Recommended run order
 
@@ -59,10 +61,11 @@ It does **not** cover optimization tables, scheduling comparisons, or ANDES repl
 6. Finish with `sbatch results/thesis_model_results/commands/06_export_retained_model.sh`
 7. Run `sbatch results/thesis_model_results/commands/07_mtlsh_embeddability_tradeoff.sh` for the MTLSH complexity figure
 8. Run `sbatch results/thesis_model_results/commands/08_mlp_she_style_comparison.sh` for the two-MLP comparison
-9. Run `sbatch results/thesis_model_results/scripts/09_seed_robustness_shortlist.sh` for ranking robustness across seeds
-10. Run `sbatch results/thesis_model_results/scripts/10_boundary_region_eval.sh` for stressed-subset evaluation
+9. Run `sbatch results/thesis_model_results/commands/09_seed_robustness_shortlist.sh` for ranking robustness across seeds
+10. Run `sbatch results/thesis_model_results/commands/10_boundary_region_eval.sh` for stressed-subset evaluation
 11. Run `sbatch results/thesis_model_results/commands/11_architecture_comparison_kendall_standard.sh` to compare architectures under `kendall + standard`
 12. Run `sbatch results/thesis_model_results/commands/12_optimization_ready_mtlsh.sh` to train and export the optimizer-compatible surrogate bundle
+13. Run `sbatch results/thesis_model_results/commands/13_convex_family_favorable.sh` to compare the convex families under a broader schedule-based `u` split and larger widths
 
 For bulk submission, use `results/thesis_model_results/commands/submit_all.sh`.
 
@@ -84,4 +87,4 @@ The table-generation commands use `models/summarize_sweep.py` so the thesis tabl
 
 The retained-family ablation is not packaged as a separate sweep because `mtlsh_embeddability_tradeoff.yaml` already provides the retained-family size sweep; the new complexity summary and tradeoff table are intended to present that result directly.
 
-`configs/optimization_ready_mtlsh.yaml` is intentionally different from the full thesis shortlist configs: it pins the exact ordered feature contract that the current scheduling optimizer can build, rather than training on every available column in `results/to_export/simulation_results.csv`.
+`configs/optimization_ready_mtlsh.yaml` is intentionally different from the full thesis shortlist configs: it uses the schema-defined `x_op`, `x_cont`, and `x_sched` feature families from `configs/data_generation_feature_names.yaml`, while dropping the `x0__*` initial-state channels and non-feature extras.

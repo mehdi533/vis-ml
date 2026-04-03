@@ -1,5 +1,5 @@
 output_dir: results/thesis_model_results/outputs/shortlist_detailed_eval
-skip_if_exists: true
+skip_if_exists: false
 seed: 42
 
 model:
@@ -11,20 +11,14 @@ model:
   activation: relu
   dropout: 0.0
   u_feature_spec:
-    items:
-      - {kind: prefixed, name: M, index: 1}
-      - {kind: prefixed, name: D, index: 1}
-      - {kind: prefixed, name: M, index: 2}
-      - {kind: prefixed, name: D, index: 2}
-      - {kind: prefixed, name: M, index: 3}
-      - {kind: prefixed, name: D, index: 3}
-      - {kind: prefixed, name: M, index: 4}
-      - {kind: prefixed, name: D, index: 4}
-      - {kind: scalar, field: M_agg}
-      - {kind: scalar, field: D_agg}
-      - {kind: scalar, field: P_REGCV1_TOTAL}
-      - {kind: scalar, field: P_DISPATCH_TOTAL}
-      - {kind: scalar, field: P_REGCV1_SHARE}
+    scalar_fields: [M_agg, D_agg, P_GENROU_TOTAL, P_REGCV1_TOTAL, P_DISPATCH_TOTAL, P_REGCV1_SHARE]
+    prefixes:
+      - {name: M}
+      - {name: D}
+      - {name: p_genrou}
+      - {name: p_regcv1}
+      - {name: p_genrou_reserve}
+      - {name: p_regcv1_reserve}
 
 data:
   csv_path: results/to_export/simulation_results.csv
