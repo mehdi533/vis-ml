@@ -12,5 +12,5 @@ export KMP_AFFINITY="${KMP_AFFINITY:-disabled}"
 export KMP_INIT_AT_FORK="${KMP_INIT_AT_FORK:-FALSE}"
 
 "${PYTHON_BIN}" scheduling/run_experiment_suite.py \
-  --suite results/thesis_optimization_results/configs/suites/formulation_comparison.yaml \
+  --suite results/thesis_optimization_results/configs/suites/she_vis_rted_style_comparison.yaml \
   "$@"

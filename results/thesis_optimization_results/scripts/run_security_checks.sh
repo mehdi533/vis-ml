@@ -11,6 +11,6 @@ export OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-1}"
 export KMP_AFFINITY="${KMP_AFFINITY:-disabled}"
 export KMP_INIT_AT_FORK="${KMP_INIT_AT_FORK:-FALSE}"
 
-"${PYTHON_BIN}" final_optimization_folder/run_experiment_suite.py \
+"${PYTHON_BIN}" scheduling/run_experiment_suite.py \
   --suite results/thesis_optimization_results/configs/suites/security_checks.yaml \
   "$@"

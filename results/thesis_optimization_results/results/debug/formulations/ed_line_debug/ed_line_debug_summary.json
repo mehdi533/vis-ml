@@ -1,0 +1,252 @@
+{
+  "run_id": "ed_line_debug",
+  "formulation_id": "ed_line_debug",
+  "formulation_name": "ED + Line (Debug)",
+  "scenario_id": "b0p600_s1p200_t3p000",
+  "scenario_name": "b0p600_s1p200_t3p000",
+  "scenario_description": "",
+  "description": "Quick base-case PTDF line-constraint smoke test.",
+  "equation_map": {
+    "objective_dispatch": "Eq. (4.17)",
+    "ed_balance_limits": "Eq. (2.19b)-(2.19d)",
+    "base_line_flow": "Eq. (2.20), (2.19e)",
+    "preventive_n1": "Eq. (4.18)-(4.19)",
+    "surrogate_embedding_relu_milp": "Eq. (2.26)-(2.27)",
+    "surrogate_embedding_icnn_picnn_epigraph": "Eq. (4.21)-(4.22)"
+  },
+  "timestamp_utc": "2026-04-03T11:24:28.228852+00:00",
+  "status": "optimal",
+  "objective": 147.41755625510925,
+  "objective_dispatch_only": 147.41756105510925,
+  "objective_tie_breaker": 1e-06,
+  "system_case": "data_generation/andes_cases/ieee39_full_ibrs.xlsx",
+  "model_type": "MTLSharedHeads",
+  "model_dir": "results/thesis_model_results/outputs/optimization_ready_mtlsh/MTLSH__kendall__minmax__seed42",
+  "model_retain_reason": "Retained surrogate: best accuracy/complexity compromise among embeddable candidates.",
+  "nn_mode": "milp",
+  "solver_modeling_mode": "OSQP:disabled",
+  "config_path": "/Users/cloud9/Desktop/ETH Project/Working folder/03_Code/vis-ml/results/thesis_optimization_results/results/debug/formulations/ed_line_debug/ed_line_debug_resolved_config.yaml",
+  "scenario": {
+    "base_scale": 0.6,
+    "step_scale": 1.2,
+    "load_step_time": 3.0
+  },
+  "solver_stats": {
+    "solver_name": "OSQP",
+    "status": "optimal",
+    "solve_time_sec": 0.0005280419999999999,
+    "solve_wall_time_sec": 0.007252541996422224,
+    "num_iters": 300,
+    "solver_kwargs": {
+      "verbose": false
+    }
+  },
+  "problem_size": {
+    "n_variables_total": 16,
+    "n_variables_continuous": 16,
+    "n_variables_binary": 0,
+    "n_variables_integer_nonbinary": 0,
+    "n_constraints_total": 113,
+    "n_constraints_scalar_total": 113,
+    "n_constraints_eq": 1,
+    "n_constraints_leq": 112,
+    "nnz_total": 957
+  },
+  "constraint_blocks": [
+    {
+      "block": "input",
+      "enabled": 0,
+      "n_constraints": 6,
+      "n_scalar_constraints": 203
+    },
+    {
+      "block": "output",
+      "enabled": 0,
+      "n_constraints": 5,
+      "n_scalar_constraints": 24
+    },
+    {
+      "block": "nn",
+      "enabled": 0,
+      "n_constraints": 0,
+      "n_scalar_constraints": 0
+    },
+    {
+      "block": "line",
+      "enabled": 1,
+      "n_constraints": 2,
+      "n_scalar_constraints": 92
+    },
+    {
+      "block": "n1",
+      "enabled": 0,
+      "n_constraints": 0,
+      "n_scalar_constraints": 0
+    },
+    {
+      "block": "n1_redispatch",
+      "enabled": 0,
+      "n_constraints": 0,
+      "n_scalar_constraints": 0
+    },
+    {
+      "block": "ed",
+      "enabled": 1,
+      "n_constraints": 3,
+      "n_scalar_constraints": 21
+    }
+  ],
+  "constraint_switches": {
+    "use_input": false,
+    "use_output": false,
+    "use_nn": false,
+    "use_line": true,
+    "use_n1": false,
+    "use_n1_redispatch": false,
+    "use_ed": true
+  },
+  "n1_stats": {},
+  "n1_redispatch_stats": {},
+  "security_checks": {
+    "line_security": {
+      "base_max_loading_ratio": 1.0000000000000004,
+      "base_max_loading_pct": 100.00000000000004,
+      "base_mean_loading_pct": 31.07614432799413,
+      "base_n_violations": 0,
+      "base_max_violation_ratio": 4.440892098500626e-16,
+      "base_max_violation_pct": 4.440892098500626e-14,
+      "n1_considered": false,
+      "n1_n_total_outages": 0,
+      "n1_n_active_outages": 0,
+      "n1_n_skipped_nonfinite_lodf": 0,
+      "n1_n_skipped_islanding_critical": 0,
+      "n1_n_outages_with_violation": 0,
+      "n1_total_line_violations": 0,
+      "n1_max_loading_ratio": NaN,
+      "n1_max_loading_pct": NaN,
+      "n1_max_violation_ratio": NaN,
+      "n1_max_violation_pct": NaN,
+      "n1_worst_outage_index": -1
+    },
+    "predicted_outputs_within_limits": false,
+    "predicted_output_violation_count": 6
+  },
+  "dispatch_summary": {
+    "pg_base": [
+      2.21728296,
+      3.72663999,
+      4.5,
+      3.78,
+      3.3,
+      3.5999999999999996,
+      3.57,
+      3.384,
+      5.19,
+      3.11746
+    ],
+    "pg_opt": [
+      2.015077856910564,
+      2.170338878380603,
+      2.536562096167096,
+      2.7088070561805817,
+      2.7088070561805844,
+      6.0,
+      2.7088070561805777,
+      5.64,
+      8.65,
+      -2.5872439729959428e-23
+    ],
+    "pg_delta": [
+      -0.20220510308943584,
+      -1.5563011116193968,
+      -1.963437903832904,
+      -1.071192943819418,
+      -0.5911929438194155,
+      2.4000000000000004,
+      -0.8611929438194221,
+      2.256,
+      3.46,
+      -3.11746
+    ],
+    "m_opt": [
+      4.0,
+      4.0,
+      4.0,
+      4.0
+    ],
+    "d_opt": [
+      2.0,
+      2.0,
+      2.0,
+      2.0
+    ],
+    "delta_p_dispatch_ibr": [
+      -0.20220510308943584,
+      2.4000000000000004,
+      2.256,
+      3.46
+    ],
+    "headroom_up_ibr": [
+      8.384922143089437,
+      0.9699999999999998,
+      0.0,
+      0.0
+    ],
+    "headroom_down_ibr": [
+      2.015077856910564,
+      6.0,
+      5.64,
+      8.65
+    ]
+  },
+  "predicted_metrics": {
+    "names": [
+      "rocof_COI",
+      "dev_COI",
+      "Delta_P_IBR_1",
+      "Delta_P_IBR_2",
+      "Delta_P_IBR_3",
+      "Delta_P_IBR_4"
+    ],
+    "values": [
+      -1.505117445152729,
+      -2.5828686671468453,
+      -6.16280703662922,
+      -6.744455869365081,
+      -5.104703783086508,
+      -9.105244693036072
+    ],
+    "values_scaled": [
+      -0.7999999999999999,
+      -0.7999999999999999,
+      -0.7999999999999999,
+      -0.7999999999999999,
+      -0.7999999999999999,
+      -0.7999999999999999
+    ],
+    "limits_low": [
+      -0.5,
+      -0.5,
+      -5.0,
+      -5.0,
+      -5.0,
+      -5.0
+    ],
+    "limits_high": [
+      0.5,
+      0.5,
+      5.0,
+      5.0,
+      5.0,
+      5.0
+    ]
+  },
+  "artifacts": {
+    "results_csv": "/Users/cloud9/Desktop/ETH Project/Working folder/03_Code/vis-ml/results/thesis_optimization_results/results/debug/formulations/ed_line_debug/ed_line_debug_decisions.csv",
+    "summary_csv": "/Users/cloud9/Desktop/ETH Project/Working folder/03_Code/vis-ml/results/thesis_optimization_results/results/debug/formulations/ed_line_debug/ed_line_debug_summary.csv",
+    "constraint_blocks_csv": "/Users/cloud9/Desktop/ETH Project/Working folder/03_Code/vis-ml/results/thesis_optimization_results/results/debug/formulations/ed_line_debug/ed_line_debug_constraint_blocks.csv",
+    "predicted_metrics_csv": "/Users/cloud9/Desktop/ETH Project/Working folder/03_Code/vis-ml/results/thesis_optimization_results/results/debug/formulations/ed_line_debug/ed_line_debug_predicted_metrics.csv",
+    "dispatch_impact_csv": "/Users/cloud9/Desktop/ETH Project/Working folder/03_Code/vis-ml/results/thesis_optimization_results/results/debug/formulations/ed_line_debug/ed_line_debug_dispatch_impact.csv"
+  },
+  "wall_runtime_sec": 0.4966089160006959
+}

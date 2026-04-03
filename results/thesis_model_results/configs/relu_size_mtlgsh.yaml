@@ -1,24 +1,14 @@
-output_dir: results/thesis_model_results/outputs/architecture_comparison_core_kendall_standard
+output_dir: results/thesis_model_results/outputs/relu_size_mtlgsh
 skip_if_exists: false
 seed: 42
 
 model:
-  hidden_sizes: [256, 128, 64]
-  shared_sizes: [256, 128]
-  group_shared_sizes: [128, 64]
-  head_sizes: [64]
+  shared_sizes: [32]
+  group_shared_sizes: [16]
+  head_sizes: [16]
   group_head_indices: [[0, 1], [2, 3, 4, 5]]
   activation: relu
   dropout: 0.0
-  u_feature_spec:
-    scalar_fields: [M_agg, D_agg, P_GENROU_TOTAL, P_REGCV1_TOTAL, P_DISPATCH_TOTAL, P_REGCV1_SHARE]
-    prefixes:
-      - {name: M}
-      - {name: D}
-      - {name: p_genrou}
-      - {name: p_regcv1}
-      - {name: p_genrou_reserve}
-      - {name: p_regcv1_reserve}
 
 data:
   csv_path: results/to_export/simulation_results.csv
@@ -87,10 +77,14 @@ training:
   lr_scheduler_min_lr: 1e-7
 
 sweep:
-  models: [MLP, MTLSH, MTLGSH, FICNN, PICNN, PICNN_MTLSH]
-  losses: [kendall]
-  scalers: [standard]
+  models: [MTLGSH]
+  losses: [mse]
+  scalers: [minmax]
   seeds: [42]
-  model: {}
+  model:
+    rows:
+      - {shared_sizes: [16], group_shared_sizes: [8], head_sizes: [8]}
+      - {shared_sizes: [32], group_shared_sizes: [16], head_sizes: [16]}
+      - {shared_sizes: [64], group_shared_sizes: [32], head_sizes: [32]}
   training: {}
   data: {}

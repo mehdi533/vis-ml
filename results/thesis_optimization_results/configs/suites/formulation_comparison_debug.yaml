@@ -1,0 +1,88 @@
+name: chapter5_optimization_formulation_comparison_debug
+baseline_id: ed_debug
+
+results_root: ../../results/debug/formulations
+
+output:
+  summary_csv: ../../results/debug/formulation_comparison_debug_summary.csv
+  summary_markdown: ../../results/debug/formulation_comparison_debug_summary.md
+  summary_json: ../../results/debug/formulation_comparison_debug_summary.json
+
+runs:
+  - id: ed_debug
+    name: ED (Debug)
+    description: Quick ED smoke test.
+    base_config: ../base_optimization.yaml
+    overrides:
+      solver:
+        name: OSQP
+        verbose: false
+        reoptimize: false
+        feasibility_checks: false
+      constraints:
+        use_input: false
+        use_output: false
+        use_nn: false
+        use_line: false
+        use_n1: false
+        use_n1_redispatch: false
+        use_ed: true
+
+  - id: ed_line_debug
+    name: ED + Line (Debug)
+    description: Quick base-case PTDF line-constraint smoke test.
+    base_config: ../base_optimization.yaml
+    overrides:
+      solver:
+        name: OSQP
+        verbose: false
+        reoptimize: false
+        feasibility_checks: false
+      constraints:
+        use_input: false
+        use_output: false
+        use_nn: false
+        use_line: true
+        use_n1: false
+        use_n1_redispatch: false
+        use_ed: true
+
+  - id: ed_surrogate_debug
+    name: ED + Surrogate (Debug)
+    description: Quick surrogate-embedding smoke test with fixed-pattern NN mode.
+    base_config: ../base_optimization.yaml
+    overrides:
+      solver:
+        name: OSQP
+        verbose: false
+        reoptimize: false
+        feasibility_checks: false
+      constraints:
+        use_input: true
+        use_output: true
+        use_nn: true
+        use_line: false
+        use_n1: false
+        use_n1_redispatch: false
+        use_ed: true
+        nn_mode: fixed_pattern
+
+  - id: ed_line_surrogate_debug
+    name: ED + Line + Surrogate (Debug)
+    description: Combined line + surrogate smoke test without N-1.
+    base_config: ../base_optimization.yaml
+    overrides:
+      solver:
+        name: OSQP
+        verbose: false
+        reoptimize: false
+        feasibility_checks: false
+      constraints:
+        use_input: true
+        use_output: true
+        use_nn: true
+        use_line: true
+        use_n1: false
+        use_n1_redispatch: false
+        use_ed: true
+        nn_mode: fixed_pattern

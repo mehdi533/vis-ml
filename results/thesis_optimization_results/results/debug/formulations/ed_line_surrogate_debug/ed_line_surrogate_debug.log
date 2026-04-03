@@ -1,0 +1,20 @@
+2026-04-03 13:23:06,173 INFO Loaded 208 x_features from model_dir/run_config.yaml
+2026-04-03 13:23:06,173 INFO Adjusting model.in_dim from 46 to 208 to match optimization feature contract.
+2026-04-03 13:23:06,745 INFO constraint_block=input n_constraints=6 n_scalar=203
+2026-04-03 13:23:06,745 INFO constraint_block=output n_constraints=5 n_scalar=24
+2026-04-03 13:23:06,745 INFO constraint_block=nn n_constraints=35 n_scalar=268
+2026-04-03 13:23:06,745 INFO constraint_block=line n_constraints=2 n_scalar=92
+2026-04-03 13:23:06,745 INFO constraint_block=n1 n_constraints=0 n_scalar=0
+2026-04-03 13:23:06,745 INFO constraint_block=n1_redispatch n_constraints=0 n_scalar=0
+2026-04-03 13:23:06,745 INFO constraint_block=ed n_constraints=3 n_scalar=21
+2026-04-03 13:23:06,887 INFO status=infeasible objective=inf n_constraints=608 nnz=15871 solve_wall_sec=0.14058483399276156
+2026-04-03 13:24:28,724 INFO Loaded 208 x_features from model_dir/run_config.yaml
+2026-04-03 13:24:28,724 INFO Adjusting model.in_dim from 46 to 208 to match optimization feature contract.
+2026-04-03 13:24:29,191 INFO constraint_block=input n_constraints=6 n_scalar=203
+2026-04-03 13:24:29,191 INFO constraint_block=output n_constraints=5 n_scalar=24
+2026-04-03 13:24:29,191 INFO constraint_block=nn n_constraints=35 n_scalar=268
+2026-04-03 13:24:29,191 INFO constraint_block=line n_constraints=2 n_scalar=92
+2026-04-03 13:24:29,191 INFO constraint_block=n1 n_constraints=0 n_scalar=0
+2026-04-03 13:24:29,191 INFO constraint_block=n1_redispatch n_constraints=0 n_scalar=0
+2026-04-03 13:24:29,191 INFO constraint_block=ed n_constraints=3 n_scalar=21
+2026-04-03 13:24:29,314 INFO status=infeasible objective=inf n_constraints=608 nnz=15871 solve_wall_sec=0.12208475000807084

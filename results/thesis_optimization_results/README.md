@@ -38,6 +38,9 @@ Not included:
 - `scripts/run_formulations.sh`
   Runs the formulation comparison suite.
 
+- `scripts/run_debug.sh`
+  Runs a lightweight local smoke-test suite for optimization wiring and exports.
+
 - `scripts/run_security_checks.sh`
   Runs the retained preventive formulation for security-check reporting.
 
@@ -46,6 +49,9 @@ Not included:
 
 - `scripts/run_replay_validation.sh`
   Runs ANDES replay validation for the configured surrogate-embedded formulations.
+
+- `scripts/run_she_style_comparison.sh`
+  Runs a four-method optimization comparison aligned with She et al. (Method I-IV style).
 
 - `scripts/run_postprocess.sh`
   Builds thesis tables and figures from available optimization and replay outputs.
@@ -78,27 +84,37 @@ Run from repository root.
 results/thesis_optimization_results/scripts/run_formulations.sh
 ```
 
-2. Security checks:
+2. Local debug smoke test:
+```bash
+results/thesis_optimization_results/scripts/run_debug.sh
+```
+
+3. Security checks:
 ```bash
 results/thesis_optimization_results/scripts/run_security_checks.sh
 ```
 
-3. Optional redispatch sensitivity:
+4. She et al. style method comparison:
+```bash
+results/thesis_optimization_results/scripts/run_she_style_comparison.sh
+```
+
+5. Optional redispatch sensitivity:
 ```bash
 results/thesis_optimization_results/scripts/run_redispatch_sensitivity.sh
 ```
 
-4. Replay validation:
+6. Replay validation:
 ```bash
 results/thesis_optimization_results/scripts/run_replay_validation.sh
 ```
 
-5. Build thesis tables and figures from the generated outputs:
+7. Build thesis tables and figures from the generated outputs:
 ```bash
 results/thesis_optimization_results/scripts/run_postprocess.sh
 ```
 
-6. Full pipeline:
+8. Full pipeline:
 ```bash
 results/thesis_optimization_results/scripts/run_all.sh
 ```
@@ -113,6 +129,10 @@ PYTHON_BIN=../venv/bin/python results/thesis_optimization_results/scripts/run_al
 Raw suite outputs:
 - `results/thesis_optimization_results/results/formulation_comparison_summary.csv`
 - `results/thesis_optimization_results/results/formulation_comparison_summary.json`
+- `results/thesis_optimization_results/results/debug/formulation_comparison_debug_summary.csv`
+- `results/thesis_optimization_results/results/debug/formulation_comparison_debug_summary.json`
+- `results/thesis_optimization_results/results/she_style_comparison_summary.csv`
+- `results/thesis_optimization_results/results/she_style_comparison_summary.json`
 - `results/thesis_optimization_results/results/replay_validation_summary.csv`
 - `results/thesis_optimization_results/results/replay_validation_detail.csv`
 
@@ -167,6 +187,43 @@ CSV, Markdown, and LaTeX variants are written for the main thesis tables under `
 - `outputs/tables/constraint_satisfaction_by_run.*`
 - `outputs/tables/constraint_satisfaction_by_formulation.*`
 - `outputs/figures/constraint_satisfaction_breakdown.*`
+
+## She et al. Style Comparison Mapping
+
+Configuration:
+- `configs/suites/she_vis_rted_style_comparison.yaml`
+
+Method mapping in this repo:
+- Method I: `she_method_i_rted` (ED only)
+- Method II: `she_method_ii_dyn_fixed_md_no_reserve` (dynamic surrogate constraints, fixed M/D, no Delta-P dispatch-output link)
+- Method III: `she_method_iii_dyn_fixed_md_with_reserve` (dynamic surrogate constraints, fixed M/D, with Delta-P dispatch-output link)
+- Method IV: `she_method_iv_vis_rted_full` (dynamic surrogate constraints, optimized M/D, with Delta-P dispatch-output link)
+
+Outputs:
+- `results/she_style_comparison_summary.csv`
+- `results/she_style_comparison_summary.md`
+- `results/she_style_comparison_summary.json`
+- `results/she_style_formulations/<formulation>/<run>_summary.json`
+
+## Debug Smoke Test
+
+Debug suite config:
+- `configs/suites/formulation_comparison_debug.yaml`
+
+Default local launcher:
+- `scripts/run_debug.sh`
+
+By default this runs four quick formulations without N-1 and uses `OSQP`:
+- `ed_debug`
+- `ed_line_debug`
+- `ed_surrogate_debug` (`nn_mode: fixed_pattern`)
+- `ed_line_surrogate_debug` (`nn_mode: fixed_pattern`)
+
+Override the suite if needed:
+```bash
+SUITE_CONFIG=results/thesis_optimization_results/configs/suites/formulation_comparison.yaml \
+results/thesis_optimization_results/scripts/run_debug.sh
+```
 
 ## Scenario Handling
 

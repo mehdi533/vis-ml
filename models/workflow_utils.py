@@ -113,6 +113,30 @@ def _grid_values(value):
 def build_override_grid(grid_cfg: Optional[Dict]) -> list[Dict[str, Any]]:
     if not grid_cfg:
         return [{}]
+    if "rows" in grid_cfg:
+        rows = grid_cfg.get("rows") or [{}]
+        if not isinstance(rows, list):
+            raise ValueError("'rows' override grid must be a list of dictionaries.")
+
+        base_cfg = {key: value for key, value in grid_cfg.items() if key != "rows"}
+        bad_base = [
+            key for key, value in base_cfg.items() if isinstance(value, dict) and "values" in value
+        ]
+        if bad_base:
+            raise ValueError(
+                "When 'rows' is used in an override grid, sibling keys must be fixed values, "
+                f"not value grids. Invalid keys: {bad_base}"
+            )
+
+        out: list[Dict[str, Any]] = []
+        for row in rows:
+            if not isinstance(row, dict):
+                raise ValueError("Each item in an override-grid 'rows' list must be a dictionary.")
+            merged = dict(base_cfg)
+            merged.update(row)
+            out.append(merged)
+        return out
+
     keys = list(grid_cfg.keys())
     values = [_grid_values(grid_cfg[key]) for key in keys]
     return [dict(zip(keys, combo)) for combo in product(*values)]

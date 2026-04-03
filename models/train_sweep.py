@@ -84,6 +84,8 @@ def _sum_int_list(values) -> int:
 def _estimate_relu_units(model_type: str, model_cfg: Dict, n_targets: int) -> Optional[int]:
     if model_type == "MLP":
         return _sum_int_list(model_cfg.get("hidden_sizes"))
+    if model_type in {"FICNN", "PICNN"}:
+        return _sum_int_list(model_cfg.get("hidden_sizes"))
     if model_type in {"MTLSH", "PICNN_MTLSH"}:
         return _sum_int_list(model_cfg.get("shared_sizes")) + n_targets * _sum_int_list(
             model_cfg.get("head_sizes")
@@ -95,7 +97,7 @@ def _estimate_relu_units(model_type: str, model_cfg: Dict, n_targets: int) -> Op
             + group_count * _sum_int_list(model_cfg.get("group_shared_sizes"))
             + n_targets * _sum_int_list(model_cfg.get("head_sizes"))
         )
-    if model_type in {"FICNN", "PICNN", "MTLGSH_KAN_SHARED", "MTLGSH_KAN"}:
+    if model_type in {"MTLGSH_KAN_SHARED", "MTLGSH_KAN"}:
         return None
     return None
 
@@ -108,6 +110,11 @@ def _write_json(path: Path, payload: Dict[str, object]) -> None:
 
 def _override_fields(prefix: str, overrides: Dict[str, object]) -> Dict[str, object]:
     return {f"{prefix}_{key}": overrides[key] for key in sorted(overrides.keys())}
+
+
+def _override_fieldnames(prefix: str, override_list: Sequence[Dict]) -> list[str]:
+    keys = sorted({key for overrides in override_list for key in overrides.keys()})
+    return [f"{prefix}_{key}" for key in keys]
 
 
 def train_one(
@@ -417,9 +424,9 @@ def main() -> None:
     summary_path = output_root / "sweep_results.csv"
     run_summary_path = output_root / "sweep_run_summary.csv"
     override_fields = (
-        [f"model_{key}" for key in sorted((sweep.get("model") or {}).keys())]
-        + [f"train_{key}" for key in sorted((sweep.get("training") or {}).keys())]
-        + [f"data_{key}" for key in sorted((sweep.get("data") or {}).keys())]
+        _override_fieldnames("model", model_overrides_list)
+        + _override_fieldnames("train", train_overrides_list)
+        + _override_fieldnames("data", data_overrides_list)
     )
 
     label_fieldnames = [

@@ -11,6 +11,6 @@ export OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-1}"
 export KMP_AFFINITY="${KMP_AFFINITY:-disabled}"
 export KMP_INIT_AT_FORK="${KMP_INIT_AT_FORK:-FALSE}"
 
-"${PYTHON_BIN}" final_optimization_folder/replay_validation.py \
+"${PYTHON_BIN}" scheduling/replay_validation.py \
   --config results/thesis_optimization_results/configs/replay/replay_validation.yaml \
   "$@"

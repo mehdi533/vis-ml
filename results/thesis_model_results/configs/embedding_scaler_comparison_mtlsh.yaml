@@ -1,10 +1,10 @@
-output_dir: results/thesis_model_results/outputs/mtlsh_embeddability_tradeoff
+output_dir: results/thesis_model_results/outputs/embedding_scaler_comparison_mtlsh
 skip_if_exists: false
 seed: 42
 
 model:
-  shared_sizes: [256, 128]
-  head_sizes: [64]
+  shared_sizes: [32]
+  head_sizes: [16]
   activation: relu
   dropout: 0.0
 
@@ -12,14 +12,16 @@ data:
   csv_path: results/to_export/simulation_results.csv
   feature_names_path: configs/data_generation_feature_names.yaml
   use_registry_feature_allowlist: true
+  registry_feature_groups: [x_op, x_cont, x_sched]
+  # Match the optimization-ready surrogate contract:
+  # keep schema-defined x_op/x_cont/x_sched inputs, but exclude x0__ states.
   drop_metadata_fields: true
   drop_diagnostic_fields: true
-  target_cols: [rocof_COI, dev_COI, Delta_P_IBR_1, Delta_P_IBR_2, Delta_P_IBR_3, Delta_P_IBR_4]
-  drop_cols:
-    - line_name
-    - plotter_csv
-  drop_prefixes: []
+  drop_unused_y_fields: true
+  drop_cols: [line_name, plotter_csv]
+  drop_prefixes: [x0__]
   ignore_missing_drop_cols: true
+  target_cols: [rocof_COI, dev_COI, Delta_P_IBR_1, Delta_P_IBR_2, Delta_P_IBR_3, Delta_P_IBR_4]
   use_recommended_scalers: false
 
 split:
@@ -42,21 +44,8 @@ training:
 sweep:
   models: [MTLSH]
   losses: [mse]
-  scalers: [minmax]
+  scalers: [standard, minmax, robust, log1p]
   seeds: [42]
-  model:
-    shared_sizes:
-      values:
-        - [64]
-        - [128]
-        - [128, 64]
-        - [256, 128]
-        - [256, 128, 64]
-    head_sizes:
-      values:
-        - [32]
-        - [64]
-        - [128]
-        - [128, 64]
+  model: {}
   training: {}
   data: {}

@@ -8,7 +8,7 @@
 #SBATCH --ntasks=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem-per-cpu=4G
-#SBATCH --time=18:00:00
+#SBATCH --time=48:00:00
 
 set -euo pipefail
 
@@ -22,10 +22,12 @@ mkdir -p results/thesis_model_results/logs results/thesis_model_results/tables
 echo "STARTING AT $(date)"
 
 python models/train_sweep.py --config results/thesis_model_results/configs/mtlsh_embeddability_tradeoff.yaml
+python models/train_sweep.py --config results/thesis_model_results/configs/mtlsh_embeddability_tradeoff_small.yaml
 
-python models/summarize_sweep.py \
-  --input-dir results/thesis_model_results/outputs/mtlsh_embeddability_tradeoff \
-  --source run \
+python results/thesis_model_results/src/merge_sweep_run_summaries.py \
+  --input-dirs \
+    results/thesis_model_results/outputs/mtlsh_embeddability_tradeoff \
+    results/thesis_model_results/outputs/mtlsh_embeddability_tradeoff_small \
   --group-by model_shared_sizes model_head_sizes \
   --value-cols agg_rmse_mean agg_mae_mean n_parameters_trainable relu_units_estimate \
   --output-csv results/thesis_model_results/tables/mtlsh_embeddability_tradeoff.csv
