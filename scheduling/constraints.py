@@ -118,6 +118,7 @@ def build_input_feature_constraints(
     genrou_m_fixed: Sequence[float] | None = None,
     genrou_d_fixed: Sequence[float] | None = None,
     pg_max: np.ndarray | None = None,
+    dispatch_total_constant: float | None = None,
 ) -> list[cp.Constraint]:
     """
     Input block: fixed exogenous descriptors + bounded controllable features.
@@ -168,12 +169,8 @@ def build_input_feature_constraints(
     derived_constraints: list[cp.Constraint] = []
     derived_linked_idx: set[int] = set()
 
-    if (
-        x_scaler is not None
-        and x_feature_names is not None
-        and pg is not None
-        and pg_link_idx
-    ):
+    # Always set up helper functions and name mapping if we have the necessary info
+    if x_scaler is not None and x_feature_names is not None:
         name_to_idx = {str(name): i for i, name in enumerate(x_feature_names)}
 
         def _scale_expr(idx: int, expr_unscaled):
@@ -201,21 +198,9 @@ def build_input_feature_constraints(
                 derived_constraints.append(x[idx] == scaled_expr)
             derived_linked_idx.add(int(idx))
 
+        # Link M_agg and D_agg based on M_i and D_i (no dispatch needed)
         n_gen = int(n_genrou if n_genrou is not None else 0)
         n_ibr = int(n_regcv1 if n_regcv1 is not None else len(m_idx))
-        dispatch_names = [f"P_GENROU_{i + 1}" for i in range(n_gen)] + [
-            f"P_REGCV1_{i + 1}" for i in range(n_ibr)
-        ]
-
-        dispatch_expr_by_name: dict[str, cp.Expression] = {}
-        dispatch_pmax_by_name: dict[str, float] = {}
-        for local_idx, feat_name in enumerate(dispatch_names):
-            if local_idx >= len(order):
-                break
-            pg_idx = int(order[local_idx])
-            dispatch_expr_by_name[feat_name] = pg[pg_idx]
-            if pg_max is not None and 0 <= pg_idx < int(np.asarray(pg_max).size):
-                dispatch_pmax_by_name[feat_name] = float(np.asarray(pg_max, dtype=float)[pg_idx])
 
         m_expr = []
         for i in range(n_ibr):
@@ -241,6 +226,29 @@ def build_input_feature_constraints(
         if n_total_md > 0 and d_expr:
             _link_derived("D_agg", (sg_d_sum + cp.sum(cp.hstack(d_expr))) / float(n_total_md))
 
+    # Dispatch-dependent derived features (P_GENROU_TOTAL, P_REGCV1_TOTAL, reserves, etc.)
+    if (
+        x_scaler is not None
+        and x_feature_names is not None
+        and pg is not None
+        and pg_link_idx
+    ):
+        n_gen = int(n_genrou if n_genrou is not None else 0)
+        n_ibr = int(n_regcv1 if n_regcv1 is not None else len(m_idx))
+        dispatch_names = [f"P_GENROU_{i + 1}" for i in range(n_gen)] + [
+            f"P_REGCV1_{i + 1}" for i in range(n_ibr)
+        ]
+
+        dispatch_expr_by_name: dict[str, cp.Expression] = {}
+        dispatch_pmax_by_name: dict[str, float] = {}
+        for local_idx, feat_name in enumerate(dispatch_names):
+            if local_idx >= len(order):
+                break
+            pg_idx = int(order[local_idx])
+            dispatch_expr_by_name[feat_name] = pg[pg_idx]
+            if pg_max is not None and 0 <= pg_idx < int(np.asarray(pg_max).size):
+                dispatch_pmax_by_name[feat_name] = float(np.asarray(pg_max, dtype=float)[pg_idx])
+
         p_genrou_expr = [dispatch_expr_by_name[f"P_GENROU_{i + 1}"] for i in range(n_gen) if f"P_GENROU_{i + 1}" in dispatch_expr_by_name]
         p_regcv1_expr = [dispatch_expr_by_name[f"P_REGCV1_{i + 1}"] for i in range(n_ibr) if f"P_REGCV1_{i + 1}" in dispatch_expr_by_name]
 
@@ -257,6 +265,9 @@ def build_input_feature_constraints(
             p_regcv1_total = 0.0
 
         _link_derived("P_DISPATCH_TOTAL", p_genrou_total + p_regcv1_total)
+
+        if dispatch_total_constant is not None and abs(float(dispatch_total_constant)) > 1e-12:
+            _link_derived("P_REGCV1_SHARE", p_regcv1_total / float(dispatch_total_constant))
 
         reserve_genrou_expr: list[cp.Expression] = []
         for i in range(n_gen):
@@ -286,6 +297,39 @@ def build_input_feature_constraints(
             _link_derived(
                 "reserve_p_total_prefault",
                 cp.sum(cp.hstack(reserve_genrou_expr + reserve_regcv1_expr)),
+            )
+
+    if x_feature_names is not None:
+        name_to_idx = {str(name): i for i, name in enumerate(x_feature_names)}
+
+        def _is_sched_feature(name: str) -> bool:
+            """Only flag features that are actual scheduling decision variables or their
+            direct derived aggregates.  The x_op reserve snapshots (reserve_p_genrou,
+            reserve_p_ibr, reserve_p_total_prefault) are operational measurements and
+            should be treated as fixed exogenous descriptors."""
+            s = str(name)
+            return (
+                s.startswith("M_")
+                or s.startswith("D_")
+                or s.startswith("P_GENROU_")
+                or s.startswith("P_REGCV1_")
+                or s.startswith("P_DISPATCH_")
+            )
+
+        unresolved_sched: list[str] = []
+        for name, idx in name_to_idx.items():
+            if not _is_sched_feature(name):
+                continue
+            if int(idx) in free or int(idx) in derived_linked_idx:
+                continue
+            unresolved_sched.append(str(name))
+        if unresolved_sched:
+            preview = ", ".join(unresolved_sched[:12])
+            if len(unresolved_sched) > 12:
+                preview += ", ..."
+            raise ValueError(
+                "Some scheduling features are not decision-linked and would be fixed, "
+                f"which violates the scheduling contract. Examples: {preview}"
             )
 
     eq_idx = np.asarray([i for i in range(n_feat) if i not in free and i not in derived_linked_idx], dtype=int)

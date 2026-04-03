@@ -48,6 +48,7 @@ from scheduling.utils import (
     add_measurement_devices,
     build_features,
     build_model_from_cfg,
+    derive_sched_dispatch_vectors,
     load_optimization_config,
     load_scalers,
     parse_constraint_switches,
@@ -79,6 +80,71 @@ def _scenario_id_from_cfg(cfg: Mapping[str, Any]) -> str:
     if load_step_time is not None:
         parts.append(f"t{float(load_step_time):.3f}".replace(".", "p"))
     return _sanitize_token("_".join(parts) or "default")
+
+
+def _resolve_feature_contingency(
+    ss: andes.System,
+    *,
+    feature_cfg: Mapping[str, Any],
+    scenario_cfg: Mapping[str, Any],
+) -> dict[str, Any] | None:
+    raw_mode = feature_cfg.get("contingency_mode", scenario_cfg.get("contingency_mode", "load_mismatch"))
+    mode = str(raw_mode).strip().lower()
+    if mode in {"", "none", "load", "load_mismatch"}:
+        return None
+
+    if mode in {"line", "line_outage", "line_plus_load"}:
+        raw_uid = feature_cfg.get("contingency_line_uid", scenario_cfg.get("contingency_line_uid"))
+        if raw_uid is None:
+            raise ValueError(
+                "features.contingency_mode=line requires features.contingency_line_uid "
+                "(or scenario.contingency_line_uid)."
+            )
+        uid = int(raw_uid)
+        n_line = int(getattr(getattr(ss, "Line", None), "n", 0))
+        if uid < 0 or uid >= n_line:
+            raise ValueError(
+                f"features.contingency_line_uid out of range: {uid}. Valid line uid range is [0, {max(n_line - 1, 0)}]."
+            )
+        contingency: dict[str, Any] = {"uid": int(uid)}
+        line = getattr(ss, "Line", None)
+        if line is not None:
+            bus1 = np.asarray(getattr(getattr(line, "bus1", None), "v", []), dtype=int).reshape(-1)
+            bus2 = np.asarray(getattr(getattr(line, "bus2", None), "v", []), dtype=int).reshape(-1)
+            if uid < int(bus1.size):
+                contingency["bus1"] = int(bus1[uid])
+            if uid < int(bus2.size):
+                contingency["bus2"] = int(bus2[uid])
+        return contingency
+
+    raise ValueError(
+        f"Unsupported features.contingency_mode='{mode}'. Supported: load_mismatch, none, line."
+    )
+
+
+def _enforce_strict_feature_policy(feature_cfg: Mapping[str, Any]) -> None:
+    """
+    Enforce "extract from system only" feature construction.
+    """
+    if bool(feature_cfg.get("registry_include_unbuildable_model_features", False)):
+        raise ValueError(
+            "features.registry_include_unbuildable_model_features=true is not allowed in strict mode."
+        )
+    source = str(feature_cfg.get("missing_feature_source", "none")).strip().lower()
+    if source not in {"", "none"}:
+        raise ValueError(
+            "features.missing_feature_source must be 'none' in strict mode (extract from system only)."
+        )
+    if bool(feature_cfg.get("allow_missing_features", False)):
+        raise ValueError("features.allow_missing_features=true is not allowed in strict mode.")
+    if bool(feature_cfg.get("fixed_source_override_non_sched", False)):
+        raise ValueError(
+            "features.fixed_source_override_non_sched=true is not allowed in strict mode."
+        )
+    if bool(feature_cfg.get("allow_constant_fill_for_unresolved_missing", False)):
+        raise ValueError(
+            "features.allow_constant_fill_for_unresolved_missing=true is not allowed in strict mode."
+        )
 
 
 def _resolve_model_dir(model_cfg: Mapping[str, Any]) -> Path:
@@ -190,6 +256,7 @@ def _collect_buildable_feature_names(
     load_step_time: float,
     m_seed: np.ndarray,
     d_seed: np.ndarray,
+    contingency: Mapping[str, Any] | None = None,
     feature_names_path: str | None = None,
 ) -> set[str]:
     feat = build_features(
@@ -199,26 +266,21 @@ def _collect_buildable_feature_names(
         load_step_time=load_step_time,
         M_vec=m_seed,
         D_vec=d_seed,
+        contingency=contingency,
         feature_names_path=feature_names_path,
     )
-    genrou = getattr(ss, "GENROU", None)
-    regcv1 = getattr(ss, "REGCV1", None)
-    genrou_pg = (
-        np.asarray(getattr(genrou, "Pg", np.zeros(0)), dtype=float).reshape(-1)
-        if genrou is not None
-        else np.zeros(0, dtype=float)
-    )
-    if genrou is not None and genrou_pg.size == 0 and hasattr(genrou, "p0"):
-        genrou_pg = np.asarray(genrou.p0.v, dtype=float).reshape(-1)
-    regcv1_pg = (
-        np.asarray(regcv1.pref.v, dtype=float).reshape(-1)
-        if regcv1 is not None and hasattr(regcv1, "pref")
-        else np.zeros(0, dtype=float)
-    )
+    genrou_pg, regcv1_pg = derive_sched_dispatch_vectors(ss)
     for i, val in enumerate(genrou_pg, start=1):
         feat[f"P_GENROU_{i}"] = float(val)
     for i, val in enumerate(regcv1_pg, start=1):
         feat[f"P_REGCV1_{i}"] = float(val)
+    gen_total = float(np.sum(np.asarray(genrou_pg, dtype=float))) if genrou_pg.size else 0.0
+    reg_total = float(np.sum(np.asarray(regcv1_pg, dtype=float))) if regcv1_pg.size else 0.0
+    dispatch_total = float(gen_total + reg_total)
+    feat["P_GENROU_TOTAL"] = float(gen_total)
+    feat["P_REGCV1_TOTAL"] = float(reg_total)
+    feat["P_DISPATCH_TOTAL"] = float(dispatch_total)
+    feat["P_REGCV1_SHARE"] = float(reg_total / dispatch_total) if abs(dispatch_total) > 1e-12 else 0.0
     return {str(name) for name in feat.keys()}
 
 
@@ -231,6 +293,7 @@ def _load_x_features_from_registry(
     load_step_time: float,
     m_seed: np.ndarray,
     d_seed: np.ndarray,
+    contingency: Mapping[str, Any] | None = None,
     model_feature_order: list[str] | None = None,
 ) -> list[str]:
     raw_path = str(feature_cfg.get("feature_names_path", "configs/data_generation_feature_names.yaml")).strip()
@@ -245,6 +308,7 @@ def _load_x_features_from_registry(
 
     groups = [str(v) for v in list(feature_cfg.get("registry_feature_groups") or ["x_op", "x_cont", "x_sched"])]
     exclude_prefixes = [str(v) for v in list(feature_cfg.get("exclude_prefixes") or ["x0__"])]
+    group_overrides = dict(feature_cfg.get("registry_group_overrides") or {})
 
     pq_names = [str(v) for v in list(getattr(ss.PQ, "name", {}).v)] if getattr(ss, "PQ", None) is not None else []
     pq_owners = (
@@ -259,17 +323,24 @@ def _load_x_features_from_registry(
     candidates: list[str] = []
     for group in groups:
         group_cfg = dict(registry.get(group, {}) or {})
+        override_cfg = dict(group_overrides.get(group, {}) or {})
+        keep_fields = {str(v) for v in list(override_cfg.get("keep_fields") or [])}
+        keep_prefix_keys = {str(v) for v in list(override_cfg.get("keep_prefix_keys") or [])}
         for key, value in group_cfg.items():
             if key == "prefixes":
                 continue
             if isinstance(value, list):
                 for name in value:
                     s = str(name).strip()
+                    if keep_fields and s not in keep_fields:
+                        continue
                     if s:
                         candidates.append(s)
 
         prefixes = dict(group_cfg.get("prefixes", {}) or {})
         for pref_key, pref_val in prefixes.items():
+            if keep_prefix_keys and str(pref_key) not in keep_prefix_keys:
+                continue
             pref = str(pref_val)
             if pref_key in {"pq_p_base", "pq_q_base", "pq_delta_p"}:
                 candidates.extend(f"{pref}{name}" for name in pq_names)
@@ -303,6 +374,7 @@ def _load_x_features_from_registry(
             load_step_time=load_step_time,
             m_seed=m_seed,
             d_seed=d_seed,
+            contingency=contingency,
             feature_names_path=str(feature_cfg.get("feature_names_path", "configs/data_generation_feature_names.yaml")),
         )
         deduped = [name for name in deduped if name in buildable]
@@ -343,6 +415,25 @@ def _scale_subset(values: np.ndarray, scaler, idx: list[int]) -> np.ndarray:
 def _unscale_subset(values: np.ndarray, scaler, idx: list[int]) -> np.ndarray:
     idx_arr = np.asarray(idx, dtype=int)
     return (values - scaler.min_[idx_arr]) / scaler.scale_[idx_arr]
+
+
+def _set_feature_scaled_bounds(
+    *,
+    x_min_sc: np.ndarray,
+    x_max_sc: np.ndarray,
+    x_scaler: Any,
+    name_to_idx: Mapping[str, int],
+    feature_name: str,
+    lo_raw: float,
+    hi_raw: float,
+) -> None:
+    idx = name_to_idx.get(feature_name)
+    if idx is None:
+        return
+    lo_sc = (float(lo_raw) * float(x_scaler.scale_[idx])) + float(x_scaler.min_[idx])
+    hi_sc = (float(hi_raw) * float(x_scaler.scale_[idx])) + float(x_scaler.min_[idx])
+    x_min_sc[idx] = min(lo_sc, hi_sc)
+    x_max_sc[idx] = max(lo_sc, hi_sc)
 
 
 def _save_results_csv(
@@ -531,10 +622,12 @@ def _build_x_seed(
     load_step_time: float,
     m_seed: np.ndarray,
     d_seed: np.ndarray,
+    contingency: Mapping[str, Any] | None = None,
+    feature_names_path: str | None = None,
     fixed_feature_values: Mapping[str, float] | None = None,
     missing_fill_value: float = 0.0,
     allow_missing_features: bool = False,
-    allow_constant_fill_for_unresolved_missing: bool = True,
+    allow_constant_fill_for_unresolved_missing: bool = False,
     fixed_source_override_non_sched: bool = False,
 ) -> np.ndarray:
     feat = build_features(
@@ -544,6 +637,8 @@ def _build_x_seed(
         load_step_time=load_step_time,
         M_vec=m_seed,
         D_vec=d_seed,
+        contingency=contingency,
+        feature_names_path=feature_names_path,
     )
     fixed_map = {
         str(k): float(v)
@@ -553,18 +648,7 @@ def _build_x_seed(
 
     genrou = getattr(ss, "GENROU", None)
     regcv1 = getattr(ss, "REGCV1", None)
-    genrou_pg = (
-        np.asarray(getattr(genrou, "Pg", np.zeros(0)), dtype=float).reshape(-1)
-        if genrou is not None
-        else np.zeros(0, dtype=float)
-    )
-    if genrou is not None and genrou_pg.size == 0 and hasattr(genrou, "p0"):
-        genrou_pg = np.asarray(genrou.p0.v, dtype=float).reshape(-1)
-    regcv1_pg = (
-        np.asarray(regcv1.pref.v, dtype=float).reshape(-1)
-        if regcv1 is not None and hasattr(regcv1, "pref")
-        else np.zeros(0, dtype=float)
-    )
+    genrou_pg, regcv1_pg = derive_sched_dispatch_vectors(ss)
 
     for i, val in enumerate(genrou_pg, start=1):
         feat[f"P_GENROU_{i}"] = float(val)
@@ -715,6 +799,16 @@ def run_optimization(cfg: dict[str, Any], *, config_path: str | None = None):
 
     cfg.setdefault("features", {})
     feature_cfg = cfg["features"]
+    strict_from_system = bool(feature_cfg.get("strict_from_system", True))
+    if strict_from_system:
+        _enforce_strict_feature_policy(feature_cfg)
+
+    feature_contingency = _resolve_feature_contingency(
+        ss,
+        feature_cfg=feature_cfg,
+        scenario_cfg=scenario_cfg,
+    )
+
     x_features = list(feature_cfg.get("x_features") or [])
     model_contract_features: list[str] | None = None
     if bool(feature_cfg.get("registry_align_to_model_contract", True)):
@@ -732,6 +826,7 @@ def run_optimization(cfg: dict[str, Any], *, config_path: str | None = None):
             load_step_time=load_step_time,
             m_seed=m_seed,
             d_seed=d_seed,
+            contingency=feature_contingency,
             model_feature_order=model_contract_features,
         )
         feature_cfg["x_features"] = x_features
@@ -766,7 +861,20 @@ def run_optimization(cfg: dict[str, Any], *, config_path: str | None = None):
             f"({int(getattr(x_scaler, 'scale_', np.asarray([])).shape[0])} vs {len(x_features)})."
         )
 
-    fixed_feature_values = _load_missing_feature_reference_values(cfg=cfg, x_features=x_features)
+    if strict_from_system:
+        fixed_feature_values: dict[str, float] = {}
+        allow_missing_features = False
+        allow_constant_fill_for_unresolved_missing = False
+        fixed_source_override_non_sched = False
+    else:
+        fixed_feature_values = _load_missing_feature_reference_values(cfg=cfg, x_features=x_features)
+        allow_missing_features = bool(cfg.get("features", {}).get("allow_missing_features", False))
+        allow_constant_fill_for_unresolved_missing = bool(
+            cfg.get("features", {}).get("allow_constant_fill_for_unresolved_missing", False)
+        )
+        fixed_source_override_non_sched = bool(
+            cfg.get("features", {}).get("fixed_source_override_non_sched", False)
+        )
 
     x_seed = _build_x_seed(
         ss,
@@ -776,15 +884,13 @@ def run_optimization(cfg: dict[str, Any], *, config_path: str | None = None):
         load_step_time=load_step_time,
         m_seed=m_seed,
         d_seed=d_seed,
+        contingency=feature_contingency,
+        feature_names_path=str(feature_cfg.get("feature_names_path", "configs/data_generation_feature_names.yaml")),
         fixed_feature_values=fixed_feature_values,
         missing_fill_value=float(cfg.get("features", {}).get("missing_fill_value", 0.0)),
-        allow_missing_features=bool(cfg.get("features", {}).get("allow_missing_features", False)),
-        allow_constant_fill_for_unresolved_missing=bool(
-            cfg.get("features", {}).get("allow_constant_fill_for_unresolved_missing", True)
-        ),
-        fixed_source_override_non_sched=bool(
-            cfg.get("features", {}).get("fixed_source_override_non_sched", False)
-        ),
+        allow_missing_features=allow_missing_features,
+        allow_constant_fill_for_unresolved_missing=allow_constant_fill_for_unresolved_missing,
+        fixed_source_override_non_sched=fixed_source_override_non_sched,
     )
     x_seed_sc = x_seed * x_scaler.scale_ + x_scaler.min_
 
@@ -794,6 +900,11 @@ def run_optimization(cfg: dict[str, Any], *, config_path: str | None = None):
     pg_base = np.asarray(ss.PV.p0.v.tolist() + ss.Slack.p0.v.tolist(), dtype=float)
 
     name_to_idx = {name: i for i, name in enumerate(x_features)}
+    if "P_REGCV1_SHARE" in name_to_idx and not bool(switches.ed):
+        raise ValueError(
+            "P_REGCV1_SHARE is in the feature contract but constraints.use_ed=false. "
+            "A linear decision-linked embedding of P_REGCV1_SHARE requires ED balance."
+        )
     try:
         m_idx = [name_to_idx[f"M_{i + 1}"] for i in range(n_ibr)]
         d_idx = [name_to_idx[f"D_{i + 1}"] for i in range(n_ibr)]
@@ -809,15 +920,25 @@ def run_optimization(cfg: dict[str, Any], *, config_path: str | None = None):
         f"P_REGCV1_{i + 1}" for i in range(n_regcv1)
     ]
     missing_dispatch = [name for name in dispatch_feature_names if name not in name_to_idx]
-    if missing_dispatch:
+
+    # Dispatch features are optional: if the surrogate model doesn't use them (e.g., trained on only M/D),
+    # then pg linking is skipped and dispatch variables are unconstrained. This is acceptable as long as
+    # the ED balance constraint couples them to the power balance.
+    if missing_dispatch and len(missing_dispatch) == len(dispatch_feature_names):
+        # All dispatch features are missing — skip pg linking
+        pg_feat_idx = []
+        logger.info("Dispatch features not in x_features; skipping pg feature-to-variable linking.")
+    elif missing_dispatch:
+        # Partial missing — this is an error
         preview = ", ".join(missing_dispatch[:12])
         if len(missing_dispatch) > 12:
             preview += ", ..."
         raise ValueError(
-            "Missing dispatch-linked features in x_features required for pg linking "
-            f"({len(missing_dispatch)} missing). Examples: {preview}"
+            "Partial dispatch feature mismatch: some P_GENROU_i/P_REGCV1_i are in x_features but not all "
+            f"({len(missing_dispatch)} missing of {len(dispatch_feature_names)}). Examples: {preview}"
         )
-    pg_feat_idx = [name_to_idx[name] for name in dispatch_feature_names]
+    else:
+        pg_feat_idx = [name_to_idx[name] for name in dispatch_feature_names]
     auto_pg_link_order: tuple[int, ...] | None = None
     if cfg.get("constraints", {}).get("pg_link_order") is None:
         dispatch_n = int(pg_min.size)
@@ -859,17 +980,100 @@ def run_optimization(cfg: dict[str, Any], *, config_path: str | None = None):
     x_max_sc = x_seed_sc.copy()
     x_min_sc[m_idx], x_max_sc[m_idx] = m_min_sc, m_max_sc
     x_min_sc[d_idx], x_max_sc[d_idx] = d_min_sc, d_max_sc
-    if len(pg_feat_idx) != int(pg_min.size):
-        raise ValueError(
-            "Dispatch feature link mismatch between x_features and dispatch decision size "
-            f"({len(pg_feat_idx)} vs {int(pg_min.size)})."
+
+    dispatch_raw_lo = np.zeros(len(pg_feat_idx), dtype=float)
+    dispatch_raw_hi = np.zeros(len(pg_feat_idx), dtype=float)
+
+    # Only apply dispatch bounds if pg_feat_idx is non-empty (i.e., dispatch features are in x_features)
+    if pg_feat_idx:
+        if len(pg_feat_idx) != int(pg_min.size):
+            raise ValueError(
+                "Dispatch feature link mismatch between x_features and dispatch decision size "
+                f"({len(pg_feat_idx)} vs {int(pg_min.size)})."
+            )
+        for k, idx in enumerate(pg_feat_idx):
+            src_k = int(effective_pg_link_order[k]) if k < len(effective_pg_link_order) else int(k)
+            lo_raw = float(min(pg_min[src_k], pg_max[src_k]))
+            hi_raw = float(max(pg_min[src_k], pg_max[src_k]))
+            dispatch_raw_lo[k] = lo_raw
+            dispatch_raw_hi[k] = hi_raw
+            _set_feature_scaled_bounds(
+                x_min_sc=x_min_sc,
+                x_max_sc=x_max_sc,
+                x_scaler=x_scaler,
+                name_to_idx=name_to_idx,
+                feature_name=dispatch_feature_names[k],
+                lo_raw=lo_raw,
+                hi_raw=hi_raw,
+            )
+
+    # Compute total bounds for REGCV1 (used for P_REGCV1_SHARE bounds calculation)
+    if n_regcv1 > 0:
+        p_regcv1_lo = float(np.sum(dispatch_raw_lo[n_genrou: n_genrou + n_regcv1]))
+        p_regcv1_hi = float(np.sum(dispatch_raw_hi[n_genrou: n_genrou + n_regcv1]))
+    else:
+        p_regcv1_lo = 0.0
+        p_regcv1_hi = 0.0
+
+    genrou_m_fixed_arr = (
+        np.asarray(getattr(getattr(ss, "GENROU", None), "M", {}).v, dtype=float)
+        if getattr(ss, "GENROU", None) is not None and hasattr(ss.GENROU, "M")
+        else np.zeros(0, dtype=float)
+    )
+    genrou_d_fixed_arr = (
+        np.asarray(getattr(getattr(ss, "GENROU", None), "D", {}).v, dtype=float)
+        if getattr(ss, "GENROU", None) is not None and hasattr(ss.GENROU, "D")
+        else np.zeros(0, dtype=float)
+    )
+    n_total_md = int(n_genrou + n_regcv1)
+    if n_total_md > 0:
+        m_agg_lo = float((np.sum(genrou_m_fixed_arr) + (n_regcv1 * float(bounds["M_bounds"][0]))) / n_total_md)
+        m_agg_hi = float((np.sum(genrou_m_fixed_arr) + (n_regcv1 * float(bounds["M_bounds"][1]))) / n_total_md)
+        d_agg_lo = float((np.sum(genrou_d_fixed_arr) + (n_regcv1 * float(bounds["D_bounds"][0]))) / n_total_md)
+        d_agg_hi = float((np.sum(genrou_d_fixed_arr) + (n_regcv1 * float(bounds["D_bounds"][1]))) / n_total_md)
+        _set_feature_scaled_bounds(
+            x_min_sc=x_min_sc,
+            x_max_sc=x_max_sc,
+            x_scaler=x_scaler,
+            name_to_idx=name_to_idx,
+            feature_name="M_agg",
+            lo_raw=m_agg_lo,
+            hi_raw=m_agg_hi,
         )
-    for k, idx in enumerate(pg_feat_idx):
-        src_k = int(effective_pg_link_order[k]) if k < len(effective_pg_link_order) else int(k)
-        lo = pg_min[src_k] * x_scaler.scale_[idx] + x_scaler.min_[idx]
-        hi = pg_max[src_k] * x_scaler.scale_[idx] + x_scaler.min_[idx]
-        x_min_sc[idx] = min(lo, hi)
-        x_max_sc[idx] = max(lo, hi)
+        _set_feature_scaled_bounds(
+            x_min_sc=x_min_sc,
+            x_max_sc=x_max_sc,
+            x_scaler=x_scaler,
+            name_to_idx=name_to_idx,
+            feature_name="D_agg",
+            lo_raw=d_agg_lo,
+            hi_raw=d_agg_hi,
+        )
+
+    # NOTE: P_GENROU_TOTAL, P_REGCV1_TOTAL, and P_DISPATCH_TOTAL are derived from decision variables
+    # via equality constraints. Do NOT set explicit bounds on these derived features — they will cause
+    # infeasibility if they don't perfectly match the constraint ranges. Bounds will propagate implicitly
+    # through the derived constraints from P_GENROU_i and P_REGCV1_i bounds.
+
+    # NOTE: Reserve features (P_GENROU_RESERVE_i, P_REGCV1_RESERVE_i, reserve_p_*) are derived from
+    # decision variables (P_GENROU_i, P_REGCV1_i) via the equality constraint: reserve = pmax - p[i].
+    # Do NOT set explicit bounds on these derived features — let the constraint propagate bounds
+    # from the decision variable bounds. Setting explicit bounds here causes infeasibility if they
+    # don't exactly match the derived constraint ranges.
+
+    dispatch_total_constant = float(np.sum(pd)) / float(step_scale)
+    if abs(dispatch_total_constant) > 1e-12:
+        share_lo = float(p_regcv1_lo / dispatch_total_constant)
+        share_hi = float(p_regcv1_hi / dispatch_total_constant)
+        _set_feature_scaled_bounds(
+            x_min_sc=x_min_sc,
+            x_max_sc=x_max_sc,
+            x_scaler=x_scaler,
+            name_to_idx=name_to_idx,
+            feature_name="P_REGCV1_SHARE",
+            lo_raw=min(share_lo, share_hi),
+            hi_raw=max(share_lo, share_hi),
+        )
 
     pg = cp.Variable(pg_min.size, name="pg")
     x = cp.Variable(x_seed_sc.size, name="x")
@@ -885,20 +1089,17 @@ def run_optimization(cfg: dict[str, Any], *, config_path: str | None = None):
         m_max_sc=m_max_sc,
         d_min_sc=d_min_sc,
         d_max_sc=d_max_sc,
-        pg=pg,
-        pg_feature_idx=pg_feat_idx,
+        pg=pg if pg_feat_idx else None,
+        pg_feature_idx=pg_feat_idx if pg_feat_idx else None,
         x_scaler=x_scaler,
-        pg_link_order=configured_pg_link_order,
+        pg_link_order=configured_pg_link_order if pg_feat_idx else None,
         x_feature_names=x_features,
         n_genrou=n_genrou,
         n_regcv1=n_regcv1,
-        genrou_m_fixed=np.asarray(getattr(getattr(ss, "GENROU", None), "M", {}).v, dtype=float)
-        if getattr(ss, "GENROU", None) is not None and hasattr(ss.GENROU, "M")
-        else np.zeros(0, dtype=float),
-        genrou_d_fixed=np.asarray(getattr(getattr(ss, "GENROU", None), "D", {}).v, dtype=float)
-        if getattr(ss, "GENROU", None) is not None and hasattr(ss.GENROU, "D")
-        else np.zeros(0, dtype=float),
-        pg_max=pg_max,
+        genrou_m_fixed=genrou_m_fixed_arr,
+        genrou_d_fixed=genrou_d_fixed_arr,
+        pg_max=pg_max if pg_feat_idx else None,
+        dispatch_total_constant=dispatch_total_constant if pg_feat_idx else None,
     )
 
     constraint_blocks["output"] = build_output_feature_constraints(

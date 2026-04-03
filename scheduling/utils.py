@@ -224,6 +224,50 @@ def _sanitize_label(value: str) -> str:
     return safe or "owner"
 
 
+def derive_sched_dispatch_vectors(ss) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Build (GENROU, REGCV1) dispatch vectors from the static dispatch stack [PV..., Slack...].
+    This matches the data-generation split logic used for reserve features.
+    """
+    pv_p0 = getattr(getattr(getattr(ss, "PV", None), "p0", None), "v", None)
+    slack_p0 = getattr(getattr(getattr(ss, "Slack", None), "p0", None), "v", None)
+    dispatch = np.asarray(
+        (list(pv_p0) if pv_p0 is not None else [])
+        + (list(slack_p0) if slack_p0 is not None else []),
+        dtype=float,
+    ).reshape(-1)
+    n_dispatch = int(dispatch.size)
+    n_genrou = int(getattr(getattr(ss, "GENROU", None), "n", 0))
+    n_regcv1 = int(getattr(getattr(ss, "REGCV1", None), "n", 0))
+
+    ibr_positions: list[int] = []
+    gen_values = getattr(getattr(getattr(ss, "REGCV1", None), "gen", None), "v", None)
+    if gen_values is not None:
+        for value in list(gen_values):
+            try:
+                pos = int(value) - 1
+            except Exception:
+                continue
+            if 0 <= pos < n_dispatch and pos not in ibr_positions:
+                ibr_positions.append(pos)
+    if not ibr_positions:
+        ibr_positions = list(range(min(n_regcv1, n_dispatch)))
+
+    regcv1_pg = np.zeros(n_regcv1, dtype=float)
+    for i, pos in enumerate(ibr_positions[:n_regcv1]):
+        if 0 <= int(pos) < n_dispatch:
+            regcv1_pg[i] = float(dispatch[int(pos)])
+
+    ibr_set = set(int(v) for v in ibr_positions)
+    genrou_positions = [i for i in range(n_dispatch) if i not in ibr_set]
+    genrou_pg = np.zeros(n_genrou, dtype=float)
+    for i, pos in enumerate(genrou_positions[:n_genrou]):
+        if 0 <= int(pos) < n_dispatch:
+            genrou_pg[i] = float(dispatch[int(pos)])
+
+    return genrou_pg, regcv1_pg
+
+
 def build_features(
     ss,
     *,
@@ -232,6 +276,7 @@ def build_features(
     load_step_time: float,
     M_vec: Sequence[float],
     D_vec: Sequence[float],
+    contingency: Mapping[str, Any] | None = None,
     feature_names_path: str | None = None,
 ) -> dict[str, float]:
     """
@@ -254,7 +299,7 @@ def build_features(
     operating_snapshot = extract_operating_point_snapshot(ss)
     line_metrics_snapshot = extract_line_metrics(
         ss=ss,
-        contingency=None,
+        contingency=dict(contingency) if contingency is not None else None,
         line_uids=line_uids,
         feature_names_path=feature_names_path,
     )
@@ -272,7 +317,7 @@ def build_features(
 
     x_cont = extract_x_cont(
         ss=ss,
-        contingency=None,
+        contingency=dict(contingency) if contingency is not None else None,
         load_step_scale=float(step_scale),
         load_step_time=float(load_step_time),
         pq_names=pq_names,
@@ -284,10 +329,13 @@ def build_features(
         feature_names_path=feature_names_path,
     )
 
+    genrou_pg, regcv1_pg = derive_sched_dispatch_vectors(ss)
     x_sched = extract_x_sched(
         ss=ss,
         M_vec=M_vec,
         D_vec=D_vec,
+        genrou_pg=genrou_pg,
+        regcv1_pg=regcv1_pg,
         feature_names_path=feature_names_path,
     )
 
