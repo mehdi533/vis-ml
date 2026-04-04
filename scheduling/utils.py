@@ -55,6 +55,54 @@ def _resolve_repo_path(path_like: str | Path) -> Path:
     return path if path.is_absolute() else (ROOT / path).resolve()
 
 
+def load_table_3_1_dispatch_cost_arrays(
+    ss,
+    *,
+    cost_table_path: str | Path = "configs/table_3_1_dispatch_costs.yaml",
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    path = _resolve_repo_path(cost_table_path)
+    with path.open("r", encoding="utf-8") as f:
+        payload = yaml.safe_load(f) or {}
+
+    rows = list(payload.get("generators") or [])
+    if not rows:
+        raise RuntimeError(f"Invalid Table 3.1 cost file at {path}: missing 'generators' list.")
+
+    costs_by_bus: dict[int, dict[str, float]] = {}
+    for row in rows:
+        bus = int(row["bus"])
+        if bus in costs_by_bus:
+            raise RuntimeError(f"Duplicate generator bus entry in Table 3.1 cost file: {path} (bus {bus})")
+        costs_by_bus[bus] = {
+            "a": float(row["a"]),
+            "b": float(row["b"]),
+            "c": float(row["c"]),
+        }
+
+    gen_buses = [int(v) for v in list(ss.PV.bus.v) + list(ss.Slack.bus.v)]
+    a = np.zeros(len(gen_buses), dtype=float)
+    b = np.zeros(len(gen_buses), dtype=float)
+    c = np.zeros(len(gen_buses), dtype=float)
+    missing: list[int] = []
+
+    for idx, bus in enumerate(gen_buses):
+        coeffs = costs_by_bus.get(bus)
+        if coeffs is None:
+            missing.append(bus)
+            continue
+        a[idx] = float(coeffs["a"])
+        b[idx] = float(coeffs["b"])
+        c[idx] = float(coeffs["c"])
+
+    if missing:
+        raise RuntimeError(
+            "Missing Table 3.1 ED coefficients for generator buses: "
+            + ", ".join(str(bus) for bus in missing)
+        )
+
+    return a, b, c
+
+
 def setup_logger(log_path: Path) -> logging.Logger:
     logger = logging.getLogger("optimization")
     logger.setLevel(logging.INFO)
@@ -224,6 +272,63 @@ def _sanitize_label(value: str) -> str:
     return safe or "owner"
 
 
+def resolve_load_step_target_names(
+    ss,
+    *,
+    target_pq_names: Sequence[str] | None = None,
+    target_owner_labels: Sequence[str] | None = None,
+) -> set[str]:
+    pq_model = getattr(ss, "PQ", None)
+    if pq_model is None or int(getattr(pq_model, "n", 0)) <= 0:
+        return set()
+
+    actual_names = [str(value) for value in list(pq_model.name.v)]
+    selected = set(actual_names)
+
+    if target_pq_names:
+        selected &= {str(value) for value in list(target_pq_names)}
+
+    if target_owner_labels:
+        owner_filter = {_sanitize_label(value) for value in list(target_owner_labels)}
+        actual_owners = [_sanitize_label(value) for value in list(pq_model.owner.v)]
+        selected &= {
+            name
+            for name, owner in zip(actual_names, actual_owners)
+            if owner in owner_filter
+        }
+    return selected
+
+
+def build_post_step_p_vector(
+    ss,
+    *,
+    step_scale: float,
+    target_pq_names: Sequence[str] | None = None,
+    target_owner_labels: Sequence[str] | None = None,
+) -> np.ndarray:
+    pq_model = getattr(ss, "PQ", None)
+    if pq_model is None or int(getattr(pq_model, "n", 0)) <= 0:
+        return np.zeros(0, dtype=float)
+
+    actual_names = [str(value) for value in list(pq_model.name.v)]
+    p_before = np.asarray(pq_model.p0.v, dtype=float).copy()
+    p_after = p_before.copy()
+
+    explicit_targeting = bool(target_pq_names) or bool(target_owner_labels)
+    targets = resolve_load_step_target_names(
+        ss,
+        target_pq_names=target_pq_names,
+        target_owner_labels=target_owner_labels,
+    )
+    if not targets and not explicit_targeting:
+        targets = set(actual_names)
+
+    for idx, name in enumerate(actual_names):
+        if name in targets:
+            p_after[idx] = float(p_after[idx]) * float(step_scale)
+    return p_after
+
+
 def derive_sched_dispatch_vectors(ss) -> tuple[np.ndarray, np.ndarray]:
     """
     Build (GENROU, REGCV1) dispatch vectors from the static dispatch stack [PV..., Slack...].
@@ -278,6 +383,8 @@ def build_features(
     D_vec: Sequence[float],
     contingency: Mapping[str, Any] | None = None,
     feature_names_path: str | None = None,
+    load_step_target_pq_names: Sequence[str] | None = None,
+    load_step_target_owners: Sequence[str] | None = None,
 ) -> dict[str, float]:
     """
     Build optimization-side input features using the same extraction blocks as data_generation.
@@ -293,7 +400,16 @@ def build_features(
     )
     pq_p_before = np.asarray(ss.PQ.p0.v, dtype=float).copy() if pq_names else np.zeros(0, dtype=float)
     pq_q_before = np.asarray(ss.PQ.q0.v, dtype=float).copy() if pq_names else np.zeros(0, dtype=float)
-    pq_p_after = pq_p_before * float(step_scale)
+    pq_p_after = (
+        build_post_step_p_vector(
+            ss,
+            step_scale=float(step_scale),
+            target_pq_names=load_step_target_pq_names,
+            target_owner_labels=load_step_target_owners,
+        )
+        if pq_names
+        else np.zeros(0, dtype=float)
+    )
     line_uids = list(range(int(getattr(getattr(ss, "Line", None), "n", 0))))
 
     operating_snapshot = extract_operating_point_snapshot(ss)

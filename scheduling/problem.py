@@ -8,7 +8,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 import andes
 import cvxpy as cp
@@ -32,7 +32,7 @@ try:
         build_output_feature_constraints,
         evaluate_line_security_metrics,
     )
-    from scheduling.constraints_nn import build_nn_constraints
+    from scheduling.constraints_nn import build_nn_constraints, compute_nn_output_interval
 except ModuleNotFoundError:
     from final_optimization_folder.constraints import (
         build_basecase_line_constraints,
@@ -43,12 +43,14 @@ except ModuleNotFoundError:
         build_output_feature_constraints,
         evaluate_line_security_metrics,
     )
-    from final_optimization_folder.constraints_nn import build_nn_constraints
+    from final_optimization_folder.constraints_nn import build_nn_constraints, compute_nn_output_interval
 from scheduling.utils import (
     add_measurement_devices,
     build_features,
+    build_post_step_p_vector,
     build_model_from_cfg,
     derive_sched_dispatch_vectors,
+    load_table_3_1_dispatch_cost_arrays,
     load_optimization_config,
     load_scalers,
     parse_constraint_switches,
@@ -258,6 +260,8 @@ def _collect_buildable_feature_names(
     d_seed: np.ndarray,
     contingency: Mapping[str, Any] | None = None,
     feature_names_path: str | None = None,
+    load_step_target_pq_names: Sequence[str] | None = None,
+    load_step_target_owners: Sequence[str] | None = None,
 ) -> set[str]:
     feat = build_features(
         ss,
@@ -268,6 +272,8 @@ def _collect_buildable_feature_names(
         D_vec=d_seed,
         contingency=contingency,
         feature_names_path=feature_names_path,
+        load_step_target_pq_names=load_step_target_pq_names,
+        load_step_target_owners=load_step_target_owners,
     )
     genrou_pg, regcv1_pg = derive_sched_dispatch_vectors(ss)
     for i, val in enumerate(genrou_pg, start=1):
@@ -295,6 +301,8 @@ def _load_x_features_from_registry(
     d_seed: np.ndarray,
     contingency: Mapping[str, Any] | None = None,
     model_feature_order: list[str] | None = None,
+    load_step_target_pq_names: Sequence[str] | None = None,
+    load_step_target_owners: Sequence[str] | None = None,
 ) -> list[str]:
     raw_path = str(feature_cfg.get("feature_names_path", "configs/data_generation_feature_names.yaml")).strip()
     reg_path = Path(raw_path)
@@ -376,6 +384,8 @@ def _load_x_features_from_registry(
             d_seed=d_seed,
             contingency=contingency,
             feature_names_path=str(feature_cfg.get("feature_names_path", "configs/data_generation_feature_names.yaml")),
+            load_step_target_pq_names=load_step_target_pq_names,
+            load_step_target_owners=load_step_target_owners,
         )
         deduped = [name for name in deduped if name in buildable]
 
@@ -624,6 +634,8 @@ def _build_x_seed(
     d_seed: np.ndarray,
     contingency: Mapping[str, Any] | None = None,
     feature_names_path: str | None = None,
+    load_step_target_pq_names: Sequence[str] | None = None,
+    load_step_target_owners: Sequence[str] | None = None,
     fixed_feature_values: Mapping[str, float] | None = None,
     missing_fill_value: float = 0.0,
     allow_missing_features: bool = False,
@@ -639,6 +651,8 @@ def _build_x_seed(
         D_vec=d_seed,
         contingency=contingency,
         feature_names_path=feature_names_path,
+        load_step_target_pq_names=load_step_target_pq_names,
+        load_step_target_owners=load_step_target_owners,
     )
     fixed_map = {
         str(k): float(v)
@@ -736,13 +750,24 @@ def _build_x_seed(
     return np.asarray([feat[name] for name in x_features], dtype=float)
 
 
-def _is_convex_epigraph_model(model) -> bool:
-    name = model.__class__.__name__
-    if name in {"FICNN", "TabularPICNN", "TabularPICNNMTLSH"}:
-        return True
-    if hasattr(model, "picnn") or hasattr(model, "picnn_mtlsh"):
-        return True
-    return False
+def _resolve_ed_cost_arrays(cfg: Mapping[str, Any], ss: andes.System) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    ed_costs_cfg = dict(cfg.get("ed_costs", {}) or {})
+    cost_table_path = str(ed_costs_cfg.get("cost_table_path", "")).strip()
+    if cost_table_path:
+        return load_table_3_1_dispatch_cost_arrays(ss, cost_table_path=cost_table_path)
+
+    a_raw = ed_costs_cfg.get("a")
+    b_raw = ed_costs_cfg.get("b")
+    c_raw = ed_costs_cfg.get("c")
+    if a_raw is None or b_raw is None or c_raw is None:
+        raise ValueError(
+            "Missing ED cost definition. Provide ed_costs.cost_table_path or explicit ed_costs.a/b/c arrays."
+        )
+    return (
+        np.asarray(a_raw, dtype=float),
+        np.asarray(b_raw, dtype=float),
+        np.asarray(c_raw, dtype=float),
+    )
 
 
 def run_optimization(cfg: dict[str, Any], *, config_path: str | None = None):
@@ -773,6 +798,12 @@ def run_optimization(cfg: dict[str, Any], *, config_path: str | None = None):
     base_scale = float(cfg["scenario"]["base_scale"])
     step_scale = float(cfg["scenario"]["step_scale"])
     load_step_time = float(cfg["scenario"]["load_step_time"])
+    load_step_target_pq_names = [
+        str(value) for value in list(scenario_cfg.get("load_step_target_pq_names") or scenario_cfg.get("load_step_pq_names") or [])
+    ]
+    load_step_target_owners = [
+        str(value) for value in list(scenario_cfg.get("load_step_target_owners") or scenario_cfg.get("load_step_owners") or [])
+    ]
 
     for uid in range(ss.PQ.n):
         ss.PQ.p0.v[uid] = ss.PQ.p0.v[uid] * base_scale
@@ -828,6 +859,8 @@ def run_optimization(cfg: dict[str, Any], *, config_path: str | None = None):
             d_seed=d_seed,
             contingency=feature_contingency,
             model_feature_order=model_contract_features,
+            load_step_target_pq_names=load_step_target_pq_names,
+            load_step_target_owners=load_step_target_owners,
         )
         feature_cfg["x_features"] = x_features
         logger.info("Loaded %s x_features from feature registry.", len(x_features))
@@ -886,6 +919,8 @@ def run_optimization(cfg: dict[str, Any], *, config_path: str | None = None):
         d_seed=d_seed,
         contingency=feature_contingency,
         feature_names_path=str(feature_cfg.get("feature_names_path", "configs/data_generation_feature_names.yaml")),
+        load_step_target_pq_names=load_step_target_pq_names,
+        load_step_target_owners=load_step_target_owners,
         fixed_feature_values=fixed_feature_values,
         missing_fill_value=float(cfg.get("features", {}).get("missing_fill_value", 0.0)),
         allow_missing_features=allow_missing_features,
@@ -896,7 +931,12 @@ def run_optimization(cfg: dict[str, Any], *, config_path: str | None = None):
 
     pg_min = np.asarray(ss.PV.pmin.v.tolist() + ss.Slack.pmin.v.tolist(), dtype=float)
     pg_max = np.asarray(ss.PV.pmax.v.tolist() + ss.Slack.pmax.v.tolist(), dtype=float)
-    pd = np.asarray(ss.PQ.p0.v, dtype=float) * step_scale
+    pd = build_post_step_p_vector(
+        ss,
+        step_scale=step_scale,
+        target_pq_names=load_step_target_pq_names,
+        target_owner_labels=load_step_target_owners,
+    )
     pg_base = np.asarray(ss.PV.p0.v.tolist() + ss.Slack.p0.v.tolist(), dtype=float)
 
     name_to_idx = {name: i for i, name in enumerate(x_features)}
@@ -1075,6 +1115,18 @@ def run_optimization(cfg: dict[str, Any], *, config_path: str | None = None):
             hi_raw=max(share_lo, share_hi),
         )
 
+    # For MILP mode, widen y bounds to the NN's actual output interval so that
+    # the exact NN output (y == y_nn) never conflicts with the output box bounds.
+    nn_mode = str(cfg.get("constraints", {}).get("nn_mode", "milp"))
+    if nn_mode.lower() == "milp" and switches.nn:
+        try:
+            y_lo_nn, y_hi_nn = compute_nn_output_interval(model, x_min_sc, x_max_sc)
+            y_min_sc = np.minimum(y_min_sc, y_lo_nn)
+            y_max_sc = np.maximum(y_max_sc, y_hi_nn)
+            logger.info("MILP y-bounds widened to NN interval: y_min_sc=%s, y_max_sc=%s", y_min_sc, y_max_sc)
+        except NotImplementedError:
+            logger.warning("Could not compute NN output interval; keeping original y bounds.")
+
     pg = cp.Variable(pg_min.size, name="pg")
     x = cp.Variable(x_seed_sc.size, name="x")
     y = cp.Variable(y_min_sc.size, name="y")
@@ -1100,6 +1152,7 @@ def run_optimization(cfg: dict[str, Any], *, config_path: str | None = None):
         genrou_d_fixed=genrou_d_fixed_arr,
         pg_max=pg_max if pg_feat_idx else None,
         dispatch_total_constant=dispatch_total_constant if pg_feat_idx else None,
+        vis_tie_groups=cfg.get("constraints", {}).get("vis_tie_groups"),
     )
 
     constraint_blocks["output"] = build_output_feature_constraints(
@@ -1109,24 +1162,64 @@ def run_optimization(cfg: dict[str, Any], *, config_path: str | None = None):
         enforce_dispatch_output_link=bool(cfg.get("constraints", {}).get("enforce_dispatch_output_link", True)),
         y_ibr_idx=np.asarray(cfg.get("constraints", {}).get("y_ibr_idx", [2, 3, 4, 5]), dtype=int),
         pg=pg,
-        pg_base=pg_base,
         pg_min=pg_min,
         pg_max=pg_max,
         ibr_idx=np.asarray(cfg["ibr"]["indices"], dtype=int),
         y_scaler=y_scaler,
+        active_output_idx=cfg.get("constraints", {}).get(
+            "output_active_idx",
+            cfg.get("constraints", {}).get("nn_active_output_idx"),
+        ),
     )
 
-    nn_mode = str(cfg.get("constraints", {}).get("nn_mode", "milp"))
+    nn_debug_subblocks: dict[str, list[cp.Constraint]] = {}
     if switches.nn:
-        y_nn, constraints_nn = build_nn_constraints(
+        nn_payload = build_nn_constraints(
             model=model,
             x=x,
             x_seed_sc=x_seed_sc,
             x_min_sc=x_min_sc,
             x_max_sc=x_max_sc,
             mode=nn_mode,
+            active_output_idx=cfg.get("constraints", {}).get("nn_active_output_idx"),
+            return_blocks=True,
         )
-        constraint_blocks["nn"] = constraints_nn + [y == y_nn]
+        if len(nn_payload) == 3:
+            y_nn_raw, constraints_nn, nn_debug_subblocks = nn_payload
+        else:
+            y_nn_raw, constraints_nn = nn_payload
+
+        if isinstance(y_nn_raw, dict):
+            y_nn_map = {int(k): v for k, v in y_nn_raw.items()}
+        else:
+            y_nn_map = {int(i): y_nn_raw[i] for i in range(int(y_nn_raw.shape[0]))}
+
+        for name, cons in nn_debug_subblocks.items():
+            constraint_blocks[name] = list(cons)
+
+        nn_link_blocks: dict[str, list[cp.Constraint]] = {}
+        for idx, expr in y_nn_map.items():
+            nn_link_blocks[f"nn_link_{int(idx)}"] = [y[int(idx)] == expr]
+        for name, cons in nn_link_blocks.items():
+            constraint_blocks[name] = list(cons)
+
+        requested_nn_blocks = list(cfg.get("constraints", {}).get("nn_enabled_subblocks") or [])
+        if requested_nn_blocks:
+            requested = {str(name) for name in requested_nn_blocks}
+            selected_names = [
+                name
+                for name in [*nn_debug_subblocks.keys(), *nn_link_blocks.keys()]
+                if name in requested
+            ]
+        else:
+            selected_names = [*nn_debug_subblocks.keys(), *nn_link_blocks.keys()]
+
+        if selected_names:
+            constraint_blocks["nn"] = []
+            for name in selected_names:
+                constraint_blocks["nn"] += constraint_blocks[name]
+        else:
+            constraint_blocks["nn"] = constraints_nn + [y == y_nn_raw]
     else:
         constraint_blocks["nn"] = []
 
@@ -1200,13 +1293,9 @@ def run_optimization(cfg: dict[str, Any], *, config_path: str | None = None):
     for name, block in constraint_blocks.items():
         logger.info("constraint_block=%s n_constraints=%s n_scalar=%s", name, len(block), _scalar_constraint_count(block))
 
-    a = np.asarray(cfg["ed_costs"]["a"], dtype=float)
-    b = np.asarray(cfg["ed_costs"]["b"], dtype=float)
-    c = np.asarray(cfg["ed_costs"]["c"], dtype=float)
+    a, b, c = _resolve_ed_cost_arrays(cfg, ss)
 
-    tie_breaker = float(cfg.get("constraints", {}).get("epigraph_tie_breaker", 0.0))
-    if tie_breaker == 0.0 and switches.nn and nn_mode.lower() == "epigraph" and _is_convex_epigraph_model(model):
-        tie_breaker = 1e-6
+    tie_breaker = float(cfg.get("constraints", {}).get("tie_breaker", 0.0))
     objective_dispatch = cp.sum(a + cp.multiply(b, pg) + cp.multiply(c, cp.square(pg)))
     objective_expr = objective_dispatch + (float(tie_breaker) * cp.sum(y) if tie_breaker > 0 else 0)
     objective = cp.Minimize(objective_expr)
@@ -1231,6 +1320,24 @@ def run_optimization(cfg: dict[str, Any], *, config_path: str | None = None):
             + (constraint_blocks["ed"] if switches.ed else []),
             "combined": active_constraints,
         }
+        if nn_debug_subblocks:
+            nn_base = list(nn_debug_subblocks.get("nn_shared", []))
+            if nn_base:
+                checks["nn_shared"] = nn_base + (constraint_blocks["ed"] if switches.ed else [])
+                checks["input_nn_shared"] = constraint_blocks["input"] + nn_base + (constraint_blocks["ed"] if switches.ed else [])
+            for name in sorted(nn_debug_subblocks.keys()):
+                if not name.startswith("nn_head_"):
+                    continue
+                suffix = name.replace("nn_", "", 1)
+                link_name = name.replace("nn_head_", "nn_link_", 1)
+                head_constraints = nn_base + list(nn_debug_subblocks[name])
+                checks[suffix] = head_constraints + (constraint_blocks["ed"] if switches.ed else [])
+                checks[f"{suffix}_linked"] = (
+                    constraint_blocks["input"]
+                    + head_constraints
+                    + list(constraint_blocks.get(link_name, []))
+                    + (constraint_blocks["ed"] if switches.ed else [])
+                )
         for name, cons in checks.items():
             if not cons:
                 continue
@@ -1343,12 +1450,14 @@ def run_optimization(cfg: dict[str, Any], *, config_path: str | None = None):
     )
 
     block_rows = []
-    for name in ("input", "output", "nn", "line", "n1", "n1_redispatch", "ed"):
+    block_row_order = ["input", "output", "nn", "line", "n1", "n1_redispatch", "ed"]
+    block_row_order += sorted(name for name in constraint_blocks if name.startswith("nn_") and name not in {"nn"})
+    for name in block_row_order:
         cons = constraint_blocks.get(name, [])
         block_rows.append(
             {
                 "block": name,
-                "enabled": int(bool(block_enabled.get(name, False))),
+                "enabled": int(bool(block_enabled.get(name, False) or (name.startswith("nn_") and switches.nn and len(cons) > 0))),
                 "n_constraints": int(len(cons)),
                 "n_scalar_constraints": int(_scalar_constraint_count(cons)),
             }
@@ -1495,6 +1604,15 @@ def run_optimization(cfg: dict[str, Any], *, config_path: str | None = None):
             "use_n1": bool(switches.n1),
             "use_n1_redispatch": bool(use_n1_redispatch),
             "use_ed": bool(switches.ed),
+            "vis_tie_groups": list(cfg.get("constraints", {}).get("vis_tie_groups") or []),
+            "nn_active_output_idx": list(cfg.get("constraints", {}).get("nn_active_output_idx") or []),
+            "output_active_idx": list(
+                cfg.get("constraints", {}).get(
+                    "output_active_idx",
+                    cfg.get("constraints", {}).get("nn_active_output_idx") or [],
+                )
+            ),
+            "nn_enabled_subblocks": list(cfg.get("constraints", {}).get("nn_enabled_subblocks") or []),
         },
         "n1_stats": n1_stats or {},
         "n1_redispatch_stats": n1_redispatch_stats or {},

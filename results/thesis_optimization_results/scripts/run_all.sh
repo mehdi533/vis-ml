@@ -1,28 +1,46 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PYTHON_BIN="${PYTHON_BIN:-../venv/bin/python}"
-export MPLCONFIGDIR="${MPLCONFIGDIR:-/tmp/matplotlib}"
-export KMP_DUPLICATE_LIB_OK="${KMP_DUPLICATE_LIB_OK:-TRUE}"
-export KMP_USE_SHM="${KMP_USE_SHM:-0}"
-export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
-export MKL_NUM_THREADS="${MKL_NUM_THREADS:-1}"
-export OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-1}"
-export KMP_AFFINITY="${KMP_AFFINITY:-disabled}"
-export KMP_INIT_AT_FORK="${KMP_INIT_AT_FORK:-FALSE}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=/dev/null
+source "${SCRIPT_DIR}/common_env.sh"
 
-"${PYTHON_BIN}" scheduling/run_experiment_suite.py \
-  --suite results/thesis_optimization_results/configs/suites/formulation_comparison.yaml
+FORMULATION_SUITE_CONFIG="${FORMULATION_SUITE_CONFIG:-results/thesis_optimization_results/configs/suites/formulation_comparison.yaml}"
+SHE_SUITE_CONFIG="${SHE_SUITE_CONFIG:-results/thesis_optimization_results/configs/suites/she_vis_rted_style_comparison.yaml}"
+AREA_VIS_SUITE_CONFIG="${AREA_VIS_SUITE_CONFIG:-results/thesis_optimization_results/configs/suites/area_vis_comparison.yaml}"
+AREA_VIS_SUMMARY_JSON="${AREA_VIS_SUMMARY_JSON:-results/thesis_optimization_results/results/area_vis_comparison_summary.json}"
+AREA_VIS_BASELINE_ID="${AREA_VIS_BASELINE_ID:-she_method_i_rted}"
+AREA_VIS_STEM="${AREA_VIS_STEM:-area_vis_comparison}"
+ZONE_MISMATCH_SUITE_CONFIG="${ZONE_MISMATCH_SUITE_CONFIG:-results/thesis_optimization_results/configs/suites/zone_mismatch_vis_sensitivity.yaml}"
+ZONE_MISMATCH_SUMMARY_JSON="${ZONE_MISMATCH_SUMMARY_JSON:-results/thesis_optimization_results/results/zone_mismatch_vis_sensitivity_summary.json}"
+ZONE_MISMATCH_GLOBAL_SCENARIO_ID="${ZONE_MISMATCH_GLOBAL_SCENARIO_ID:-global_uniform}"
+ZONE_MISMATCH_STEM="${ZONE_MISMATCH_STEM:-zone_mismatch_vis_sensitivity}"
+SECURITY_SUITE_CONFIG="${SECURITY_SUITE_CONFIG:-results/thesis_optimization_results/configs/suites/security_checks.yaml}"
+REDISPATCH_SUITE_CONFIG="${REDISPATCH_SUITE_CONFIG:-results/thesis_optimization_results/configs/suites/redispatch_sensitivity.yaml}"
+REPLAY_CONFIG="${REPLAY_CONFIG:-results/thesis_optimization_results/configs/replay/replay_validation.yaml}"
+ANALYSIS_CONFIG="${ANALYSIS_CONFIG:-results/thesis_optimization_results/configs/analysis/results_pack.yaml}"
+REQUIRE_REPLAY="${REQUIRE_REPLAY:-1}"
+STOP_ON_ERROR="${STOP_ON_ERROR:-0}"
+LOG_TAIL_LINES="${LOG_TAIL_LINES:-120}"
 
-"${PYTHON_BIN}" scheduling/run_experiment_suite.py \
-  --suite results/thesis_optimization_results/configs/suites/security_checks.yaml
+SUITE_CONFIG="${FORMULATION_SUITE_CONFIG}" STOP_ON_ERROR="${STOP_ON_ERROR}" LOG_TAIL_LINES="${LOG_TAIL_LINES}" \
+  bash "${SCRIPT_DIR}/run_formulations.sh"
 
-"${PYTHON_BIN}" scheduling/run_experiment_suite.py \
-  --suite results/thesis_optimization_results/configs/suites/redispatch_sensitivity.yaml
+SUITE_CONFIG="${SHE_SUITE_CONFIG}" STOP_ON_ERROR="${STOP_ON_ERROR}" LOG_TAIL_LINES="${LOG_TAIL_LINES}" \
+  bash "${SCRIPT_DIR}/run_she_style_comparison.sh"
 
-"${PYTHON_BIN}" scheduling/replay_validation.py \
-  --config results/thesis_optimization_results/configs/replay/replay_validation.yaml
+SUITE_CONFIG="${AREA_VIS_SUITE_CONFIG}" SUMMARY_JSON="${AREA_VIS_SUMMARY_JSON}" BASELINE_ID="${AREA_VIS_BASELINE_ID}" STEM="${AREA_VIS_STEM}" STOP_ON_ERROR="${STOP_ON_ERROR}" LOG_TAIL_LINES="${LOG_TAIL_LINES}" \
+  bash "${SCRIPT_DIR}/run_area_vis_comparison.sh"
 
-"${PYTHON_BIN}" results/thesis_optimization_results/src/build_outputs.py \
-  --config results/thesis_optimization_results/configs/analysis/results_pack.yaml \
-  --require-replay
+SUITE_CONFIG="${ZONE_MISMATCH_SUITE_CONFIG}" SUMMARY_JSON="${ZONE_MISMATCH_SUMMARY_JSON}" GLOBAL_SCENARIO_ID="${ZONE_MISMATCH_GLOBAL_SCENARIO_ID}" STEM="${ZONE_MISMATCH_STEM}" STOP_ON_ERROR="${STOP_ON_ERROR}" LOG_TAIL_LINES="${LOG_TAIL_LINES}" \
+  bash "${SCRIPT_DIR}/run_zone_mismatch_vis_sensitivity.sh"
+
+SUITE_CONFIG="${SECURITY_SUITE_CONFIG}" STOP_ON_ERROR="${STOP_ON_ERROR}" LOG_TAIL_LINES="${LOG_TAIL_LINES}" \
+  bash "${SCRIPT_DIR}/run_security_checks.sh"
+
+SUITE_CONFIG="${REDISPATCH_SUITE_CONFIG}" STOP_ON_ERROR="${STOP_ON_ERROR}" LOG_TAIL_LINES="${LOG_TAIL_LINES}" \
+  bash "${SCRIPT_DIR}/run_redispatch_sensitivity.sh"
+
+REPLAY_CONFIG="${REPLAY_CONFIG}" bash "${SCRIPT_DIR}/run_replay_validation.sh"
+
+ANALYSIS_CONFIG="${ANALYSIS_CONFIG}" REQUIRE_REPLAY="${REQUIRE_REPLAY}" bash "${SCRIPT_DIR}/run_postprocess.sh"

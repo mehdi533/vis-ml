@@ -15,7 +15,7 @@ results_root: ../../results/formulations
 #
 # Optional thesis-relevant embedding-mode sensitivities can be added by cloning a
 # surrogate run and overriding `constraints.nn_mode` to `fixed_pattern` or
-# `epigraph` where that comparison is part of the final chapter narrative.
+# `milp` where that comparison is part of the final chapter narrative.
 
 output:
   summary_csv: ../../results/formulation_comparison_summary.csv
@@ -28,6 +28,9 @@ runs:
     description: Economic dispatch only.
     base_config: ../base_optimization.yaml
     overrides:
+      solver:
+        extra_kwargs:
+          TimeLimit: 600
       constraints:
         use_input: false
         use_output: false
@@ -42,6 +45,9 @@ runs:
     description: Economic dispatch with base-case PTDF line limits.
     base_config: ../base_optimization.yaml
     overrides:
+      solver:
+        extra_kwargs:
+          TimeLimit: 600
       constraints:
         use_input: false
         use_output: false
@@ -56,6 +62,9 @@ runs:
     description: Preventive N-1 line-security constraints (LODF), no surrogate.
     base_config: ../base_optimization.yaml
     overrides:
+      solver:
+        extra_kwargs:
+          TimeLimit: 600
       constraints:
         use_input: false
         use_output: false
@@ -70,6 +79,9 @@ runs:
     description: Dynamic-security surrogate embedded, without PTDF/N-1 line constraints.
     base_config: ../base_optimization.yaml
     overrides:
+      solver:
+        extra_kwargs:
+          TimeLimit: 3600
       constraints:
         use_input: true
         use_output: true
@@ -78,12 +90,17 @@ runs:
         use_n1: false
         use_n1_redispatch: false
         use_ed: true
+        nn_mode: milp
+        enforce_dispatch_output_link: false
 
   - id: ed_line_n1_surrogate
     name: ED + Line + N-1 + Surrogate
     description: Full preventive formulation used as main thesis baseline.
     base_config: ../base_optimization.yaml
     overrides:
+      solver:
+        extra_kwargs:
+          TimeLimit: 3600
       constraints:
         use_input: true
         use_output: true
@@ -92,12 +109,17 @@ runs:
         use_n1: true
         use_n1_redispatch: false
         use_ed: true
+        nn_mode: milp
+        enforce_dispatch_output_link: false
 
   - id: ed_line_n1_surrogate_redispatch
     name: ED + Line + N-1 + Surrogate + Redispatch
     description: Optional sensitivity with N-1 redispatch recourse approximation.
     base_config: ../base_optimization.yaml
     overrides:
+      solver:
+        extra_kwargs:
+          TimeLimit: 3600
       constraints:
         use_input: true
         use_output: true
@@ -106,3 +128,5 @@ runs:
         use_n1: true
         use_n1_redispatch: true
         use_ed: true
+        nn_mode: milp
+        enforce_dispatch_output_link: false

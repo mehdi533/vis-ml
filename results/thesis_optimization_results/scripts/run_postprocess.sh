@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PYTHON_BIN="${PYTHON_BIN:-../venv/bin/python}"
-export MPLCONFIGDIR="${MPLCONFIGDIR:-/tmp/matplotlib}"
-export KMP_DUPLICATE_LIB_OK="${KMP_DUPLICATE_LIB_OK:-TRUE}"
-export KMP_USE_SHM="${KMP_USE_SHM:-0}"
-export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
-export MKL_NUM_THREADS="${MKL_NUM_THREADS:-1}"
-export OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-1}"
-export KMP_AFFINITY="${KMP_AFFINITY:-disabled}"
-export KMP_INIT_AT_FORK="${KMP_INIT_AT_FORK:-FALSE}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=/dev/null
+source "${SCRIPT_DIR}/common_env.sh"
 
-"${PYTHON_BIN}" results/thesis_optimization_results/src/build_outputs.py \
-  --config results/thesis_optimization_results/configs/analysis/results_pack.yaml \
-  "$@"
+ANALYSIS_CONFIG="${ANALYSIS_CONFIG:-results/thesis_optimization_results/configs/analysis/results_pack.yaml}"
+REQUIRE_REPLAY="${REQUIRE_REPLAY:-0}"
+
+args=(--config "${ANALYSIS_CONFIG}")
+if [[ "${REQUIRE_REPLAY}" == "1" ]]; then
+  args+=(--require-replay)
+fi
+
+"${PYTHON_BIN}" scheduling/build_outputs.py "${args[@]}" "$@"

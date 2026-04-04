@@ -119,6 +119,7 @@ def build_input_feature_constraints(
     genrou_d_fixed: Sequence[float] | None = None,
     pg_max: np.ndarray | None = None,
     dispatch_total_constant: float | None = None,
+    vis_tie_groups: Sequence[Sequence[int]] | None = None,
 ) -> list[cp.Constraint]:
     """
     Input block: fixed exogenous descriptors + bounded controllable features.
@@ -148,6 +149,25 @@ def build_input_feature_constraints(
 
     constraints += [x[list(m_idx)] >= m_min_sc, x[list(m_idx)] <= m_max_sc]
     constraints += [x[list(d_idx)] >= d_min_sc, x[list(d_idx)] <= d_max_sc]
+
+    if vis_tie_groups:
+        n_ibr_local = min(len(m_idx), len(d_idx))
+        for group_id, raw_group in enumerate(vis_tie_groups):
+            members = [int(v) for v in raw_group]
+            if len(members) < 2:
+                continue
+            bad = [idx for idx in members if idx < 0 or idx >= n_ibr_local]
+            if bad:
+                raise ValueError(
+                    f"constraints.vis_tie_groups[{group_id}] contains invalid local IBR indices: {bad}. "
+                    f"Valid range is [0, {max(n_ibr_local - 1, 0)}]."
+                )
+            anchor = members[0]
+            anchor_m_idx = int(m_idx[anchor])
+            anchor_d_idx = int(d_idx[anchor])
+            for member in members[1:]:
+                constraints.append(x[int(m_idx[member])] == x[anchor_m_idx])
+                constraints.append(x[int(d_idx[member])] == x[anchor_d_idx])
 
     if pg is not None and pg_link_idx:
         if x_scaler is None:
@@ -348,16 +368,36 @@ def build_output_feature_constraints(
     enforce_dispatch_output_link: bool,
     y_ibr_idx: Sequence[int],
     pg: cp.Variable,
-    pg_base: np.ndarray,
     pg_min: np.ndarray,
     pg_max: np.ndarray,
     ibr_idx: Sequence[int],
     y_scaler: Any,
+    active_output_idx: Sequence[int] | None = None,
 ) -> list[cp.Constraint]:
     """
-    Output block: dynamic-security bounds + optional Delta-P coupling.
+    Output block: dynamic-security bounds + optional reserve-to-Delta_P coupling.
+
+    When ``enforce_dispatch_output_link`` is True, the predicted Delta_P_IBR for
+    each IBR is bounded by its available reserve headroom:
+
+        Delta_P_IBR_i  <=  pg_max_i - pg_i     (upward reserve)
+        Delta_P_IBR_i  >= -(pg_i - pg_min_i)   (downward reserve)
+
+    This links the surrogate's predicted dynamic response to the dispatch
+    decision: an IBR dispatched close to pg_max has little headroom, so
+    Delta_P_IBR must be small.  Keeping more reserve (dispatching less) allows
+    a larger dynamic response but forces costlier units to pick up the slack.
     """
-    constraints: list[cp.Constraint] = [y >= y_min_sc, y <= y_max_sc]
+    if active_output_idx is not None:
+        idx_active = np.asarray(sorted(set(int(i) for i in active_output_idx)), dtype=int)
+        if idx_active.size and (idx_active.min() < 0 or idx_active.max() >= y.shape[0]):
+            raise ValueError("constraints.output_active_idx contains an out-of-range y index.")
+    else:
+        idx_active = np.arange(int(y.shape[0]), dtype=int)
+
+    constraints: list[cp.Constraint] = []
+    if idx_active.size:
+        constraints += [y[idx_active] >= y_min_sc[idx_active], y[idx_active] <= y_max_sc[idx_active]]
     if not enforce_dispatch_output_link:
         return constraints
 
@@ -368,11 +408,24 @@ def build_output_feature_constraints(
     if idx_y.size != idx_ibr.size:
         raise ValueError("y_ibr_idx and ibr_idx must have same length.")
 
-    dp_ibr = pg[idx_ibr] - pg_base[idx_ibr]
-    p_min_sc = cp.multiply(pg_min[idx_ibr] - pg_base[idx_ibr], y_scaler.scale_[idx_y]) + y_scaler.min_[idx_y]
-    p_max_sc = cp.multiply(pg_max[idx_ibr] - pg_base[idx_ibr], y_scaler.scale_[idx_y]) + y_scaler.min_[idx_y]
-    dp_sc = cp.multiply(dp_ibr, y_scaler.scale_[idx_y]) + y_scaler.min_[idx_y]
-    constraints += [y[idx_y] <= dp_sc, y[idx_y] >= p_min_sc, y[idx_y] <= p_max_sc]
+    if idx_active.size:
+        active_set = set(int(i) for i in idx_active.tolist())
+        keep = np.asarray([int(i) in active_set for i in idx_y], dtype=bool)
+        idx_y = idx_y[keep]
+        idx_ibr = idx_ibr[keep]
+        if idx_y.size == 0:
+            return constraints
+
+    # Upward reserve: Delta_P_IBR_i <= pg_max_i - pg_i
+    reserve_up = pg_max[idx_ibr] - pg[idx_ibr]
+    reserve_up_sc = cp.multiply(reserve_up, y_scaler.scale_[idx_y]) + y_scaler.min_[idx_y]
+    constraints += [y[idx_y] <= reserve_up_sc]
+
+    # Downward reserve: Delta_P_IBR_i >= -(pg_i - pg_min_i)
+    reserve_dn = pg_min[idx_ibr] - pg[idx_ibr]
+    reserve_dn_sc = cp.multiply(reserve_dn, y_scaler.scale_[idx_y]) + y_scaler.min_[idx_y]
+    constraints += [y[idx_y] >= reserve_dn_sc]
+
     return constraints
 
 

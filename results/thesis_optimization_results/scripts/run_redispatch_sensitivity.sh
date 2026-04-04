@@ -1,16 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PYTHON_BIN="${PYTHON_BIN:-../venv/bin/python}"
-export MPLCONFIGDIR="${MPLCONFIGDIR:-/tmp/matplotlib}"
-export KMP_DUPLICATE_LIB_OK="${KMP_DUPLICATE_LIB_OK:-TRUE}"
-export KMP_USE_SHM="${KMP_USE_SHM:-0}"
-export OMP_NUM_THREADS="${OMP_NUM_THREADS:-1}"
-export MKL_NUM_THREADS="${MKL_NUM_THREADS:-1}"
-export OPENBLAS_NUM_THREADS="${OPENBLAS_NUM_THREADS:-1}"
-export KMP_AFFINITY="${KMP_AFFINITY:-disabled}"
-export KMP_INIT_AT_FORK="${KMP_INIT_AT_FORK:-FALSE}"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=/dev/null
+source "${SCRIPT_DIR}/common_env.sh"
 
-"${PYTHON_BIN}" scheduling/run_experiment_suite.py \
-  --suite results/thesis_optimization_results/configs/suites/redispatch_sensitivity.yaml \
-  "$@"
+SUITE_CONFIG="${SUITE_CONFIG:-results/thesis_optimization_results/configs/suites/redispatch_sensitivity.yaml}"
+STOP_ON_ERROR="${STOP_ON_ERROR:-0}"
+LOG_TAIL_LINES="${LOG_TAIL_LINES:-120}"
+
+args=(
+  --suite "${SUITE_CONFIG}"
+  --log-tail-lines "${LOG_TAIL_LINES}"
+)
+if [[ "${STOP_ON_ERROR}" == "1" ]]; then
+  args+=(--stop-on-error)
+fi
+
+"${PYTHON_BIN}" scheduling/run_experiment_suite.py "${args[@]}" "$@"

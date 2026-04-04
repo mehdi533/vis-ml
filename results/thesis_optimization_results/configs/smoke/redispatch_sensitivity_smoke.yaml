@@ -1,22 +1,22 @@
-name: chapter5_optional_redispatch_sensitivity
+name: chapter5_optional_redispatch_sensitivity_smoke
 baseline_id: ed_line_n1_surrogate
 
-results_root: ../../results/redispatch_sensitivity
+results_root: ../../local_validation/smoke/redispatch_sensitivity/formulations
 
 output:
-  summary_csv: ../../results/redispatch_sensitivity_summary.csv
-  summary_markdown: ../../results/redispatch_sensitivity_summary.md
-  summary_json: ../../results/redispatch_sensitivity_summary.json
+  summary_csv: ../../local_validation/smoke/redispatch_sensitivity_smoke_summary.csv
+  summary_markdown: ../../local_validation/smoke/redispatch_sensitivity_smoke_summary.md
+  summary_json: ../../local_validation/smoke/redispatch_sensitivity_smoke_summary.json
 
 runs:
   - id: ed_line_n1_surrogate
     name: Full Preventive Baseline
-    description: Preventive baseline without redispatch recourse.
+    description: Smoke preventive baseline without redispatch recourse.
     base_config: ../base_optimization.yaml
     overrides:
       solver:
         extra_kwargs:
-          TimeLimit: 3600
+          TimeLimit: 300
       constraints:
         use_input: true
         use_output: true
@@ -30,12 +30,12 @@ runs:
 
   - id: ed_line_n1_surrogate_redispatch
     name: Redispatch Sensitivity
-    description: Optional sensitivity with redispatch recourse approximation.
+    description: Smoke redispatch-recourse run.
     base_config: ../base_optimization.yaml
     overrides:
       solver:
         extra_kwargs:
-          TimeLimit: 3600
+          TimeLimit: 300
       constraints:
         use_input: true
         use_output: true

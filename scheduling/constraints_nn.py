@@ -22,24 +22,17 @@ def _extract_linear_layers(seq):
     return layers
 
 
-def _linear_weights_bias(layer):
-    w = layer.weight
-    if isinstance(layer, NonNegLinear):
-        w = F.softplus(w)
-    return w.detach().cpu().numpy(), layer.bias.detach().cpu().numpy()
-
-
-def _relu_epigraph(z, y):
-    return [y >= 0, y >= z]
-
-
-def _apply_relu_stack(h, layers, constraints, *, prefix: str):
-    for idx, (w, b) in enumerate(layers):
-        z = w @ h + b
-        y = cp.Variable(b.shape[0], name=f"{prefix}_{idx}")
-        constraints += _relu_epigraph(z, y)
-        h = y
-    return h
+def _resolve_active_output_idx(active_output_idx, n_outputs: int) -> list[int]:
+    if active_output_idx is None:
+        return list(range(int(n_outputs)))
+    active = sorted(set(int(i) for i in active_output_idx))
+    bad = [idx for idx in active if idx < 0 or idx >= int(n_outputs)]
+    if bad:
+        raise ValueError(
+            f"constraints.nn_active_output_idx contains invalid output indices: {bad}. "
+            f"Valid range is [0, {max(int(n_outputs) - 1, 0)}]."
+        )
+    return active
 
 
 def _interval_bounds(W, b, h_min, h_max):
@@ -130,31 +123,6 @@ def _activation_masks_mlp(model, x_np: np.ndarray):
     return masks
 
 
-def _build_epigraph_constraints_mlp(model, x):
-    constraints = []
-    layers = _extract_linear_layers(model.net)
-    h = _apply_relu_stack(x, layers[:-1], constraints, prefix="mlp")
-    w_last, b_last = layers[-1]
-    y = cp.Variable(w_last.shape[0], name="outputs")
-    constraints.append(y == w_last @ h + b_last)
-    return y, constraints
-
-
-def _build_epigraph_constraints_mtlshared(model, x):
-    constraints = []
-    shared_layers = _extract_linear_layers(model.shared)
-    h = _apply_relu_stack(x, shared_layers, constraints, prefix="shared")
-    outputs = []
-    for i, head in enumerate(model.heads):
-        head_layers = _extract_linear_layers(head)
-        h_head = _apply_relu_stack(h, head_layers[:-1], constraints, prefix=f"head{i}")
-        w_last, b_last = head_layers[-1]
-        y_out = cp.Variable(1, name=f"out{i}")
-        constraints.append(y_out == w_last @ h_head + b_last)
-        outputs.append(y_out)
-    return cp.hstack(outputs), constraints
-
-
 def _build_fixed_pattern_constraints_mlp(model, x, x_np: np.ndarray):
     constraints = []
     masks = _activation_masks_mlp(model, x_np)
@@ -180,8 +148,17 @@ def _build_fixed_pattern_constraints_mlp(model, x, x_np: np.ndarray):
     raise RuntimeError("Invalid MLP architecture for fixed pattern constraints.")
 
 
-def _build_fixed_pattern_constraints_mtlshared(model, x, x_np: np.ndarray):
+def _build_fixed_pattern_constraints_mtlshared(
+    model,
+    x,
+    x_np: np.ndarray,
+    *,
+    active_output_idx=None,
+    collect_blocks: bool = False,
+):
     constraints = []
+    active_outputs = set(_resolve_active_output_idx(active_output_idx, len(model.heads)))
+    block_map: dict[str, list[cp.Constraint]] = {"nn_shared": []}
     shared_masks, head_masks = _activation_masks_mtlshared(model, x_np)
     h = x
     shared_layers = _extract_linear_layers(model.shared)
@@ -190,36 +167,52 @@ def _build_fixed_pattern_constraints_mtlshared(model, x, x_np: np.ndarray):
         out = cp.Variable(len(b), name=f"shared_{idx}")
         mask = shared_masks[idx]
         if np.all(mask):
-            constraints += [z >= 0, out == z]
+            relu_constraints = [z >= 0, out == z]
         elif np.all(~mask):
-            constraints += [z <= 0, out == 0]
+            relu_constraints = [z <= 0, out == 0]
         else:
-            constraints += [z[mask] >= 0, out[mask] == z[mask], z[~mask] <= 0, out[~mask] == 0]
+            relu_constraints = [z[mask] >= 0, out[mask] == z[mask], z[~mask] <= 0, out[~mask] == 0]
+        constraints += relu_constraints
+        block_map["nn_shared"] += relu_constraints
         h = out
 
-    outputs = []
+    outputs: dict[int, cp.Expression] = {}
     head_relu_idx = 0
     for i, head in enumerate(model.heads):
         hh = h
         head_layers = _extract_linear_layers(head)
+        block_name = f"nn_head_{i}"
+        if i in active_outputs:
+            block_map[block_name] = []
         for idx, (W, b) in enumerate(head_layers):
+            if idx < len(head_layers) - 1:
+                mask = head_masks[head_relu_idx]
+                head_relu_idx += 1
+                if i not in active_outputs:
+                    continue
+            elif i not in active_outputs:
+                continue
             z = W @ hh + b
             if idx == len(head_layers) - 1:
                 y_out = cp.Variable(1, name=f"out{i}")
-                constraints.append(y_out == z)
-                outputs.append(y_out)
+                out_constraint = (y_out == z)
+                constraints.append(out_constraint)
+                block_map[block_name].append(out_constraint)
+                outputs[int(i)] = y_out
                 continue
             out = cp.Variable(len(b), name=f"head{i}_{idx}")
-            mask = head_masks[head_relu_idx]
-            head_relu_idx += 1
             if np.all(mask):
-                constraints += [z >= 0, out == z]
+                relu_constraints = [z >= 0, out == z]
             elif np.all(~mask):
-                constraints += [z <= 0, out == 0]
+                relu_constraints = [z <= 0, out == 0]
             else:
-                constraints += [z[mask] >= 0, out[mask] == z[mask], z[~mask] <= 0, out[~mask] == 0]
+                relu_constraints = [z[mask] >= 0, out[mask] == z[mask], z[~mask] <= 0, out[~mask] == 0]
+            constraints += relu_constraints
+            block_map[block_name] += relu_constraints
             hh = out
-    return cp.hstack(outputs), constraints
+    if collect_blocks:
+        return outputs, constraints, block_map
+    return outputs, constraints
 
 
 def _build_milp_constraints_mlp(model, x, x_min, x_max):
@@ -244,8 +237,18 @@ def _build_milp_constraints_mlp(model, x, x_min, x_max):
     return y_out, constraints
 
 
-def _build_milp_constraints_mtlshared(model, x, x_min, x_max):
+def _build_milp_constraints_mtlshared(
+    model,
+    x,
+    x_min,
+    x_max,
+    *,
+    active_output_idx=None,
+    collect_blocks: bool = False,
+):
     constraints = []
+    active_outputs = set(_resolve_active_output_idx(active_output_idx, len(model.heads)))
+    block_map: dict[str, list[cp.Constraint]] = {"nn_shared": []}
     h = x
     h_min = x_min.copy()
     h_max = x_max.copy()
@@ -255,261 +258,61 @@ def _build_milp_constraints_mtlshared(model, x, x_min, x_max):
         z = W @ h + b
         z_min, z_max = _interval_bounds(W, b, h_min, h_max)
         y = cp.Variable(b.shape[0], name=f"shared_{idx}")
-        constraints += _relu_with_pruning(z, y, z_min, z_max, name=f"shared_{idx}")
+        relu_constraints = _relu_with_pruning(z, y, z_min, z_max, name=f"shared_{idx}")
+        constraints += relu_constraints
+        block_map["nn_shared"] += relu_constraints
         h = y
         h_min = np.maximum(0, z_min)
         h_max = np.maximum(0, z_max)
 
-    outputs = []
+    outputs: dict[int, cp.Expression] = {}
     for i, head in enumerate(model.heads):
+        if i not in active_outputs:
+            continue
         h_head = h
         hmin_head = h_min
         hmax_head = h_max
         head_layers = _extract_linear_layers(head)
+        block_name = f"nn_head_{i}"
+        block_map[block_name] = []
         for idx, (W, b) in enumerate(head_layers):
             z = W @ h_head + b
             if idx < len(head_layers) - 1:
                 z_min, z_max = _interval_bounds(W, b, hmin_head, hmax_head)
                 y = cp.Variable(b.shape[0], name=f"head{i}_{idx}")
-                constraints += _relu_with_pruning(z, y, z_min, z_max, name=f"head{i}_{idx}")
+                relu_constraints = _relu_with_pruning(z, y, z_min, z_max, name=f"head{i}_{idx}")
+                constraints += relu_constraints
+                block_map[block_name] += relu_constraints
                 h_head = y
                 hmin_head = np.maximum(0, z_min)
                 hmax_head = np.maximum(0, z_max)
             else:
                 y_out = cp.Variable(1, name=f"out{i}")
-                constraints.append(y_out == z)
-                outputs.append(y_out)
-    return cp.hstack(outputs), constraints
+                out_constraint = (y_out == z)
+                constraints.append(out_constraint)
+                block_map[block_name].append(out_constraint)
+                outputs[int(i)] = y_out
+    if collect_blocks:
+        return outputs, constraints, block_map
+    return outputs, constraints
 
 
-def _build_ficnn_epigraph(model, x):
-    constraints = []
-
-    if model.first_wx is None:
-        w_out, b_out = _linear_weights_bias(model.out_wx)
-        y = cp.Variable(model.out_dim, name="ficnn_out")
-        constraints += [y == w_out @ x + b_out]
-        return y, constraints
-
-    w0, b0 = _linear_weights_bias(model.first_wx)
-    z = cp.Variable(w0.shape[0], name="ficnn_z0")
-    constraints += [z >= 0, z >= w0 @ x + b0]
-
-    for idx, (wz_layer, wx_layer) in enumerate(zip(model.Wz_layers, model.Wx_layers), start=1):
-        wz, bz = _linear_weights_bias(wz_layer)
-        wx, bx = _linear_weights_bias(wx_layer)
-        z_next = cp.Variable(wz.shape[0], name=f"ficnn_z{idx}")
-        affine = wz @ z + bz + wx @ x + bx
-        constraints += [z_next >= 0, z_next >= affine]
-        z = z_next
-
-    w_out_z, b_out_z = _linear_weights_bias(model.out_wz)
-    w_out_x, b_out_x = _linear_weights_bias(model.out_wx)
-    y = cp.Variable(model.out_dim, name="ficnn_out")
-    constraints += [y == w_out_z @ z + b_out_z + w_out_x @ x + b_out_x]
-    return y, constraints
-
-
-def _split_tabular_picnn_inputs(model, x):
-    u_idx = np.asarray(model.u_idx.detach().cpu().numpy(), dtype=int)
-    v_idx = np.asarray(model.v_idx.detach().cpu().numpy(), dtype=int)
-    u = x[u_idx]
-    v = x[v_idx] if v_idx.size else None
-    return u, v
-
-
-def _affine_optional(layer, inp):
-    if layer is None:
-        return 0.0
-    w, b = _linear_weights_bias(layer)
-    return w @ inp + b
-
-
-def _build_picnn_epigraph_inner(picnn, u, v):
-    constraints = []
-
-    if picnn.first_wu is None:
-        w_u, b_u = _linear_weights_bias(picnn.out_wu)
-        affine = w_u @ u + b_u
-        if picnn.out_wv is not None:
-            affine = affine + _affine_optional(picnn.out_wv, v)
-        y = cp.Variable(picnn.out_dim, name="picnn_out")
-        constraints += [y == affine]
-        return y, constraints
-
-    w_u0, b_u0 = _linear_weights_bias(picnn.first_wu)
-    affine0 = w_u0 @ u + b_u0
-    if picnn.first_wv is not None:
-        affine0 = affine0 + _affine_optional(picnn.first_wv, v)
-    z = cp.Variable(w_u0.shape[0], name="picnn_z0")
-    constraints += [z >= 0, z >= affine0]
-
-    for idx, (Wz_layer, Wu_layer, Wv_layer) in enumerate(
-        zip(picnn.Wz_layers, picnn.Wu_layers, picnn.Wv_layers),
-        start=1,
-    ):
-        wz, bz = _linear_weights_bias(Wz_layer)
-        wu, bu = _linear_weights_bias(Wu_layer)
-        affine = wz @ z + bz + wu @ u + bu
-        if Wv_layer is not None:
-            affine = affine + _affine_optional(Wv_layer, v)
-        z_next = cp.Variable(wz.shape[0], name=f"picnn_z{idx}")
-        constraints += [z_next >= 0, z_next >= affine]
-        z = z_next
-
-    wz_out, bz_out = _linear_weights_bias(picnn.out_wz)
-    wu_out, bu_out = _linear_weights_bias(picnn.out_wu)
-    y_affine = wz_out @ z + bz_out + wu_out @ u + bu_out
-    if picnn.out_wv is not None:
-        y_affine = y_affine + _affine_optional(picnn.out_wv, v)
-    y = cp.Variable(picnn.out_dim, name="picnn_out")
-    constraints += [y == y_affine]
-    return y, constraints
-
-
-def _build_picnn_epigraph(tabular_model, x):
-    u, v = _split_tabular_picnn_inputs(tabular_model, x)
-    return _build_picnn_epigraph_inner(tabular_model.picnn, u, v)
-
-
-def _build_picnn_trunk_epigraph(trunk, u, v, constraints, *, prefix: str):
-    if trunk.first_wu is None:
-        return cp.Constant(np.zeros(0, dtype=float))
-
-    wu0, bu0 = _linear_weights_bias(trunk.first_wu)
-    affine0 = wu0 @ u + bu0
-    if trunk.first_wv is not None:
-        affine0 = affine0 + _affine_optional(trunk.first_wv, v)
-    z = cp.Variable(wu0.shape[0], name=f"{prefix}_z0")
-    constraints += [z >= 0, z >= affine0]
-
-    for idx, (Wz_layer, Wu_layer, Wv_layer) in enumerate(
-        zip(trunk.Wz_layers, trunk.Wu_layers, trunk.Wv_layers),
-        start=1,
-    ):
-        wz, bz = _linear_weights_bias(Wz_layer)
-        wu, bu = _linear_weights_bias(Wu_layer)
-        affine = wz @ z + bz + wu @ u + bu
-        if Wv_layer is not None:
-            affine = affine + _affine_optional(Wv_layer, v)
-        z_next = cp.Variable(wz.shape[0], name=f"{prefix}_z{idx}")
-        constraints += [z_next >= 0, z_next >= affine]
-        z = z_next
-    return z
-
-
-def _build_picnn_from_z_epigraph(block, z_in, u, v, constraints, *, prefix: str):
-    if block.first_wz is None:
-        return z_in
-
-    wz0, bz0 = _linear_weights_bias(block.first_wz)
-    wu0, bu0 = _linear_weights_bias(block.first_wu)
-    affine0 = wz0 @ z_in + bz0 + wu0 @ u + bu0
-    if block.first_wv is not None:
-        affine0 = affine0 + _affine_optional(block.first_wv, v)
-    z = cp.Variable(wz0.shape[0], name=f"{prefix}_z0")
-    constraints += [z >= 0, z >= affine0]
-
-    for idx, (Wz_layer, Wu_layer, Wv_layer) in enumerate(
-        zip(block.Wz_layers, block.Wu_layers, block.Wv_layers),
-        start=1,
-    ):
-        wz, bz = _linear_weights_bias(Wz_layer)
-        wu, bu = _linear_weights_bias(Wu_layer)
-        affine = wz @ z + bz + wu @ u + bu
-        if Wv_layer is not None:
-            affine = affine + _affine_optional(Wv_layer, v)
-        z_next = cp.Variable(wz.shape[0], name=f"{prefix}_z{idx}")
-        constraints += [z_next >= 0, z_next >= affine]
-        z = z_next
-    return z
-
-
-def _build_picnn_head_epigraph(head, z_in, u, v, constraints, *, prefix: str):
-    if head.first_wz is None:
-        wz_out, bz_out = _linear_weights_bias(head.out_wz)
-        wu_out, bu_out = _linear_weights_bias(head.out_wu)
-        affine = wz_out @ z_in + bz_out + wu_out @ u + bu_out
-        if head.out_wv is not None:
-            affine = affine + _affine_optional(head.out_wv, v)
-        y = cp.Variable(1, name=f"{prefix}_out")
-        constraints += [y == affine]
-        return y
-
-    wz0, bz0 = _linear_weights_bias(head.first_wz)
-    wu0, bu0 = _linear_weights_bias(head.first_wu)
-    affine0 = wz0 @ z_in + bz0 + wu0 @ u + bu0
-    if head.first_wv is not None:
-        affine0 = affine0 + _affine_optional(head.first_wv, v)
-    z = cp.Variable(wz0.shape[0], name=f"{prefix}_z0")
-    constraints += [z >= 0, z >= affine0]
-
-    for idx, (Wz_layer, Wu_layer, Wv_layer) in enumerate(
-        zip(head.Wz_layers, head.Wu_layers, head.Wv_layers),
-        start=1,
-    ):
-        wz, bz = _linear_weights_bias(Wz_layer)
-        wu, bu = _linear_weights_bias(Wu_layer)
-        affine = wz @ z + bz + wu @ u + bu
-        if Wv_layer is not None:
-            affine = affine + _affine_optional(Wv_layer, v)
-        z_next = cp.Variable(wz.shape[0], name=f"{prefix}_z{idx}")
-        constraints += [z_next >= 0, z_next >= affine]
-        z = z_next
-
-    w_mid, b_mid = _linear_weights_bias(head.mid_out_wz)
-    w_out_z, b_out_z = _linear_weights_bias(head.out_wz)
-    w_out_u, b_out_u = _linear_weights_bias(head.out_wu)
-
-    affine_out = w_mid @ z + b_mid + w_out_z @ z_in + b_out_z + w_out_u @ u + b_out_u
-    if head.out_wv is not None:
-        affine_out = affine_out + _affine_optional(head.out_wv, v)
-    y = cp.Variable(1, name=f"{prefix}_out")
-    constraints += [y == affine_out]
-    return y
-
-
-def _build_picnn_mtlsh_epigraph(tabular_model, x):
-    constraints = []
-    u, v = _split_tabular_picnn_inputs(tabular_model, x)
-    model = tabular_model.picnn_mtlsh
-
-    z_shared = _build_picnn_trunk_epigraph(model.trunk, u, v, constraints, prefix="picnn_trunk")
-    head_inputs = [z_shared for _ in range(model.n_tasks)]
-
-    for block_idx, (block, indices) in enumerate(zip(model.group_blocks, model.group_block_indices)):
-        for head_idx in indices:
-            head_inputs[int(head_idx)] = _build_picnn_from_z_epigraph(
-                block,
-                head_inputs[int(head_idx)],
-                u,
-                v,
-                constraints,
-                prefix=f"picnn_group{block_idx}_h{int(head_idx)}",
-            )
-
-    outputs = []
-    for i, head in enumerate(model.heads):
-        y_i = _build_picnn_head_epigraph(
-            head,
-            head_inputs[i],
-            u,
-            v,
-            constraints,
-            prefix=f"picnn_head{i}",
-        )
-        outputs.append(y_i)
-    return cp.hstack(outputs), constraints
-
-
-def _build_constraints_from_relu_model(model, x, *, mode: str, x_np=None, x_min=None, x_max=None):
+def _build_constraints_from_relu_model(
+    model,
+    x,
+    *,
+    mode: str,
+    x_np=None,
+    x_min=None,
+    x_max=None,
+    active_output_idx=None,
+    collect_blocks: bool = False,
+):
     mode = mode.lower()
-    if mode not in {"epigraph", "fixed_pattern", "milp"}:
+    if mode not in {"fixed_pattern", "milp"}:
         raise ValueError(f"Unsupported nn.mode: {mode}")
 
     if hasattr(model, "net"):
-        if mode == "epigraph":
-            return _build_epigraph_constraints_mlp(model, x)
         if mode == "fixed_pattern":
             if x_np is None:
                 raise ValueError("x_seed_sc is required for nn.mode='fixed_pattern'.")
@@ -521,17 +324,63 @@ def _build_constraints_from_relu_model(model, x, *, mode: str, x_np=None, x_min=
     if hasattr(model, "shared") and hasattr(model, "heads"):
         if getattr(model, "group_blocks", None):
             raise ValueError("Grouped shared-head models are not supported in this NN MILP builder.")
-        if mode == "epigraph":
-            return _build_epigraph_constraints_mtlshared(model, x)
         if mode == "fixed_pattern":
             if x_np is None:
                 raise ValueError("x_seed_sc is required for nn.mode='fixed_pattern'.")
-            return _build_fixed_pattern_constraints_mtlshared(model, x, x_np)
+            return _build_fixed_pattern_constraints_mtlshared(
+                model,
+                x,
+                x_np,
+                active_output_idx=active_output_idx,
+                collect_blocks=collect_blocks,
+            )
         if x_min is None or x_max is None:
             raise ValueError("x_min_sc/x_max_sc are required for nn.mode='milp'.")
-        return _build_milp_constraints_mtlshared(model, x, x_min, x_max)
+        return _build_milp_constraints_mtlshared(
+            model,
+            x,
+            x_min,
+            x_max,
+            active_output_idx=active_output_idx,
+            collect_blocks=collect_blocks,
+        )
 
     raise NotImplementedError("Unsupported ReLU model type for generic builder.")
+
+
+def compute_nn_output_interval(
+    model,
+    x_min_sc: np.ndarray,
+    x_max_sc: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Compute the NN output interval [y_min, y_max] in scaled space via
+    interval arithmetic (same bounds the MILP builder uses for Big-M).
+
+    Only supports MTLSharedHeads models with ``shared`` + ``heads`` attributes.
+    Returns arrays of shape ``(n_tasks,)`` with the per-head output bounds.
+    """
+    if not (hasattr(model, "shared") and hasattr(model, "heads")):
+        raise NotImplementedError("compute_nn_output_interval only supports MTLSharedHeads")
+
+    h_min, h_max = x_min_sc.copy(), x_max_sc.copy()
+    for W, b in _extract_linear_layers(model.shared):
+        z_min, z_max = _interval_bounds(W, b, h_min, h_max)
+        h_min = np.maximum(0, z_min)
+        h_max = np.maximum(0, z_max)
+
+    y_lo = np.empty(len(model.heads))
+    y_hi = np.empty(len(model.heads))
+    for i, head in enumerate(model.heads):
+        hmin, hmax = h_min.copy(), h_max.copy()
+        head_layers = _extract_linear_layers(head)
+        for idx, (W, b) in enumerate(head_layers):
+            z_min, z_max = _interval_bounds(W, b, hmin, hmax)
+            if idx < len(head_layers) - 1:
+                hmin = np.maximum(0, z_min)
+                hmax = np.maximum(0, z_max)
+        y_lo[i] = float(z_min.item())
+        y_hi[i] = float(z_max.item())
+    return y_lo, y_hi
 
 
 def build_nn_constraints(
@@ -542,6 +391,8 @@ def build_nn_constraints(
     x_min_sc: np.ndarray,
     x_max_sc: np.ndarray,
     mode: str,
+    active_output_idx: list[int] | None = None,
+    return_blocks: bool = False,
 ):
     """
     Unified NN builder used by final optimization.
@@ -554,6 +405,8 @@ def build_nn_constraints(
             x_np=x_seed_sc,
             x_min=x_min_sc,
             x_max=x_max_sc,
+            active_output_idx=active_output_idx,
+            collect_blocks=return_blocks,
         )
     except NotImplementedError:
         pass
@@ -562,23 +415,23 @@ def build_nn_constraints(
     mode = mode.lower()
 
     if model_name == "FICNN" or hasattr(model, "first_wx"):
-        if mode != "epigraph":
-            raise ValueError("FICNN currently supports nn.mode='epigraph' only.")
-        return _build_ficnn_epigraph(model, x)
+        raise ValueError(
+            "FICNN optimization embeddings are unsupported in this scheduler."
+        )
 
     if hasattr(model, "picnn"):
-        if mode != "epigraph":
-            raise ValueError("PICNN currently supports nn.mode='epigraph' only.")
-        return _build_picnn_epigraph(model, x)
+        raise ValueError(
+            "PICNN optimization embeddings are unsupported in this scheduler."
+        )
 
     if hasattr(model, "picnn_mtlsh"):
-        if mode != "epigraph":
-            raise ValueError("PICNN_MTLSH currently supports nn.mode='epigraph' only.")
-        return _build_picnn_mtlsh_epigraph(model, x)
+        raise ValueError(
+            "PICNN_MTLSH optimization embeddings are unsupported in this scheduler."
+        )
 
     raise ValueError(
         f"NN constraints are not implemented for model class '{model_name}'. "
-        "Supported: ReLU MLP/MTLSH, FICNN, PICNN, PICNN_MTLSH."
+        "Supported: ReLU MLP/MTLSH with nn.mode in {'milp', 'fixed_pattern'}."
     )
 
 

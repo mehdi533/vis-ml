@@ -4,6 +4,7 @@ import argparse
 import csv
 import json
 import re
+import subprocess
 import sys
 import traceback
 from pathlib import Path
@@ -63,6 +64,13 @@ def _classify_issue(status: str, error_text: str) -> tuple[str, str, str]:
 
     if status_l.startswith("optimal"):
         return ("ok", "none", "No action needed.")
+
+    if "omp: error #179" in msg_l or "can't open shm2" in msg_l:
+        return (
+            "openmp_runtime_shm",
+            "python_runtime",
+            "Avoid in-process scheduler imports for this run path; launch scheduling/problem.py as a subprocess or adjust the OpenMP runtime environment.",
+        )
 
     if "non-finite values detected in resolved optimization feature vector" in msg_l:
         return (
@@ -302,6 +310,71 @@ def _suite_scenarios(suite: dict[str, Any]) -> tuple[list[dict[str, Any]], bool]
     return scenarios, True
 
 
+def _default_problem_output_paths(output_cfg: dict[str, Any], formulation_id: str) -> dict[str, Path]:
+    results_csv = Path(
+        str(
+            output_cfg.get(
+                "results_csv",
+                "results/thesis_optimization_results/results/optimization_results.csv",
+            )
+        )
+    )
+    run_tag = str(output_cfg.get("run_tag", formulation_id)).strip() or formulation_id
+    results_dir = Path(str(output_cfg.get("results_dir", results_csv.parent)))
+    if not results_dir.is_absolute():
+        results_dir = (ROOT / results_dir).resolve()
+
+    def _p(name: str, default: Path) -> Path:
+        raw = output_cfg.get(name)
+        path = Path(str(raw)) if raw else default
+        return path if path.is_absolute() else (ROOT / path).resolve()
+
+    return {
+        "results_csv": _p("results_csv", results_dir / f"{run_tag}_decisions.csv"),
+        "summary_json": _p("summary_json", results_dir / f"{run_tag}_summary.json"),
+        "summary_csv": _p("summary_csv", results_dir / f"{run_tag}_summary.csv"),
+        "predicted_metrics_csv": _p(
+            "predicted_metrics_csv", results_dir / f"{run_tag}_predicted_metrics.csv"
+        ),
+        "dispatch_impact_csv": _p(
+            "dispatch_impact_csv", results_dir / f"{run_tag}_dispatch_impact.csv"
+        ),
+        "constraint_blocks_csv": _p(
+            "constraint_blocks_csv", results_dir / f"{run_tag}_constraint_blocks.csv"
+        ),
+    }
+
+
+def _run_problem_subprocess(config_path: Path) -> dict[str, Any]:
+    problem_script = (ROOT / "scheduling" / "problem.py").resolve()
+    proc = subprocess.run(
+        [sys.executable, str(problem_script), "--config", str(config_path)],
+        cwd=str(ROOT),
+        capture_output=True,
+        text=True,
+    )
+    if proc.returncode != 0:
+        detail = _collapse_ws("\n".join(part for part in (proc.stdout, proc.stderr) if part), max_len=1200)
+        raise RuntimeError(
+            f"scheduling/problem.py exited with code {proc.returncode}. {detail}".strip()
+        )
+
+    cfg = _load_yaml(config_path)
+    formulation_id = str((cfg.get("formulation", {}) or {}).get("id", "run")).strip() or "run"
+    output_paths = _default_problem_output_paths(dict(cfg.get("output", {}) or {}), formulation_id)
+    summary_path = output_paths["summary_json"]
+    if not summary_path.exists():
+        raise RuntimeError(
+            f"scheduling/problem.py completed without writing summary_json: {summary_path}"
+        )
+
+    return {
+        "summary_json": str(summary_path),
+        "summary_csv": str(output_paths["summary_csv"]),
+        "results_csv": str(output_paths["results_csv"]),
+    }
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Run a suite of optimization formulations and aggregate KPIs.")
     parser.add_argument("--suite", required=True, help="Path to suite YAML.")
@@ -316,14 +389,23 @@ def main() -> None:
         default=80,
         help="Number of trailing log lines to include in diagnostics.",
     )
+    parser.add_argument(
+        "--execution-mode",
+        choices=("subprocess", "inprocess"),
+        default="subprocess",
+        help="How to launch each optimization run. Default subprocess avoids fragile in-process imports.",
+    )
     args = parser.parse_args()
 
     suite_path = Path(args.suite).resolve()
     suite = _load_yaml(suite_path)
-    try:
-        from scheduling.problem import run_optimization
-    except ModuleNotFoundError:
-        from final_optimization_folder.problem import run_optimization
+    run_optimization = None
+    if args.execution_mode == "inprocess":
+        try:
+            from scheduling.problem import run_optimization as _run_optimization
+        except ModuleNotFoundError:
+            from final_optimization_folder.problem import run_optimization as _run_optimization
+        run_optimization = _run_optimization
 
     suite_dir = suite_path.parent
     runs = list(suite.get("runs") or [])
@@ -450,12 +532,6 @@ def main() -> None:
                     cfg["output"]["results_dir"] = str(run_dir)
                     cfg["output"]["log_file"] = str((run_dir / f"{run_key}.log").resolve())
                     resolved_cfg_path = (run_dir / f"{run_key}_resolved_config.yaml").resolve()
-                    resolved_cfg_path.parent.mkdir(parents=True, exist_ok=True)
-                    with resolved_cfg_path.open("w", encoding="utf-8") as f:
-                        yaml.safe_dump(cfg, f, sort_keys=False)
-                    config_path = resolved_cfg_path
-                    row["config_path"] = str(config_path)
-                    row["resolved_config"] = str(resolved_cfg_path)
 
                 if run_dir is None:
                     raw_results_dir = str(cfg.get("output", {}).get("results_dir", "")).strip()
@@ -472,13 +548,31 @@ def main() -> None:
                 row["run_dir"] = str(run_dir) if run_dir is not None else ""
                 row["log_file"] = str(log_path) if log_path is not None else ""
 
+                failure_stage = "write_resolved_config"
+                if resolved_cfg_path is None:
+                    fallback_cfg_dir = (summary_json.parent / "_resolved_suite_configs").resolve()
+                    resolved_cfg_path = (
+                        (run_dir if run_dir is not None else fallback_cfg_dir)
+                        / f"{run_key}_resolved_config.yaml"
+                    ).resolve()
+                resolved_cfg_path.parent.mkdir(parents=True, exist_ok=True)
+                with resolved_cfg_path.open("w", encoding="utf-8") as f:
+                    yaml.safe_dump(cfg, f, sort_keys=False)
+                config_path = resolved_cfg_path
+                row["config_path"] = str(config_path)
+                row["resolved_config"] = str(resolved_cfg_path)
+
                 failure_stage = "preflight"
                 preflight = _preflight_notes(cfg)
                 row["preflight_ok"] = int(len(preflight) == 0)
                 row["preflight_notes"] = "; ".join(preflight)
 
                 failure_stage = "run_optimization"
-                res = run_optimization(cfg, config_path=str(config_path))
+                if args.execution_mode == "subprocess":
+                    res = _run_problem_subprocess(config_path)
+                else:
+                    assert run_optimization is not None
+                    res = run_optimization(cfg, config_path=str(config_path))
 
                 failure_stage = "load_summary_payload"
                 summary_path = Path(res["summary_json"])

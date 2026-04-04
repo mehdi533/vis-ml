@@ -1,26 +1,27 @@
-name: chapter5_optimization_formulation_comparison_debug
+name: chapter5_optimization_formulation_comparison_debug_local
 baseline_id: ed_debug
 
-results_root: ../../local_validation/debug/formulations
+results_root: ../../local_validation/debug_local/formulations
 
 output:
-  summary_csv: ../../local_validation/debug/formulation_comparison_debug_summary.csv
-  summary_markdown: ../../local_validation/debug/formulation_comparison_debug_summary.md
-  summary_json: ../../local_validation/debug/formulation_comparison_debug_summary.json
+  summary_csv: ../../local_validation/debug_local/formulation_comparison_debug_local_summary.csv
+  summary_markdown: ../../local_validation/debug_local/formulation_comparison_debug_local_summary.md
+  summary_json: ../../local_validation/debug_local/formulation_comparison_debug_local_summary.json
 
 runs:
   - id: ed_debug
-    name: ED (Debug)
-    description: Quick ED smoke test.
+    name: ED (Debug Local)
+    description: Fast local ED smoke test.
     base_config: ../base_optimization.yaml
     overrides:
       solver:
         name: GUROBI
         verbose: false
-        reoptimize: true
-        feasibility_checks: true
+        reoptimize: false
+        feasibility_checks: false
         extra_kwargs:
-          TimeLimit: 120
+          TimeLimit: 60
+          MIPGap: 0.001
       constraints:
         use_input: false
         use_output: false
@@ -31,17 +32,18 @@ runs:
         use_ed: true
 
   - id: ed_line_debug
-    name: ED + Line (Debug)
-    description: Quick base-case PTDF line-constraint smoke test.
+    name: ED + Line (Debug Local)
+    description: Fast local line-constraint smoke test.
     base_config: ../base_optimization.yaml
     overrides:
       solver:
         name: GUROBI
         verbose: false
-        reoptimize: true
-        feasibility_checks: true
+        reoptimize: false
+        feasibility_checks: false
         extra_kwargs:
-          TimeLimit: 120
+          TimeLimit: 60
+          MIPGap: 0.001
       constraints:
         use_input: false
         use_output: false
@@ -52,17 +54,18 @@ runs:
         use_ed: true
 
   - id: ed_surrogate_debug
-    name: ED + Surrogate (Debug)
-    description: Quick surrogate-embedding smoke test with MILP NN mode.
+    name: ED + Surrogate (Debug Local)
+    description: Fast local surrogate embedding smoke test (fixed-pattern NN).
     base_config: ../base_optimization.yaml
     overrides:
       solver:
         name: GUROBI
         verbose: false
-        reoptimize: true
-        feasibility_checks: true
+        reoptimize: false
+        feasibility_checks: false
         extra_kwargs:
-          TimeLimit: 300
+          TimeLimit: 120
+          MIPGap: 0.001
       constraints:
         use_input: true
         use_output: true
@@ -72,19 +75,21 @@ runs:
         use_n1_redispatch: false
         use_ed: true
         nn_mode: milp
+        enforce_dispatch_output_link: false
 
   - id: ed_line_surrogate_debug
-    name: ED + Line + Surrogate (Debug)
-    description: Combined line + surrogate smoke test without N-1, using MILP NN mode.
+    name: ED + Line + Surrogate (Debug Local)
+    description: Fast local line + surrogate smoke test (fixed-pattern NN).
     base_config: ../base_optimization.yaml
     overrides:
       solver:
         name: GUROBI
         verbose: false
-        reoptimize: true
-        feasibility_checks: true
+        reoptimize: false
+        feasibility_checks: false
         extra_kwargs:
-          TimeLimit: 300
+          TimeLimit: 120
+          MIPGap: 0.001
       constraints:
         use_input: true
         use_output: true
@@ -94,3 +99,4 @@ runs:
         use_n1_redispatch: false
         use_ed: true
         nn_mode: milp
+        enforce_dispatch_output_link: false

@@ -1,22 +1,22 @@
-name: chapter5_security_checks_full_formulation
+name: chapter5_security_checks_smoke
 baseline_id: ed_line_n1_surrogate
 
-results_root: ../../results/security_checks
+results_root: ../../local_validation/smoke/security_checks/formulations
 
 output:
-  summary_csv: ../../results/security_checks_summary.csv
-  summary_markdown: ../../results/security_checks_summary.md
-  summary_json: ../../results/security_checks_summary.json
+  summary_csv: ../../local_validation/smoke/security_checks_smoke_summary.csv
+  summary_markdown: ../../local_validation/smoke/security_checks_smoke_summary.md
+  summary_json: ../../local_validation/smoke/security_checks_smoke_summary.json
 
 runs:
   - id: ed_line_n1_surrogate
     name: ED + Line + N-1 + Surrogate
-    description: Main preventive formulation for security-check reporting before replay.
+    description: Smoke security-check run for the retained preventive formulation.
     base_config: ../base_optimization.yaml
     overrides:
       solver:
         extra_kwargs:
-          TimeLimit: 3600
+          TimeLimit: 300
       constraints:
         use_input: true
         use_output: true

@@ -5,13 +5,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
 source "${SCRIPT_DIR}/common_env.sh"
 
-SUITE_CONFIG="${SUITE_CONFIG:-results/thesis_optimization_results/configs/suites/formulation_comparison_debug.yaml}"
+SUITE_CONFIG="${SUITE_CONFIG:-results/thesis_optimization_results/configs/suites/formulation_comparison_debug_local.yaml}"
 STOP_ON_ERROR="${STOP_ON_ERROR:-0}"
 LOG_TAIL_LINES="${LOG_TAIL_LINES:-120}"
-mprintf_path="results/thesis_optimization_results/local_validation/debug"
-mkdir -p "${mprintf_path}"
+mkdir -p results/thesis_optimization_results/local_validation/debug_local
 
-echo "STARTING OPTIMIZATION DEBUG RUN AT $(date)"
+echo "STARTING OPTIMIZATION DEBUG LOCAL RUN AT $(date)"
 echo "SUITE_CONFIG=${SUITE_CONFIG}"
 
 if [[ "${STOP_ON_ERROR}" == "1" ]]; then
@@ -27,5 +26,5 @@ else
     "$@"
 fi
 
-echo "FINISHED OPTIMIZATION DEBUG RUN AT $(date)"
-echo "Default output root: results/thesis_optimization_results/local_validation/debug"
+echo "FINISHED OPTIMIZATION DEBUG LOCAL RUN AT $(date)"
+echo "Default output root: results/thesis_optimization_results/local_validation/debug_local"
