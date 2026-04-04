@@ -29,6 +29,15 @@ Not included:
 - `configs/suites/redispatch_sensitivity.yaml`
   Optional redispatch sensitivity run.
 
+- `configs/suites/area_vis_comparison.yaml`
+  She-style comparison augmented with an area-tied VIS formulation.
+
+- `configs/suites/zone_mismatch_vis_sensitivity.yaml`
+  Zone-based load-mismatch sensitivity suite for scheduled IBR inertia and damping.
+
+- `configs/smoke/`
+  Reduced smoke-test configs that exercise the cluster launchers without writing into the main production `results/` tree.
+
 - `configs/replay/replay_validation.yaml`
   Replay-validation config. It can read summary JSONs directly or pull all relevant runs from the suite summary.
 
@@ -39,7 +48,10 @@ Not included:
   Runs the formulation comparison suite.
 
 - `scripts/run_debug.sh`
-  Runs a lightweight local smoke-test suite for optimization wiring and exports.
+  Runs the full debug suite (includes feasibility block checks; slower on laptops).
+
+- `scripts/run_debug_local.sh`
+  Runs a faster local smoke-test suite for optimization wiring and exports.
 
 - `scripts/run_security_checks.sh`
   Runs the retained preventive formulation for security-check reporting.
@@ -52,6 +64,15 @@ Not included:
 
 - `scripts/run_she_style_comparison.sh`
   Runs a four-method optimization comparison aligned with She et al. (Method I-IV style).
+
+- `scripts/run_area_vis_comparison.sh`
+  Runs the area-VIS comparison suite and builds area-wise VIS allocation tables and figures.
+
+- `scripts/run_zone_mismatch_vis_sensitivity.sh`
+  Runs owner/zone-targeted load-mismatch scenarios and builds VIS allocation sensitivity tables and figures.
+
+- `scripts/run_cluster_smoke.sh`
+  Runs a reduced end-to-end smoke pass for the production launchers and writes outputs under `local_validation/smoke/`.
 
 - `scripts/run_postprocess.sh`
   Builds thesis tables and figures from available optimization and replay outputs.
@@ -84,37 +105,57 @@ Run from repository root.
 results/thesis_optimization_results/scripts/run_formulations.sh
 ```
 
-2. Local debug smoke test:
+2. Cluster smoke test:
+```bash
+results/thesis_optimization_results/scripts/run_cluster_smoke.sh
+```
+
+3. Local debug smoke test:
 ```bash
 results/thesis_optimization_results/scripts/run_debug.sh
 ```
 
-3. Security checks:
+3b. Fast local debug smoke test:
+```bash
+results/thesis_optimization_results/scripts/run_debug_local.sh
+```
+
+4. Security checks:
 ```bash
 results/thesis_optimization_results/scripts/run_security_checks.sh
 ```
 
-4. She et al. style method comparison:
+5. She et al. style method comparison:
 ```bash
 results/thesis_optimization_results/scripts/run_she_style_comparison.sh
 ```
 
-5. Optional redispatch sensitivity:
+6. Area-wise VIS comparison:
+```bash
+results/thesis_optimization_results/scripts/run_area_vis_comparison.sh
+```
+
+7. Zone-based load-mismatch VIS sensitivity:
+```bash
+results/thesis_optimization_results/scripts/run_zone_mismatch_vis_sensitivity.sh
+```
+
+8. Optional redispatch sensitivity:
 ```bash
 results/thesis_optimization_results/scripts/run_redispatch_sensitivity.sh
 ```
 
-6. Replay validation:
+9. Replay validation:
 ```bash
 results/thesis_optimization_results/scripts/run_replay_validation.sh
 ```
 
-7. Build thesis tables and figures from the generated outputs:
+10. Build thesis tables and figures from the generated outputs:
 ```bash
 results/thesis_optimization_results/scripts/run_postprocess.sh
 ```
 
-8. Full pipeline:
+11. Full pipeline:
 ```bash
 results/thesis_optimization_results/scripts/run_all.sh
 ```
@@ -129,10 +170,12 @@ PYTHON_BIN=../venv/bin/python results/thesis_optimization_results/scripts/run_al
 Raw suite outputs:
 - `results/thesis_optimization_results/results/formulation_comparison_summary.csv`
 - `results/thesis_optimization_results/results/formulation_comparison_summary.json`
-- `results/thesis_optimization_results/results/debug/formulation_comparison_debug_summary.csv`
-- `results/thesis_optimization_results/results/debug/formulation_comparison_debug_summary.json`
 - `results/thesis_optimization_results/results/she_style_comparison_summary.csv`
 - `results/thesis_optimization_results/results/she_style_comparison_summary.json`
+- `results/thesis_optimization_results/results/area_vis_comparison_summary.csv`
+- `results/thesis_optimization_results/results/area_vis_comparison_summary.json`
+- `results/thesis_optimization_results/results/zone_mismatch_vis_sensitivity_summary.csv`
+- `results/thesis_optimization_results/results/zone_mismatch_vis_sensitivity_summary.json`
 - `results/thesis_optimization_results/results/replay_validation_summary.csv`
 - `results/thesis_optimization_results/results/replay_validation_detail.csv`
 
@@ -147,6 +190,11 @@ Thesis-ready postprocessed artifacts:
 - `results/thesis_optimization_results/outputs/tables/formulation_kpis.csv`
 - `results/thesis_optimization_results/outputs/tables/dispatch_generator_comparison.csv`
 - `results/thesis_optimization_results/outputs/tables/dispatch_ibr_comparison.csv`
+- `results/thesis_optimization_results/outputs/tables/area_vis_comparison_unit_allocations.csv`
+- `results/thesis_optimization_results/outputs/tables/area_vis_comparison_by_area.csv`
+- `results/thesis_optimization_results/outputs/tables/zone_mismatch_vis_sensitivity_unit_allocations.csv`
+- `results/thesis_optimization_results/outputs/tables/zone_mismatch_vis_sensitivity_by_scenario.csv`
+- `results/thesis_optimization_results/outputs/tables/zone_mismatch_vis_sensitivity_by_area.csv`
 - `results/thesis_optimization_results/outputs/tables/replay_metric_summary.csv`
 - `results/thesis_optimization_results/outputs/tables/constraint_satisfaction_by_run.csv`
 - `results/thesis_optimization_results/outputs/tables/constraint_satisfaction_by_formulation.csv`
@@ -156,12 +204,22 @@ Thesis-ready postprocessed artifacts:
 - `results/thesis_optimization_results/outputs/figures/cost_impact_by_formulation.pdf`
 - `results/thesis_optimization_results/outputs/figures/dispatch_vis_comparison_<scenario>.png`
 - `results/thesis_optimization_results/outputs/figures/dispatch_vis_comparison_<scenario>.pdf`
+- `results/thesis_optimization_results/outputs/figures/area_vis_comparison_totals.png`
+- `results/thesis_optimization_results/outputs/figures/area_vis_comparison_units.png`
+- `results/thesis_optimization_results/outputs/figures/zone_mismatch_vis_sensitivity_unit_deltas.png`
+- `results/thesis_optimization_results/outputs/figures/zone_mismatch_vis_sensitivity_area_totals.png`
 - `results/thesis_optimization_results/outputs/figures/predicted_vs_replayed_metrics.png`
 - `results/thesis_optimization_results/outputs/figures/predicted_vs_replayed_metrics.pdf`
 - `results/thesis_optimization_results/outputs/figures/constraint_satisfaction_breakdown.png`
 - `results/thesis_optimization_results/outputs/figures/constraint_satisfaction_breakdown.pdf`
 
 CSV, Markdown, and LaTeX variants are written for the main thesis tables under `outputs/tables/`.
+
+Local validation outputs:
+- `results/thesis_optimization_results/local_validation/debug/`
+- `results/thesis_optimization_results/local_validation/debug_local/`
+- `results/thesis_optimization_results/local_validation/milp_isolation_local/`
+- `results/thesis_optimization_results/local_validation/smoke/`
 
 ## Mapping to Thesis Sections
 
@@ -205,19 +263,80 @@ Outputs:
 - `results/she_style_comparison_summary.json`
 - `results/she_style_formulations/<formulation>/<run>_summary.json`
 
+## Area-Wise VIS Comparison Mapping
+
+Configuration:
+- `configs/suites/area_vis_comparison.yaml`
+
+Method mapping in this repo:
+- Method I: `she_method_i_rted` (ED only)
+- Method II: `she_method_ii_dyn_fixed_md_no_reserve` (dynamic surrogate constraints, fixed M/D, no Delta-P dispatch-output link)
+- Method III: `she_method_iii_dyn_fixed_md_with_reserve` (dynamic surrogate constraints, fixed M/D, with Delta-P dispatch-output link)
+- Method IV: `she_method_iv_vis_rted_full` (dynamic surrogate constraints, optimized per-unit M/D)
+- Method IV-A: `she_method_iv_vis_rted_area_tied` (dynamic surrogate constraints, optimized M/D tied within each geographic area)
+
+Derived area split for IEEE 39 REGCV1 units:
+- `WEST`: `REGCV1_1`, `REGCV1_3`
+- `EAST`: `REGCV1_2`, `REGCV1_4`
+
+Outputs:
+- `results/area_vis_comparison_summary.csv`
+- `results/area_vis_comparison_summary.md`
+- `results/area_vis_comparison_summary.json`
+- `outputs/tables/area_vis_comparison_unit_allocations.*`
+- `outputs/tables/area_vis_comparison_by_area.*`
+- `outputs/figures/area_vis_comparison_totals.*`
+- `outputs/figures/area_vis_comparison_units.*`
+
+## Zone-Based Load Mismatch VIS Sensitivity
+
+Configuration:
+- `configs/suites/zone_mismatch_vis_sensitivity.yaml`
+
+Scenario mapping:
+- `global_uniform`: uniform load mismatch across all PQ loads
+- `zone_owner_1`: mismatch only in owner/zone bucket `1`
+- `zone_owner_2`: mismatch only in owner/zone bucket `2`
+- `zone_owner_3`: mismatch only in owner/zone bucket `3`
+- `zone_owner_4`: mismatch only in owner/zone bucket `4`
+
+Compared formulations:
+- `retained_vis`: final retained preventive formulation
+- `retained_vis_area_tied`: same formulation with area-tied `M_i, D_i`
+
+Outputs:
+- `results/zone_mismatch_vis_sensitivity_summary.csv`
+- `results/zone_mismatch_vis_sensitivity_summary.md`
+- `results/zone_mismatch_vis_sensitivity_summary.json`
+- `outputs/tables/zone_mismatch_vis_sensitivity_unit_allocations.*`
+- `outputs/tables/zone_mismatch_vis_sensitivity_by_scenario.*`
+- `outputs/tables/zone_mismatch_vis_sensitivity_by_area.*`
+- `outputs/figures/zone_mismatch_vis_sensitivity_unit_deltas.*`
+- `outputs/figures/zone_mismatch_vis_sensitivity_area_totals.*`
+
 ## Debug Smoke Test
 
 Debug suite config:
 - `configs/suites/formulation_comparison_debug.yaml`
 
-Default local launcher:
+Fast local suite config:
+- `configs/suites/formulation_comparison_debug_local.yaml`
+
+Default debug launcher:
 - `scripts/run_debug.sh`
 
-By default this runs four quick formulations without N-1 and uses `OSQP`:
+Fast local launcher:
+- `scripts/run_debug_local.sh`
+
+Both suites run four formulations without N-1:
 - `ed_debug`
 - `ed_line_debug`
-- `ed_surrogate_debug` (`nn_mode: fixed_pattern`)
-- `ed_line_surrogate_debug` (`nn_mode: fixed_pattern`)
+- `ed_surrogate_debug`
+- `ed_line_surrogate_debug`
+
+Key difference:
+- `run_debug.sh` keeps feasibility block checks enabled (`feasibility_checks: true`) to diagnose conflicts.
+- `run_debug_local.sh` disables feasibility block checks, uses shorter time limits, and keeps the surrogate in MILP mode to mirror the local isolation checks.
 
 Override the suite if needed:
 ```bash

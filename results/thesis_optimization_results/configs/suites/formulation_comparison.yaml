@@ -13,9 +13,9 @@ results_root: ../../results/formulations
 #         step_scale: 1.2
 #         load_step_time: 3.0
 #
-# Optional thesis-relevant embedding-mode sensitivities can be added by cloning a
-# surrogate run and overriding `constraints.nn_mode` to `fixed_pattern` or
-# `milp` where that comparison is part of the final chapter narrative.
+# Optional thesis-relevant surrogate sensitivities can be added by cloning a
+# surrogate run and overriding other constraint switches while keeping
+# `constraints.nn_mode: milp`.
 
 output:
   summary_csv: ../../results/formulation_comparison_summary.csv

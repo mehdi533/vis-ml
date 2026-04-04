@@ -770,6 +770,338 @@ def _resolve_ed_cost_arrays(cfg: Mapping[str, Any], ss: andes.System) -> tuple[n
     )
 
 
+def _build_input_block(cfg: Mapping[str, Any], data: dict[str, Any]) -> list[cp.Constraint]:
+    return build_input_feature_constraints(
+        x=data["x"],
+        x_seed_sc=data["x_seed_sc"],
+        m_idx=data["m_idx"],
+        d_idx=data["d_idx"],
+        m_min_sc=data["m_min_sc"],
+        m_max_sc=data["m_max_sc"],
+        d_min_sc=data["d_min_sc"],
+        d_max_sc=data["d_max_sc"],
+        pg=data["pg"] if data["pg_feat_idx"] else None,
+        pg_feature_idx=data["pg_feat_idx"] if data["pg_feat_idx"] else None,
+        x_scaler=data["x_scaler"],
+        pg_link_order=data["configured_pg_link_order"] if data["pg_feat_idx"] else None,
+        x_feature_names=data["x_features"],
+        n_genrou=data["n_genrou"],
+        n_regcv1=data["n_regcv1"],
+        genrou_m_fixed=data["genrou_m_fixed_arr"],
+        genrou_d_fixed=data["genrou_d_fixed_arr"],
+        pg_max=data["pg_max"] if data["pg_feat_idx"] else None,
+        dispatch_total_constant=data["dispatch_total_constant"] if data["pg_feat_idx"] else None,
+        vis_tie_groups=cfg.get("constraints", {}).get("vis_tie_groups"),
+    )
+
+
+def _build_output_block(cfg: Mapping[str, Any], data: dict[str, Any]) -> list[cp.Constraint]:
+    return build_output_feature_constraints(
+        y=data["y"],
+        y_min_sc=data["y_min_sc"],
+        y_max_sc=data["y_max_sc"],
+        enforce_dispatch_output_link=bool(cfg.get("constraints", {}).get("enforce_dispatch_output_link", True)),
+        y_ibr_idx=np.asarray(cfg.get("constraints", {}).get("y_ibr_idx", [2, 3, 4, 5]), dtype=int),
+        pg=data["pg"],
+        pg_min=data["pg_min"],
+        pg_max=data["pg_max"],
+        ibr_idx=np.asarray(cfg["ibr"]["indices"], dtype=int),
+        y_scaler=data["y_scaler"],
+        active_output_idx=cfg.get("constraints", {}).get(
+            "output_active_idx",
+            cfg.get("constraints", {}).get("nn_active_output_idx"),
+        ),
+    )
+
+
+def _build_nn_blocks(
+    cfg: Mapping[str, Any],
+    switches,
+    data: dict[str, Any],
+) -> tuple[dict[str, list[cp.Constraint]], dict[str, list[cp.Constraint]]]:
+    blocks: dict[str, list[cp.Constraint]] = {"nn": []}
+    nn_debug_subblocks: dict[str, list[cp.Constraint]] = {}
+    if not switches.nn:
+        return blocks, nn_debug_subblocks
+
+    nn_payload = build_nn_constraints(
+        model=data["model"],
+        x=data["x"],
+        x_min_sc=data["x_min_sc"],
+        x_max_sc=data["x_max_sc"],
+        mode=data["nn_mode"],
+        active_output_idx=cfg.get("constraints", {}).get("nn_active_output_idx"),
+        return_blocks=True,
+    )
+    if len(nn_payload) == 3:
+        y_nn_raw, constraints_nn, nn_debug_subblocks = nn_payload
+    else:
+        y_nn_raw, constraints_nn = nn_payload
+
+    if isinstance(y_nn_raw, dict):
+        y_nn_map = {int(k): v for k, v in y_nn_raw.items()}
+    else:
+        y_nn_map = {int(i): y_nn_raw[i] for i in range(int(y_nn_raw.shape[0]))}
+
+    for name, cons in nn_debug_subblocks.items():
+        blocks[name] = list(cons)
+
+    nn_link_blocks: dict[str, list[cp.Constraint]] = {}
+    for idx, expr in y_nn_map.items():
+        nn_link_blocks[f"nn_link_{int(idx)}"] = [data["y"][int(idx)] == expr]
+    for name, cons in nn_link_blocks.items():
+        blocks[name] = list(cons)
+
+    requested_nn_blocks = list(cfg.get("constraints", {}).get("nn_enabled_subblocks") or [])
+    if requested_nn_blocks:
+        requested = {str(name) for name in requested_nn_blocks}
+        selected_names = [
+            name
+            for name in [*nn_debug_subblocks.keys(), *nn_link_blocks.keys()]
+            if name in requested
+        ]
+    else:
+        selected_names = [*nn_debug_subblocks.keys(), *nn_link_blocks.keys()]
+
+    if selected_names:
+        blocks["nn"] = []
+        for name in selected_names:
+            blocks["nn"] += blocks[name]
+    else:
+        blocks["nn"] = constraints_nn + [data["y"] == y_nn_raw]
+
+    return blocks, nn_debug_subblocks
+
+
+def _build_network_blocks(
+    cfg: Mapping[str, Any],
+    switches,
+    data: dict[str, Any],
+    logger,
+) -> tuple[
+    dict[str, list[cp.Constraint]],
+    LineSecurityArtifacts | None,
+    dict[str, int | bool] | None,
+    dict[str, int | bool] | None,
+]:
+    blocks: dict[str, list[cp.Constraint]] = {
+        "line": [],
+        "n1": [],
+        "n1_redispatch": [],
+    }
+    line_artifacts = None
+    n1_stats: dict[str, int | bool] | None = None
+    n1_redispatch_stats: dict[str, int | bool] | None = None
+    if not switches.line:
+        return blocks, line_artifacts, n1_stats, n1_redispatch_stats
+
+    flows, line_constraints, line_artifacts = build_basecase_line_constraints(
+        data["ss"],
+        pg=data["pg"],
+        pd=data["pd"],
+    )
+    blocks["line"] = line_constraints
+
+    if not switches.n1:
+        return blocks, line_artifacts, n1_stats, n1_redispatch_stats
+
+    exclude_islanding_critical = bool(cfg.get("constraints", {}).get("exclude_islanding_critical_n1", True))
+    constraints_n1, n1_stats = build_n1_constraints(
+        flows,
+        line_artifacts.ppci,
+        line_artifacts.ptdf,
+        line_artifacts.fmax,
+        critical_bus_nums=line_artifacts.critical_bus_nums,
+        exclude_islanding_critical=exclude_islanding_critical,
+        collect_stats=True,
+    )
+    logger.info("n1_stats=%s", n1_stats)
+    blocks["n1"] = constraints_n1
+
+    if bool(cfg.get("constraints", {}).get("use_n1_redispatch", False)):
+        constraints_n1_r, n1_redispatch_stats, _ = build_n1_redispatch_constraints(
+            pg=data["pg"],
+            pd=data["pd"],
+            Cg=line_artifacts.Cg,
+            Cd=line_artifacts.Cd,
+            ptdf=line_artifacts.ptdf,
+            ppci=line_artifacts.ppci,
+            fmax=line_artifacts.fmax,
+            pg_min=data["pg_min"],
+            pg_max=data["pg_max"],
+            critical_bus_nums=line_artifacts.critical_bus_nums,
+            exclude_islanding_critical=exclude_islanding_critical,
+            collect_stats=True,
+        )
+        logger.info("n1_redispatch_stats=%s", n1_redispatch_stats)
+        blocks["n1_redispatch"] = constraints_n1_r
+
+    return blocks, line_artifacts, n1_stats, n1_redispatch_stats
+
+
+def _build_constraint_blocks(
+    cfg: Mapping[str, Any],
+    switches,
+    data: dict[str, Any],
+    logger,
+) -> tuple[
+    dict[str, list[cp.Constraint]],
+    dict[str, bool],
+    dict[str, list[cp.Constraint]],
+    LineSecurityArtifacts | None,
+    dict[str, int | bool] | None,
+    dict[str, int | bool] | None,
+]:
+    blocks: dict[str, list[cp.Constraint]] = {}
+
+    # 1. Input feature block
+    blocks["input"] = _build_input_block(cfg, data)
+
+    # 2. Output bounds / output-to-dispatch links
+    blocks["output"] = _build_output_block(cfg, data)
+
+    # 3. Neural-network embedding block
+    nn_blocks, nn_debug_subblocks = _build_nn_blocks(cfg, switches, data)
+    blocks.update(nn_blocks)
+
+    # 4. Network security blocks
+    network_blocks, line_artifacts, n1_stats, n1_redispatch_stats = _build_network_blocks(
+        cfg,
+        switches,
+        data,
+        logger,
+    )
+    blocks.update(network_blocks)
+
+    # 5. Economic-dispatch block
+    blocks["ed"] = build_ed_constraints(
+        pg=data["pg"],
+        pg_min=data["pg_min"],
+        pg_max=data["pg_max"],
+        pd=data["pd"],
+        step_scale=data["step_scale"],
+    )
+
+    use_n1_redispatch = switches.n1 and bool(cfg.get("constraints", {}).get("use_n1_redispatch", False))
+    block_enabled = {
+        "input": bool(switches.input),
+        "output": bool(switches.output),
+        "nn": bool(switches.nn),
+        "line": bool(switches.line),
+        "n1": bool(switches.n1),
+        "n1_redispatch": bool(use_n1_redispatch),
+        "ed": bool(switches.ed),
+    }
+    return (
+        blocks,
+        block_enabled,
+        nn_debug_subblocks,
+        line_artifacts,
+        n1_stats,
+        n1_redispatch_stats,
+    )
+
+
+def _collect_active_constraints(
+    constraint_blocks: dict[str, list[cp.Constraint]],
+    block_enabled: dict[str, bool],
+) -> list[cp.Constraint]:
+    active_constraints: list[cp.Constraint] = []
+    for key in ("input", "output", "nn", "line", "n1", "n1_redispatch", "ed"):
+        if block_enabled.get(key, False):
+            active_constraints += constraint_blocks.get(key, [])
+    return active_constraints
+
+
+def _run_feasibility_checks(
+    *,
+    objective,
+    constraint_blocks: dict[str, list[cp.Constraint]],
+    block_enabled: dict[str, bool],
+    nn_debug_subblocks: dict[str, list[cp.Constraint]],
+    switches,
+    solver_kwargs: dict[str, Any],
+    logger,
+    data: dict[str, Any],
+) -> None:
+    checks = {
+        "input": constraint_blocks["input"] + (constraint_blocks["ed"] if switches.ed else []),
+        "output": constraint_blocks["output"] + (constraint_blocks["ed"] if switches.ed else []),
+        "nn": constraint_blocks["nn"] + (constraint_blocks["ed"] if switches.ed else []),
+        "input_nn": constraint_blocks["input"] + constraint_blocks["nn"] + (constraint_blocks["ed"] if switches.ed else []),
+        "input_nn_output": constraint_blocks["input"]
+        + constraint_blocks["nn"]
+        + constraint_blocks["output"]
+        + (constraint_blocks["ed"] if switches.ed else []),
+        "line": constraint_blocks["line"] + (constraint_blocks["ed"] if switches.ed else []),
+        "line_n1": constraint_blocks["line"] + constraint_blocks["n1"] + (constraint_blocks["ed"] if switches.ed else []),
+        "line_n1_redispatch": constraint_blocks["line"]
+        + constraint_blocks["n1"]
+        + constraint_blocks["n1_redispatch"]
+        + (constraint_blocks["ed"] if switches.ed else []),
+        "combined": _collect_active_constraints(constraint_blocks, block_enabled),
+    }
+    if nn_debug_subblocks:
+        nn_base = list(nn_debug_subblocks.get("nn_shared", []))
+        if nn_base:
+            checks["nn_shared"] = nn_base + (constraint_blocks["ed"] if switches.ed else [])
+            checks["input_nn_shared"] = constraint_blocks["input"] + nn_base + (constraint_blocks["ed"] if switches.ed else [])
+        for name in sorted(nn_debug_subblocks.keys()):
+            if not name.startswith("nn_head_"):
+                continue
+            suffix = name.replace("nn_", "", 1)
+            link_name = name.replace("nn_head_", "nn_link_", 1)
+            head_constraints = nn_base + list(nn_debug_subblocks[name])
+            checks[suffix] = head_constraints + (constraint_blocks["ed"] if switches.ed else [])
+            checks[f"{suffix}_linked"] = (
+                constraint_blocks["input"]
+                + head_constraints
+                + list(constraint_blocks.get(link_name, []))
+                + (constraint_blocks["ed"] if switches.ed else [])
+            )
+
+    for name, cons in checks.items():
+        if not cons:
+            continue
+        p = cp.Problem(objective, cons)
+        p.solve(**solver_kwargs)
+        n_constraints, nnz = _problem_stats(p, data["solver_name"])
+        logger.info(
+            "check=%s status=%s objective=%s n_constraints=%s nnz=%s",
+            name,
+            p.status,
+            p.value,
+            n_constraints,
+            nnz,
+        )
+        if (
+            name == "input_nn"
+            and bool(switches.output)
+            and str(p.status) in {"optimal", "optimal_inaccurate"}
+            and data["y"].value is not None
+        ):
+            y_sc_chk = np.asarray(data["y"].value, dtype=float).reshape(-1)
+            y_lo_viol = np.maximum(data["y_min_sc"] - y_sc_chk, 0.0)
+            y_hi_viol = np.maximum(y_sc_chk - data["y_max_sc"], 0.0)
+            y_viol = np.maximum(y_lo_viol, y_hi_viol)
+            y_n_viol = int(np.sum(y_viol > 1e-9))
+            if y_n_viol > 0:
+                y_raw_chk = (y_sc_chk - data["y_scaler"].min_) / data["y_scaler"].scale_
+                viol_idx = np.where(y_viol > 1e-9)[0].astype(int).tolist()
+                max_idx = int(np.argmax(y_viol))
+                logger.info(
+                    "nn_only_output_bound_conflict n_viol=%s viol_indices=%s max_violation_sc=%s max_idx=%s "
+                    "y_raw_at_max=%s y_raw_low=%s y_raw_high=%s",
+                    y_n_viol,
+                    viol_idx,
+                    float(y_viol[max_idx]),
+                    max_idx,
+                    float(y_raw_chk[max_idx]),
+                    float(data["y_min_raw"][max_idx]),
+                    float(data["y_max_raw"][max_idx]),
+                )
+
+
 def run_optimization(cfg: dict[str, Any], *, config_path: str | None = None):
     wall_start = time.perf_counter()
 
@@ -1131,164 +1463,53 @@ def run_optimization(cfg: dict[str, Any], *, config_path: str | None = None):
     x = cp.Variable(x_seed_sc.size, name="x")
     y = cp.Variable(y_min_sc.size, name="y")
 
-    constraint_blocks: dict[str, list[cp.Constraint]] = {}
-    constraint_blocks["input"] = build_input_feature_constraints(
-        x=x,
-        x_seed_sc=x_seed_sc,
-        m_idx=m_idx,
-        d_idx=d_idx,
-        m_min_sc=m_min_sc,
-        m_max_sc=m_max_sc,
-        d_min_sc=d_min_sc,
-        d_max_sc=d_max_sc,
-        pg=pg if pg_feat_idx else None,
-        pg_feature_idx=pg_feat_idx if pg_feat_idx else None,
-        x_scaler=x_scaler,
-        pg_link_order=configured_pg_link_order if pg_feat_idx else None,
-        x_feature_names=x_features,
-        n_genrou=n_genrou,
-        n_regcv1=n_regcv1,
-        genrou_m_fixed=genrou_m_fixed_arr,
-        genrou_d_fixed=genrou_d_fixed_arr,
-        pg_max=pg_max if pg_feat_idx else None,
-        dispatch_total_constant=dispatch_total_constant if pg_feat_idx else None,
-        vis_tie_groups=cfg.get("constraints", {}).get("vis_tie_groups"),
-    )
-
-    constraint_blocks["output"] = build_output_feature_constraints(
-        y=y,
-        y_min_sc=y_min_sc,
-        y_max_sc=y_max_sc,
-        enforce_dispatch_output_link=bool(cfg.get("constraints", {}).get("enforce_dispatch_output_link", True)),
-        y_ibr_idx=np.asarray(cfg.get("constraints", {}).get("y_ibr_idx", [2, 3, 4, 5]), dtype=int),
-        pg=pg,
-        pg_min=pg_min,
-        pg_max=pg_max,
-        ibr_idx=np.asarray(cfg["ibr"]["indices"], dtype=int),
-        y_scaler=y_scaler,
-        active_output_idx=cfg.get("constraints", {}).get(
-            "output_active_idx",
-            cfg.get("constraints", {}).get("nn_active_output_idx"),
-        ),
-    )
-
-    nn_debug_subblocks: dict[str, list[cp.Constraint]] = {}
-    if switches.nn:
-        nn_payload = build_nn_constraints(
-            model=model,
-            x=x,
-            x_seed_sc=x_seed_sc,
-            x_min_sc=x_min_sc,
-            x_max_sc=x_max_sc,
-            mode=nn_mode,
-            active_output_idx=cfg.get("constraints", {}).get("nn_active_output_idx"),
-            return_blocks=True,
-        )
-        if len(nn_payload) == 3:
-            y_nn_raw, constraints_nn, nn_debug_subblocks = nn_payload
-        else:
-            y_nn_raw, constraints_nn = nn_payload
-
-        if isinstance(y_nn_raw, dict):
-            y_nn_map = {int(k): v for k, v in y_nn_raw.items()}
-        else:
-            y_nn_map = {int(i): y_nn_raw[i] for i in range(int(y_nn_raw.shape[0]))}
-
-        for name, cons in nn_debug_subblocks.items():
-            constraint_blocks[name] = list(cons)
-
-        nn_link_blocks: dict[str, list[cp.Constraint]] = {}
-        for idx, expr in y_nn_map.items():
-            nn_link_blocks[f"nn_link_{int(idx)}"] = [y[int(idx)] == expr]
-        for name, cons in nn_link_blocks.items():
-            constraint_blocks[name] = list(cons)
-
-        requested_nn_blocks = list(cfg.get("constraints", {}).get("nn_enabled_subblocks") or [])
-        if requested_nn_blocks:
-            requested = {str(name) for name in requested_nn_blocks}
-            selected_names = [
-                name
-                for name in [*nn_debug_subblocks.keys(), *nn_link_blocks.keys()]
-                if name in requested
-            ]
-        else:
-            selected_names = [*nn_debug_subblocks.keys(), *nn_link_blocks.keys()]
-
-        if selected_names:
-            constraint_blocks["nn"] = []
-            for name in selected_names:
-                constraint_blocks["nn"] += constraint_blocks[name]
-        else:
-            constraint_blocks["nn"] = constraints_nn + [y == y_nn_raw]
-    else:
-        constraint_blocks["nn"] = []
-
-    flows = None
-    line_artifacts = None
-    n1_stats: dict[str, int | bool] | None = None
-    n1_redispatch_stats: dict[str, int | bool] | None = None
-    constraint_blocks["line"] = []
-    constraint_blocks["n1"] = []
-    constraint_blocks["n1_redispatch"] = []
-    if switches.line:
-        flows, line_constraints, line_artifacts = build_basecase_line_constraints(ss, pg=pg, pd=pd)
-        constraint_blocks["line"] = line_constraints
-
-        if switches.n1:
-            exclude_islanding_critical = bool(cfg.get("constraints", {}).get("exclude_islanding_critical_n1", True))
-            constraints_n1, n1_stats = build_n1_constraints(
-                flows,
-                line_artifacts.ppci,
-                line_artifacts.ptdf,
-                line_artifacts.fmax,
-                critical_bus_nums=line_artifacts.critical_bus_nums,
-                exclude_islanding_critical=exclude_islanding_critical,
-                collect_stats=True,
-            )
-            logger.info("n1_stats=%s", n1_stats)
-            constraint_blocks["n1"] = constraints_n1
-
-            if bool(cfg.get("constraints", {}).get("use_n1_redispatch", False)):
-                constraints_n1_r, n1_redispatch_stats, _ = build_n1_redispatch_constraints(
-                    pg=pg,
-                    pd=pd,
-                    Cg=line_artifacts.Cg,
-                    Cd=line_artifacts.Cd,
-                    ptdf=line_artifacts.ptdf,
-                    ppci=line_artifacts.ppci,
-                    fmax=line_artifacts.fmax,
-                    pg_min=pg_min,
-                    pg_max=pg_max,
-                    critical_bus_nums=line_artifacts.critical_bus_nums,
-                    exclude_islanding_critical=exclude_islanding_critical,
-                    collect_stats=True,
-                )
-                logger.info("n1_redispatch_stats=%s", n1_redispatch_stats)
-                constraint_blocks["n1_redispatch"] = constraints_n1_r
-
-    constraint_blocks["ed"] = build_ed_constraints(
-        pg=pg,
-        pg_min=pg_min,
-        pg_max=pg_max,
-        pd=pd,
-        step_scale=step_scale,
-    )
-
-    use_n1_redispatch = switches.n1 and bool(cfg.get("constraints", {}).get("use_n1_redispatch", False))
-    block_enabled = {
-        "input": bool(switches.input),
-        "output": bool(switches.output),
-        "nn": bool(switches.nn),
-        "line": bool(switches.line),
-        "n1": bool(switches.n1),
-        "n1_redispatch": bool(use_n1_redispatch),
-        "ed": bool(switches.ed),
+    block_data = {
+        "model": model,
+        "ss": ss,
+        "pg": pg,
+        "x": x,
+        "y": y,
+        "x_seed_sc": x_seed_sc,
+        "x_features": x_features,
+        "x_scaler": x_scaler,
+        "y_scaler": y_scaler,
+        "m_idx": m_idx,
+        "d_idx": d_idx,
+        "m_min_sc": m_min_sc,
+        "m_max_sc": m_max_sc,
+        "d_min_sc": d_min_sc,
+        "d_max_sc": d_max_sc,
+        "pg_feat_idx": pg_feat_idx,
+        "configured_pg_link_order": configured_pg_link_order,
+        "n_genrou": n_genrou,
+        "n_regcv1": n_regcv1,
+        "genrou_m_fixed_arr": genrou_m_fixed_arr,
+        "genrou_d_fixed_arr": genrou_d_fixed_arr,
+        "dispatch_total_constant": dispatch_total_constant,
+        "pg_min": pg_min,
+        "pg_max": pg_max,
+        "pd": pd,
+        "pg_base": pg_base,
+        "x_min_sc": x_min_sc,
+        "x_max_sc": x_max_sc,
+        "y_min_raw": y_min_raw,
+        "y_max_raw": y_max_raw,
+        "y_min_sc": y_min_sc,
+        "y_max_sc": y_max_sc,
+        "nn_mode": nn_mode,
+        "step_scale": step_scale,
+        "solver_name": solver.name,
     }
-
-    active_constraints: list[cp.Constraint] = []
-    for key in ("input", "output", "nn", "line", "n1", "n1_redispatch", "ed"):
-        if block_enabled.get(key, False):
-            active_constraints += constraint_blocks.get(key, [])
+    (
+        constraint_blocks,
+        block_enabled,
+        nn_debug_subblocks,
+        line_artifacts,
+        n1_stats,
+        n1_redispatch_stats,
+    ) = _build_constraint_blocks(cfg, switches, block_data, logger)
+    use_n1_redispatch = bool(block_enabled.get("n1_redispatch", False))
+    active_constraints = _collect_active_constraints(constraint_blocks, block_enabled)
 
     for name, block in constraint_blocks.items():
         logger.info("constraint_block=%s n_constraints=%s n_scalar=%s", name, len(block), _scalar_constraint_count(block))
@@ -1303,81 +1524,16 @@ def run_optimization(cfg: dict[str, Any], *, config_path: str | None = None):
     solver_kwargs = _build_solver_kwargs(cfg, solver.name, solver.verbose, solver.reoptimize)
 
     if solver.feasibility_checks:
-        checks = {
-            "input": constraint_blocks["input"] + (constraint_blocks["ed"] if switches.ed else []),
-            "output": constraint_blocks["output"] + (constraint_blocks["ed"] if switches.ed else []),
-            "nn": constraint_blocks["nn"] + (constraint_blocks["ed"] if switches.ed else []),
-            "input_nn": constraint_blocks["input"] + constraint_blocks["nn"] + (constraint_blocks["ed"] if switches.ed else []),
-            "input_nn_output": constraint_blocks["input"]
-            + constraint_blocks["nn"]
-            + constraint_blocks["output"]
-            + (constraint_blocks["ed"] if switches.ed else []),
-            "line": constraint_blocks["line"] + (constraint_blocks["ed"] if switches.ed else []),
-            "line_n1": constraint_blocks["line"] + constraint_blocks["n1"] + (constraint_blocks["ed"] if switches.ed else []),
-            "line_n1_redispatch": constraint_blocks["line"]
-            + constraint_blocks["n1"]
-            + constraint_blocks["n1_redispatch"]
-            + (constraint_blocks["ed"] if switches.ed else []),
-            "combined": active_constraints,
-        }
-        if nn_debug_subblocks:
-            nn_base = list(nn_debug_subblocks.get("nn_shared", []))
-            if nn_base:
-                checks["nn_shared"] = nn_base + (constraint_blocks["ed"] if switches.ed else [])
-                checks["input_nn_shared"] = constraint_blocks["input"] + nn_base + (constraint_blocks["ed"] if switches.ed else [])
-            for name in sorted(nn_debug_subblocks.keys()):
-                if not name.startswith("nn_head_"):
-                    continue
-                suffix = name.replace("nn_", "", 1)
-                link_name = name.replace("nn_head_", "nn_link_", 1)
-                head_constraints = nn_base + list(nn_debug_subblocks[name])
-                checks[suffix] = head_constraints + (constraint_blocks["ed"] if switches.ed else [])
-                checks[f"{suffix}_linked"] = (
-                    constraint_blocks["input"]
-                    + head_constraints
-                    + list(constraint_blocks.get(link_name, []))
-                    + (constraint_blocks["ed"] if switches.ed else [])
-                )
-        for name, cons in checks.items():
-            if not cons:
-                continue
-            p = cp.Problem(objective, cons)
-            p.solve(**solver_kwargs)
-            n_constraints, nnz = _problem_stats(p, solver.name)
-            logger.info(
-                "check=%s status=%s objective=%s n_constraints=%s nnz=%s",
-                name,
-                p.status,
-                p.value,
-                n_constraints,
-                nnz,
-            )
-            if (
-                name == "input_nn"
-                and bool(switches.output)
-                and str(p.status) in {"optimal", "optimal_inaccurate"}
-                and y.value is not None
-            ):
-                y_sc_chk = np.asarray(y.value, dtype=float).reshape(-1)
-                y_lo_viol = np.maximum(y_min_sc - y_sc_chk, 0.0)
-                y_hi_viol = np.maximum(y_sc_chk - y_max_sc, 0.0)
-                y_viol = np.maximum(y_lo_viol, y_hi_viol)
-                y_n_viol = int(np.sum(y_viol > 1e-9))
-                if y_n_viol > 0:
-                    y_raw_chk = (y_sc_chk - y_scaler.min_) / y_scaler.scale_
-                    viol_idx = np.where(y_viol > 1e-9)[0].astype(int).tolist()
-                    max_idx = int(np.argmax(y_viol))
-                    logger.info(
-                        "nn_only_output_bound_conflict n_viol=%s viol_indices=%s max_violation_sc=%s max_idx=%s "
-                        "y_raw_at_max=%s y_raw_low=%s y_raw_high=%s",
-                        y_n_viol,
-                        viol_idx,
-                        float(y_viol[max_idx]),
-                        max_idx,
-                        float(y_raw_chk[max_idx]),
-                        float(y_min_raw[max_idx]),
-                        float(y_max_raw[max_idx]),
-                    )
+        _run_feasibility_checks(
+            objective=objective,
+            constraint_blocks=constraint_blocks,
+            block_enabled=block_enabled,
+            nn_debug_subblocks=nn_debug_subblocks,
+            switches=switches,
+            solver_kwargs=solver_kwargs,
+            logger=logger,
+            data=block_data,
+        )
 
     prob = cp.Problem(objective, active_constraints)
     solve_start = time.perf_counter()

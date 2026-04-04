@@ -67,154 +67,6 @@ def _relu_with_pruning(z, y, z_min, z_max, *, name: str):
     return constraints
 
 
-def _activation_masks_mtlshared(model, x_np: np.ndarray):
-    with torch.no_grad():
-        x = torch.tensor(x_np, dtype=torch.float32)
-        h = x
-        shared_masks = []
-        last_z = None
-        for layer in model.shared:
-            if isinstance(layer, torch.nn.Linear):
-                last_z = layer(h)
-                h = last_z
-            elif isinstance(layer, torch.nn.ReLU):
-                if last_z is None:
-                    continue
-                shared_masks.append((last_z > 0).cpu().numpy().reshape(-1))
-                h = layer(last_z)
-            elif isinstance(layer, torch.nn.Dropout):
-                h = layer(h)
-
-        head_masks = []
-        for head in model.heads:
-            h_head = h
-            last_z = None
-            for layer in head:
-                if isinstance(layer, torch.nn.Linear):
-                    last_z = layer(h_head)
-                    h_head = last_z
-                elif isinstance(layer, torch.nn.ReLU):
-                    if last_z is None:
-                        continue
-                    head_masks.append((last_z > 0).cpu().numpy().reshape(-1))
-                    h_head = layer(last_z)
-                elif isinstance(layer, torch.nn.Dropout):
-                    h_head = layer(h_head)
-    return shared_masks, head_masks
-
-
-def _activation_masks_mlp(model, x_np: np.ndarray):
-    with torch.no_grad():
-        x = torch.tensor(x_np, dtype=torch.float32)
-        h = x
-        masks = []
-        last_z = None
-        for layer in model.net:
-            if isinstance(layer, torch.nn.Linear):
-                last_z = layer(h)
-                h = last_z
-            elif isinstance(layer, torch.nn.ReLU):
-                if last_z is None:
-                    continue
-                masks.append((last_z > 0).cpu().numpy().reshape(-1))
-                h = layer(last_z)
-            elif isinstance(layer, torch.nn.Dropout):
-                h = layer(h)
-    return masks
-
-
-def _build_fixed_pattern_constraints_mlp(model, x, x_np: np.ndarray):
-    constraints = []
-    masks = _activation_masks_mlp(model, x_np)
-    h = x
-    layers = _extract_linear_layers(model.net)
-    relu_idx = 0
-    for idx, (W, b) in enumerate(layers):
-        z = W @ h + b
-        if idx == len(layers) - 1:
-            y = cp.Variable(W.shape[0], name="outputs")
-            constraints.append(y == z)
-            return y, constraints
-        out = cp.Variable(len(b), name=f"mlp_{idx}")
-        mask = masks[relu_idx]
-        relu_idx += 1
-        if np.all(mask):
-            constraints += [z >= 0, out == z]
-        elif np.all(~mask):
-            constraints += [z <= 0, out == 0]
-        else:
-            constraints += [z[mask] >= 0, out[mask] == z[mask], z[~mask] <= 0, out[~mask] == 0]
-        h = out
-    raise RuntimeError("Invalid MLP architecture for fixed pattern constraints.")
-
-
-def _build_fixed_pattern_constraints_mtlshared(
-    model,
-    x,
-    x_np: np.ndarray,
-    *,
-    active_output_idx=None,
-    collect_blocks: bool = False,
-):
-    constraints = []
-    active_outputs = set(_resolve_active_output_idx(active_output_idx, len(model.heads)))
-    block_map: dict[str, list[cp.Constraint]] = {"nn_shared": []}
-    shared_masks, head_masks = _activation_masks_mtlshared(model, x_np)
-    h = x
-    shared_layers = _extract_linear_layers(model.shared)
-    for idx, (W, b) in enumerate(shared_layers):
-        z = W @ h + b
-        out = cp.Variable(len(b), name=f"shared_{idx}")
-        mask = shared_masks[idx]
-        if np.all(mask):
-            relu_constraints = [z >= 0, out == z]
-        elif np.all(~mask):
-            relu_constraints = [z <= 0, out == 0]
-        else:
-            relu_constraints = [z[mask] >= 0, out[mask] == z[mask], z[~mask] <= 0, out[~mask] == 0]
-        constraints += relu_constraints
-        block_map["nn_shared"] += relu_constraints
-        h = out
-
-    outputs: dict[int, cp.Expression] = {}
-    head_relu_idx = 0
-    for i, head in enumerate(model.heads):
-        hh = h
-        head_layers = _extract_linear_layers(head)
-        block_name = f"nn_head_{i}"
-        if i in active_outputs:
-            block_map[block_name] = []
-        for idx, (W, b) in enumerate(head_layers):
-            if idx < len(head_layers) - 1:
-                mask = head_masks[head_relu_idx]
-                head_relu_idx += 1
-                if i not in active_outputs:
-                    continue
-            elif i not in active_outputs:
-                continue
-            z = W @ hh + b
-            if idx == len(head_layers) - 1:
-                y_out = cp.Variable(1, name=f"out{i}")
-                out_constraint = (y_out == z)
-                constraints.append(out_constraint)
-                block_map[block_name].append(out_constraint)
-                outputs[int(i)] = y_out
-                continue
-            out = cp.Variable(len(b), name=f"head{i}_{idx}")
-            if np.all(mask):
-                relu_constraints = [z >= 0, out == z]
-            elif np.all(~mask):
-                relu_constraints = [z <= 0, out == 0]
-            else:
-                relu_constraints = [z[mask] >= 0, out[mask] == z[mask], z[~mask] <= 0, out[~mask] == 0]
-            constraints += relu_constraints
-            block_map[block_name] += relu_constraints
-            hh = out
-    if collect_blocks:
-        return outputs, constraints, block_map
-    return outputs, constraints
-
-
 def _build_milp_constraints_mlp(model, x, x_min, x_max):
     constraints = []
     h = x
@@ -302,21 +154,16 @@ def _build_constraints_from_relu_model(
     x,
     *,
     mode: str,
-    x_np=None,
     x_min=None,
     x_max=None,
     active_output_idx=None,
     collect_blocks: bool = False,
 ):
     mode = mode.lower()
-    if mode not in {"fixed_pattern", "milp"}:
+    if mode != "milp":
         raise ValueError(f"Unsupported nn.mode: {mode}")
 
     if hasattr(model, "net"):
-        if mode == "fixed_pattern":
-            if x_np is None:
-                raise ValueError("x_seed_sc is required for nn.mode='fixed_pattern'.")
-            return _build_fixed_pattern_constraints_mlp(model, x, x_np)
         if x_min is None or x_max is None:
             raise ValueError("x_min_sc/x_max_sc are required for nn.mode='milp'.")
         return _build_milp_constraints_mlp(model, x, x_min, x_max)
@@ -324,16 +171,6 @@ def _build_constraints_from_relu_model(
     if hasattr(model, "shared") and hasattr(model, "heads"):
         if getattr(model, "group_blocks", None):
             raise ValueError("Grouped shared-head models are not supported in this NN MILP builder.")
-        if mode == "fixed_pattern":
-            if x_np is None:
-                raise ValueError("x_seed_sc is required for nn.mode='fixed_pattern'.")
-            return _build_fixed_pattern_constraints_mtlshared(
-                model,
-                x,
-                x_np,
-                active_output_idx=active_output_idx,
-                collect_blocks=collect_blocks,
-            )
         if x_min is None or x_max is None:
             raise ValueError("x_min_sc/x_max_sc are required for nn.mode='milp'.")
         return _build_milp_constraints_mtlshared(
@@ -387,7 +224,6 @@ def build_nn_constraints(
     *,
     model,
     x,
-    x_seed_sc: np.ndarray,
     x_min_sc: np.ndarray,
     x_max_sc: np.ndarray,
     mode: str,
@@ -402,7 +238,6 @@ def build_nn_constraints(
             model,
             x,
             mode=mode,
-            x_np=x_seed_sc,
             x_min=x_min_sc,
             x_max=x_max_sc,
             active_output_idx=active_output_idx,
@@ -431,7 +266,7 @@ def build_nn_constraints(
 
     raise ValueError(
         f"NN constraints are not implemented for model class '{model_name}'. "
-        "Supported: ReLU MLP/MTLSH with nn.mode in {'milp', 'fixed_pattern'}."
+        "Supported: ReLU MLP/MTLSH with nn.mode='milp'."
     )
 
 
