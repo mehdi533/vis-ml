@@ -19,5 +19,5 @@ sbatch results/thesis_model_results/commands/15_embedding_scaler_comparison_mtls
 sbatch results/thesis_model_results/commands/09_seed_robustness_shortlist.sh
 sbatch results/thesis_model_results/commands/10_boundary_region_eval.sh
 sbatch results/thesis_model_results/commands/11_architecture_comparison_kendall_standard.sh
-sbatch results/thesis_model_results/commands/12_optimization_ready_mtlsh.sh
+sbatch results/thesis_model_results/commands/12_optimization_ready_models.sh
 sbatch results/thesis_model_results/commands/13_convex_family_favorable.sh

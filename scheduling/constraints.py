@@ -21,6 +21,7 @@ class LineSecurityArtifacts:
     Cg: np.ndarray
     Cd: np.ndarray
     critical_bus_nums: np.ndarray
+    outage_candidate_mask: np.ndarray
 
 
 def sanitize_branch_fmax(
@@ -245,6 +246,10 @@ def build_input_feature_constraints(
             _link_derived("M_agg", (sg_m_sum + cp.sum(cp.hstack(m_expr))) / float(n_total_md))
         if n_total_md > 0 and d_expr:
             _link_derived("D_agg", (sg_d_sum + cp.sum(cp.hstack(d_expr))) / float(n_total_md))
+        # if n_total_md > 0 and m_expr:
+        #     _link_derived("M_agg", (sg_m_sum + 8) / float(n_total_md))
+        # if n_total_md > 0 and d_expr:
+        #     _link_derived("D_agg", (sg_d_sum + 8) / float(n_total_md))
 
     # Dispatch-dependent derived features (P_GENROU_TOTAL, P_REGCV1_TOTAL, reserves, etc.)
     if (
@@ -443,7 +448,9 @@ def build_ed_constraints(
     return [
         pg >= pg_min,
         pg <= pg_max,
-        cp.sum(pg) == float(np.sum(pd)) / float(step_scale),
+        # ``pd`` is already the post-step demand vector built for the active scenario.
+        # The ED balance must use the same operating point as the network constraints.
+        cp.sum(pg) == float(np.sum(pd)),
     ]
 
 
@@ -503,6 +510,12 @@ def build_basecase_line_constraints(
         Cg=Cg,
         Cd=Cd,
         critical_bus_nums=np.asarray(sorted(critical_bus_nums), dtype=int),
+        outage_candidate_mask=np.concatenate(
+            [
+                np.ones(min(int(len(pp_net.line)), int(branch.shape[0])), dtype=bool),
+                np.zeros(max(int(branch.shape[0]) - int(len(pp_net.line)), 0), dtype=bool),
+            ]
+        ),
     )
     return flows, constraints, artifacts
 
@@ -595,6 +608,7 @@ def build_n1_constraints(
     fmax: np.ndarray,
     *,
     critical_bus_nums: np.ndarray | None = None,
+    outage_candidate_mask: np.ndarray | None = None,
     exclude_islanding_critical: bool = True,
     collect_stats: bool = False,
 ) -> list[cp.Constraint] | tuple[list[cp.Constraint], dict[str, int | bool]]:
@@ -624,7 +638,15 @@ def build_n1_constraints(
     skipped_critical = 0
     active_outages = 0
 
-    for outage in range(len(fmax)):
+    candidate_mask = np.asarray(
+        outage_candidate_mask if outage_candidate_mask is not None else np.ones(len(fmax), dtype=bool),
+        dtype=bool,
+    )
+    if candidate_mask.shape[0] != len(fmax):
+        raise ValueError("outage_candidate_mask must have one entry per branch.")
+
+    candidate_outages = [int(i) for i in np.flatnonzero(candidate_mask)]
+    for outage in candidate_outages:
         if skip_mask[outage]:
             skipped_critical += 1
             continue
@@ -640,7 +662,7 @@ def build_n1_constraints(
         return constraints
 
     stats = {
-        "n_total_outages": int(len(fmax)),
+        "n_total_outages": int(len(candidate_outages)),
         "n_active_outages": int(active_outages),
         "n_skipped_nonfinite_lodf": int(skipped_nonfinite),
         "n_skipped_islanding_critical": int(skipped_critical),
@@ -663,6 +685,7 @@ def build_n1_redispatch_constraints(
     redispatch_up: np.ndarray | None = None,
     redispatch_down: np.ndarray | None = None,
     critical_bus_nums: np.ndarray | None = None,
+    outage_candidate_mask: np.ndarray | None = None,
     exclude_islanding_critical: bool = True,
     collect_stats: bool = False,
 ) -> tuple[list[cp.Constraint], cp.Variable] | tuple[list[cp.Constraint], dict[str, int | bool], cp.Variable]:
@@ -673,6 +696,9 @@ def build_n1_redispatch_constraints(
     - sum(delta_pg[c]) = 0
     - bounded by redispatch limits and/or generator bounds
     - post-outage flows computed with LODF on the redispatched pre-outage base flow.
+
+    This block is intended as an alternative to the purely preventive fixed-dispatch
+    screening in ``build_n1_constraints`` when outage-feasible recourse is allowed.
     """
     branch = ppci["branch"]
     try:
@@ -692,7 +718,14 @@ def build_n1_redispatch_constraints(
         else np.zeros(int(len(fmax)), dtype=bool)
     )
 
-    active_outages = [i for i in range(len(fmax)) if not skip_mask[i]]
+    candidate_mask = np.asarray(
+        outage_candidate_mask if outage_candidate_mask is not None else np.ones(len(fmax), dtype=bool),
+        dtype=bool,
+    )
+    if candidate_mask.shape[0] != len(fmax):
+        raise ValueError("outage_candidate_mask must have one entry per branch.")
+
+    active_outages = [i for i in np.flatnonzero(candidate_mask) if not skip_mask[i]]
     n_active = len(active_outages)
     n_gen = int(pg.shape[0])
     delta_pg = cp.Variable((n_active, n_gen), name="delta_pg_n1")
@@ -735,7 +768,7 @@ def build_n1_redispatch_constraints(
         return constraints, delta_pg
 
     stats = {
-        "n_total_outages": int(len(fmax)),
+        "n_total_outages": int(np.sum(candidate_mask)),
         "n_active_outages": int(n_active),
         "n_outages_with_constraints": int(applied_outages),
         "n_skipped_nonfinite_lodf": int(skipped_nonfinite),
@@ -817,7 +850,11 @@ def evaluate_line_security_metrics(
     skipped_nonfinite = 0
     active_outages = 0
 
-    for outage in range(len(artifacts.fmax)):
+    candidate_mask = np.asarray(
+        getattr(artifacts, "outage_candidate_mask", np.ones(len(artifacts.fmax), dtype=bool)),
+        dtype=bool,
+    )
+    for outage in np.flatnonzero(candidate_mask):
         if skip_mask[outage]:
             continue
 
@@ -852,7 +889,7 @@ def evaluate_line_security_metrics(
     metrics.update(
         {
             "n1_considered": True,
-            "n1_n_total_outages": int(len(artifacts.fmax)),
+            "n1_n_total_outages": int(np.sum(candidate_mask)),
             "n1_n_active_outages": int(active_outages),
             "n1_n_skipped_nonfinite_lodf": int(skipped_nonfinite),
             "n1_n_skipped_islanding_critical": int(np.sum(skip_mask)),

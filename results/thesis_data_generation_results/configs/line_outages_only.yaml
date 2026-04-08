@@ -3,7 +3,7 @@ output_dir: "results/thesis_data_generation_results/results/line_outages_only"
 output_csv: "simulation_results.csv"
 feature_names_path: "configs/data_generation_feature_names.yaml"
 seed: 42
-n_sims: 10000
+n_sims: 20000
 workers: 128
 stream_level: 50
 

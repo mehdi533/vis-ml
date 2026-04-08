@@ -59,7 +59,7 @@ def load_table_3_1_dispatch_cost_arrays(
     ss,
     *,
     cost_table_path: str | Path = "configs/table_3_1_dispatch_costs.yaml",
-) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     path = _resolve_repo_path(cost_table_path)
     with path.open("r", encoding="utf-8") as f:
         payload = yaml.safe_load(f) or {}
@@ -77,12 +77,14 @@ def load_table_3_1_dispatch_cost_arrays(
             "a": float(row["a"]),
             "b": float(row["b"]),
             "c": float(row["c"]),
+            "b_r": float(row.get("b_r", 0.0)),
         }
 
     gen_buses = [int(v) for v in list(ss.PV.bus.v) + list(ss.Slack.bus.v)]
     a = np.zeros(len(gen_buses), dtype=float)
     b = np.zeros(len(gen_buses), dtype=float)
     c = np.zeros(len(gen_buses), dtype=float)
+    b_r = np.zeros(len(gen_buses), dtype=float)
     missing: list[int] = []
 
     for idx, bus in enumerate(gen_buses):
@@ -93,6 +95,7 @@ def load_table_3_1_dispatch_cost_arrays(
         a[idx] = float(coeffs["a"])
         b[idx] = float(coeffs["b"])
         c[idx] = float(coeffs["c"])
+        b_r[idx] = float(coeffs["b_r"])
 
     if missing:
         raise RuntimeError(
@@ -100,7 +103,7 @@ def load_table_3_1_dispatch_cost_arrays(
             + ", ".join(str(bus) for bus in missing)
         )
 
-    return a, b, c
+    return a, b, c, b_r
 
 
 def setup_logger(log_path: Path) -> logging.Logger:
@@ -327,6 +330,13 @@ def build_post_step_p_vector(
         if name in targets:
             p_after[idx] = float(p_after[idx]) * float(step_scale)
     return p_after
+
+
+def build_prefault_p_vector(ss) -> np.ndarray:
+    pq_model = getattr(ss, "PQ", None)
+    if pq_model is None or int(getattr(pq_model, "n", 0)) <= 0:
+        return np.zeros(0, dtype=float)
+    return np.asarray(pq_model.p0.v, dtype=float).copy()
 
 
 def derive_sched_dispatch_vectors(ss) -> tuple[np.ndarray, np.ndarray]:

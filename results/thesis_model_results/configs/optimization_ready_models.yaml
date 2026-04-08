@@ -1,8 +1,10 @@
-output_dir: results/thesis_model_results/outputs/embedding_scaler_comparison_mtlsh
+output_dir: results/thesis_model_results/outputs/optimization_ready_models
 skip_if_exists: false
 seed: 42
 
 model:
+  # Compact embeddable baselines for the optimizer-ready handoff.
+  hidden_sizes: [64, 32]
   shared_sizes: [32]
   head_sizes: [16]
   activation: relu
@@ -15,17 +17,24 @@ data:
   registry_feature_groups: [x_op, x_cont, x_sched]
   registry_group_overrides:
     x_sched:
-      drop_fields: [M_agg, D_agg, P_GENROU_TOTAL, P_REGCV1_TOTAL, P_DISPATCH_TOTAL, P_REGCV1_SHARE]
+      drop_fields: [P_GENROU_TOTAL, P_REGCV1_TOTAL, P_DISPATCH_TOTAL, P_REGCV1_SHARE]
+      keep_fields: [M_agg, D_agg]
       keep_prefix_keys: [M, D]
-  # Match the reduced optimization-ready surrogate contract:
-  # keep schema-defined x_op/x_cont inputs and only M_i and D_i from x_sched.
+  # Keep the schema-defined x_op/x_cont inputs and the scheduling channels
+  # {M_i, D_i, M_agg, D_agg} from x_sched. Exclude dispatch-total/share features.
   drop_metadata_fields: true
   drop_diagnostic_fields: true
   drop_unused_y_fields: true
-  drop_cols: [line_name, plotter_csv, M_agg, D_agg]
+  drop_cols: [line_name, plotter_csv]
   drop_prefixes: [x0__]
   ignore_missing_drop_cols: true
-  target_cols: [rocof_COI, dev_COI, Delta_P_IBR_1, Delta_P_IBR_2, Delta_P_IBR_3, Delta_P_IBR_4]
+  target_cols:
+    - rocof_COI
+    - dev_COI
+    - Delta_P_IBR_1
+    - Delta_P_IBR_2
+    - Delta_P_IBR_3
+    - Delta_P_IBR_4
   use_recommended_scalers: false
 
 split:
@@ -34,7 +43,7 @@ split:
   random_state: 42
 
 training:
-  epochs: 1000
+  epochs: 700
   lr: 0.001
   weight_decay: 0.0001
   batch_train: 512
@@ -44,11 +53,12 @@ training:
   lr_scheduler_patience: 8
   lr_scheduler_factor: 0.5
   lr_scheduler_min_lr: 1e-7
+  save_test_predictions: true
 
 sweep:
-  models: [MTLSH]
-  losses: [mse]
-  scalers: [standard, minmax, robust, log1p]
+  models: [MLP, MTLSH]
+  losses: [kendall]
+  scalers: [minmax]
   seeds: [42]
   model: {}
   training: {}

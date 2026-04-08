@@ -21,5 +21,5 @@ bash results/thesis_model_results/commands/15_embedding_scaler_comparison_mtlsh.
 bash results/thesis_model_results/commands/09_seed_robustness_shortlist.sh
 bash results/thesis_model_results/commands/10_boundary_region_eval.sh
 bash results/thesis_model_results/commands/11_architecture_comparison_kendall_standard.sh
-bash results/thesis_model_results/commands/12_optimization_ready_mtlsh.sh
+bash results/thesis_model_results/commands/12_optimization_ready_models.sh
 bash results/thesis_model_results/commands/13_convex_family_favorable.sh

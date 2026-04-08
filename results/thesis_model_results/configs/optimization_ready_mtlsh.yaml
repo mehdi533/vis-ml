@@ -14,8 +14,13 @@ data:
   feature_names_path: configs/data_generation_feature_names.yaml
   use_registry_feature_allowlist: true
   registry_feature_groups: [x_op, x_cont, x_sched]
-  # Keep the schema-defined x_op/x_cont/x_sched inputs, but exclude the
-  # x0__ initial-state channels. On the current export this yields 208 inputs.
+  registry_group_overrides:
+    x_sched:
+      drop_fields: [P_GENROU_TOTAL, P_REGCV1_TOTAL, P_DISPATCH_TOTAL, P_REGCV1_SHARE]
+      keep_fields: [M_agg, D_agg]
+      keep_prefix_keys: [M, D]
+  # Keep the schema-defined x_op/x_cont inputs and the scheduling channels
+  # {M_i, D_i, M_agg, D_agg} from x_sched. Exclude dispatch-total/share features.
   drop_metadata_fields: true
   drop_diagnostic_fields: true
   drop_unused_y_fields: true
@@ -37,7 +42,7 @@ split:
   random_state: 42
 
 training:
-  epochs: 1000
+  epochs: 700
   lr: 0.001
   weight_decay: 0.0001
   batch_train: 512

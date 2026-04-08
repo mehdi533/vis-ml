@@ -183,23 +183,45 @@ def _target_uses_prefix(targets: Sequence[str], prefix: str) -> bool:
 def _collect_registry_input_allowlist(
     registry: Dict,
     include_groups: Optional[Sequence[str]] = None,
+    group_overrides: Optional[Dict[str, Dict[str, Sequence[str]]]] = None,
 ) -> tuple[list[str], list[str]]:
     group_names = list(include_groups or ["x_op", "x_cont", "x_sched"])
     allowed_cols: list[str] = []
     allowed_prefixes: list[str] = []
+    group_overrides = group_overrides or {}
 
     for group_name in group_names:
         group_cfg = registry.get(group_name, {})
         if not isinstance(group_cfg, dict):
             continue
+        override_cfg = group_overrides.get(group_name, {}) or {}
+        keep_fields = {str(value) for value in override_cfg.get("keep_fields", []) or []}
+        drop_fields = {str(value) for value in override_cfg.get("drop_fields", []) or []}
+        keep_prefix_keys = {str(value) for value in override_cfg.get("keep_prefix_keys", []) or []}
+        drop_prefix_keys = {str(value) for value in override_cfg.get("drop_prefix_keys", []) or []}
 
         for key, value in group_cfg.items():
             if key == "prefixes" and isinstance(value, dict):
-                _append_unique(allowed_prefixes, [str(prefix) for prefix in value.values()])
+                selected_prefixes = []
+                for prefix_key, prefix_value in value.items():
+                    if keep_prefix_keys and str(prefix_key) not in keep_prefix_keys:
+                        continue
+                    if str(prefix_key) in drop_prefix_keys:
+                        continue
+                    selected_prefixes.append(str(prefix_value))
+                _append_unique(allowed_prefixes, selected_prefixes)
                 continue
 
             if key.endswith("_fields") and isinstance(value, list):
-                _append_unique(allowed_cols, [str(field) for field in value])
+                selected_fields = []
+                for field in value:
+                    field_name = str(field)
+                    if keep_fields and field_name not in keep_fields:
+                        continue
+                    if field_name in drop_fields:
+                        continue
+                    selected_fields.append(field_name)
+                _append_unique(allowed_cols, selected_fields)
 
     return allowed_cols, allowed_prefixes
 
@@ -244,6 +266,7 @@ def resolve_data_config(data_cfg: Dict) -> Dict:
         allowed_cols, allowed_prefixes = _collect_registry_input_allowlist(
             registry,
             include_groups=resolved.get("registry_feature_groups"),
+            group_overrides=resolved.get("registry_group_overrides"),
         )
         resolved["allowed_feature_cols"] = allowed_cols
         resolved["allowed_feature_prefixes"] = allowed_prefixes
