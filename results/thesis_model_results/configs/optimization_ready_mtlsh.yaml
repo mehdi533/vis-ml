@@ -10,7 +10,7 @@ model:
   dropout: 0.0
 
 data:
-  csv_path: results/to_export/simulation_results.csv
+  csv_path: results/thesis_data_generation_results/results/simulation_results.csv
   feature_names_path: configs/data_generation_feature_names.yaml
   use_registry_feature_allowlist: true
   registry_feature_groups: [x_op, x_cont, x_sched]
@@ -24,7 +24,7 @@ data:
   drop_metadata_fields: true
   drop_diagnostic_fields: true
   drop_unused_y_fields: true
-  drop_cols: [line_name, plotter_csv]
+  drop_cols: [line_name, plotter_csv, reserve_p_genrou, reserve_p_ibr, reserve_q_genrou, reserve_q_ibr]
   drop_prefixes: [x0__]
   ignore_missing_drop_cols: true
   target_cols:

@@ -62,6 +62,10 @@ data:
     - M_bin_label
     - D_bin_label
     - plotter_csv
+    - reserve_p_genrou
+    - reserve_p_ibr
+    - reserve_q_genrou
+    - reserve_q_ibr
   drop_prefixes: [Delta_P_IBR_abs_, bus_freq_max_abs_dev_, bus_v_max_abs_dev_]
   ignore_missing_drop_cols: true
   use_recommended_scalers: false
