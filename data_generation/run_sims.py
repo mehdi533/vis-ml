@@ -1210,9 +1210,9 @@ def run_single_sim(
         if genrou_pg.size == 0 and pg_dispatch.size:
             genrou_pg = pg_dispatch[: ss.GENROU.n] if ss.GENROU.n else np.zeros(0)
         regcv1_pg = np.zeros(ss.REGCV1.n, dtype=float)
-        if hasattr(ss.REGCV1, "pref"):
+        if hasattr(ss.REGCV1, "Pref"):
             try:
-                regcv1_pg = np.asarray(ss.REGCV1.pref.v, dtype=float)
+                regcv1_pg = np.asarray(ss.REGCV1.Pref.v, dtype=float)
             except Exception:
                 regcv1_pg = np.zeros(ss.REGCV1.n, dtype=float)
         if pg_dispatch.size:

@@ -3,7 +3,7 @@ output_dir: "__results/to_export_no_step_ed"
 output_csv: "simulation_results.csv"
 feature_names_path: "configs/data_generation_feature_names.yaml"
 seed: 42
-n_sims: 10
+n_sims: 1
 workers: 1
 stream_level: 50
 
@@ -16,13 +16,13 @@ contingency:
     enable: true
     time: 1
     scale:
-      low: 0.8
-      high: 1.2
+      low: 1
+      high: 1.
       # Optional stratified bins for step scale sampling
-      bins:
-        - {low: 0.5, high: 0.95, prob: 0.0, label: "small"}
-        - {low: 0.95, high: 1.05, prob: 0.2, label: "medium"}
-        - {low: 1.05, high: 1.5, prob: 0.8, label: "large"}
+      # bins:
+      #   - {low: 0.5, high: 0.95, prob: 0.0, label: "small"}
+      #   - {low: 0.95, high: 1.05, prob: 0.2, label: "medium"}
+      #   - {low: 1.05, high: 1.5, prob: 0.8, label: "large"}
   line_n1:
     enable: false
     trip_time: 1.0
