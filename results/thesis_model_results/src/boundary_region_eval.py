@@ -18,6 +18,56 @@ from models.testing import compute_prediction_metrics
 from models.workflow_utils import build_model_kwargs, load_feature_name_registry, load_yaml, resolve_data_config
 
 
+def _resolve_run_schema(run_cfg: dict, fallback_target_cols):
+    resolved_cfg = run_cfg.get("resolved", {})
+    run_feature_cols = list(resolved_cfg.get("feature_cols") or [])
+    run_target_cols = list(
+        resolved_cfg.get("target_cols")
+        or run_cfg.get("data", {}).get("target_cols")
+        or fallback_target_cols
+    )
+    if not run_feature_cols:
+        raise ValueError(
+            "Run config is missing resolved.feature_cols; boundary-region evaluation "
+            "needs the exact saved training feature contract."
+        )
+    if not run_target_cols:
+        raise ValueError(
+            "Run config is missing target columns; boundary-region evaluation "
+            "needs the exact saved training target contract."
+        )
+    return run_feature_cols, run_target_cols
+
+
+def _load_run_test_split(eval_csv_path: str, run_cfg: dict, split_cfg: dict, fallback_target_cols):
+    run_data_cfg = resolve_data_config(run_cfg["data"])
+    run_feature_cols, run_target_cols = _resolve_run_schema(run_cfg, fallback_target_cols)
+    X, y, _, _ = load_dataset(
+        eval_csv_path,
+        target_cols=run_target_cols,
+        feature_cols=run_feature_cols,
+        remove_cols=run_data_cfg.get("drop_cols"),
+        remove_prefixes=run_data_cfg.get("drop_prefixes"),
+        ignore_missing_remove_cols=bool(run_data_cfg.get("ignore_missing_drop_cols", False)),
+        missing_fill_value=run_data_cfg.get("missing_fill_value"),
+    )
+    _, _, X_test, _, _, y_test = split_data(
+        X,
+        y,
+        test_size=float(split_cfg.get("test_size", 0.3)),
+        val_fraction=float(split_cfg.get("val_fraction", 0.5)),
+        random_state=int(split_cfg.get("random_state", 42)),
+    )
+    return X_test, y_test, run_feature_cols, run_target_cols
+
+
+def _infer_checkpoint_input_dim(state: dict) -> int | None:
+    for tensor in state.values():
+        if getattr(tensor, "ndim", 0) == 2:
+            return int(tensor.shape[1])
+    return None
+
+
 def _load_model(run_dir: Path, cfg: dict, feature_cols, target_cols):
     feature_name_registry = load_feature_name_registry(cfg["data"].get("feature_names_path"))
     model_type = cfg.get("resolved", {}).get("model_type") or cfg.get("sweep", {}).get("models", ["MLP"])[0]
@@ -40,7 +90,17 @@ def _load_model(run_dir: Path, cfg: dict, feature_cols, target_cols):
     else:
         state_path = run_dir / "vis_mlp_state_dict_best.pt"
     state = torch.load(state_path, map_location=device)
-    model.load_state_dict(state)
+    try:
+        model.load_state_dict(state)
+    except RuntimeError as exc:
+        checkpoint_in_dim = _infer_checkpoint_input_dim(state)
+        raise RuntimeError(
+            f"{exc}\nRun directory: {run_dir}\n"
+            f"Checkpoint input dim: {checkpoint_in_dim}\n"
+            f"Current evaluator input dim: {len(feature_cols)}\n"
+            "This usually means the evaluator is not using the exact feature "
+            "contract saved in run_config.yaml."
+        ) from exc
     model.to(device)
     model.eval()
     return model, device
@@ -101,8 +161,9 @@ def main() -> None:
 
     cfg = load_yaml(args.config)
     data_cfg = resolve_data_config(cfg["data"])
+    eval_csv_path = data_cfg["csv_path"]
     X, y, feature_cols, target_cols = load_dataset(
-        data_cfg["csv_path"],
+        eval_csv_path,
         target_cols=data_cfg["target_cols"],
         remove_cols=data_cfg.get("drop_cols"),
         remove_prefixes=data_cfg.get("drop_prefixes"),
@@ -159,15 +220,21 @@ def main() -> None:
         run_dir = Path(str(run["run_dir"]))
         run_cfg = load_yaml(run_dir / "run_config.yaml")
         model_name = str(run["model"])
+        X_run_test, y_run_test, run_feature_cols, run_target_cols = _load_run_test_split(
+            eval_csv_path,
+            run_cfg,
+            split_cfg,
+            target_cols,
+        )
         x_scaler = joblib.load(run_dir / "x_scaler.pkl")
         y_scaler = joblib.load(run_dir / "y_scaler.pkl")
-        model, device = _load_model(run_dir, run_cfg, feature_cols, target_cols)
+        model, device = _load_model(run_dir, run_cfg, run_feature_cols, run_target_cols)
 
-        X_test_norm = x_scaler.transform(X_test)
-        y_test_norm = y_scaler.transform(y_test)
+        X_test_norm = x_scaler.transform(X_run_test)
+        y_test_norm = y_scaler.transform(y_run_test)
         y_pred_norm = _predict(model, device, X_test_norm)
         y_pred = y_scaler.inverse_transform(y_pred_norm)
-        y_true = y_test
+        y_true = y_run_test
 
         for subset_name, mask in subset_masks.items():
             if int(mask.sum()) == 0:
@@ -176,7 +243,7 @@ def main() -> None:
                 model_name,
                 subset_name,
                 int(mask.sum()),
-                target_cols,
+                run_target_cols,
                 y_true[mask],
                 y_pred[mask],
                 y_test_norm[mask],

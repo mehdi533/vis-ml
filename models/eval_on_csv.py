@@ -43,6 +43,34 @@ def _resolve_state_dict_path(model_dir: Path, explicit_path: str | None) -> Path
     return model_dir / "vis_mlp_state_dict_best.pt"
 
 
+def _resolve_run_schema(cfg: dict, fallback_targets):
+    resolved_cfg = cfg.get("resolved", {})
+    feature_cols = list(resolved_cfg.get("feature_cols") or [])
+    target_cols = list(
+        resolved_cfg.get("target_cols")
+        or cfg.get("data", {}).get("target_cols")
+        or fallback_targets
+    )
+    if not feature_cols:
+        raise ValueError(
+            "Config is missing resolved.feature_cols; evaluation needs the exact "
+            "saved training feature contract."
+        )
+    if not target_cols:
+        raise ValueError(
+            "Config is missing target columns; evaluation needs the exact saved "
+            "training target contract."
+        )
+    return feature_cols, target_cols
+
+
+def _infer_checkpoint_input_dim(state: dict) -> int | None:
+    for tensor in state.values():
+        if getattr(tensor, "ndim", 0) == 2:
+            return int(tensor.shape[1])
+    return None
+
+
 def main():
     parser = argparse.ArgumentParser(description="Evaluate a trained model directory on another CSV.")
     parser.add_argument("--config", required=True, help="Training YAML (for schema + model architecture).")
@@ -71,17 +99,15 @@ def main():
     data_cfg = resolve_data_config(cfg["data"])
     feature_name_registry = load_feature_name_registry(data_cfg.get("feature_names_path"))
     targets = list(data_cfg.get("target_cols", []))
-    feature_cols_cfg = list(data_cfg.get("feature_cols", [])) or None
+    feature_cols_cfg, target_cols_cfg = _resolve_run_schema(cfg, targets)
     drops = list(data_cfg.get("drop_cols", []))
     drop_prefixes = list(data_cfg.get("drop_prefixes", []))
     fill = data_cfg.get("missing_fill_value")
 
     X, y, feature_cols, target_cols = load_dataset(
         args.csv,
-        target_cols=targets,
+        target_cols=target_cols_cfg,
         feature_cols=feature_cols_cfg,
-        allowed_feature_cols=data_cfg.get("allowed_feature_cols"),
-        allowed_feature_prefixes=data_cfg.get("allowed_feature_prefixes"),
         remove_cols=drops,
         remove_prefixes=drop_prefixes,
         ignore_missing_remove_cols=bool(data_cfg.get("ignore_missing_drop_cols", False)),
@@ -113,7 +139,17 @@ def main():
         raise FileNotFoundError(f"State dict not found: {state_path}")
 
     state = torch.load(state_path, map_location=device)
-    model.load_state_dict(state)
+    try:
+        model.load_state_dict(state)
+    except RuntimeError as exc:
+        checkpoint_in_dim = _infer_checkpoint_input_dim(state)
+        raise RuntimeError(
+            f"{exc}\nModel directory: {model_dir}\n"
+            f"Checkpoint input dim: {checkpoint_in_dim}\n"
+            f"Current evaluator input dim: {len(feature_cols)}\n"
+            "This usually means the evaluator is not using the exact feature "
+            "contract saved in run_config.yaml."
+        ) from exc
     model.to(device)
 
     ds = TensorDataset(
