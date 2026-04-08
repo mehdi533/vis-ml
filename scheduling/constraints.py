@@ -170,10 +170,12 @@ def build_input_feature_constraints(
                 constraints.append(x[int(m_idx[member])] == x[anchor_m_idx])
                 constraints.append(x[int(d_idx[member])] == x[anchor_d_idx])
 
+    # Determine dispatch-to-pg ordering (needed for both direct dispatch and reserve linking)
+    order = tuple(pg_link_order) if pg_link_order is not None else tuple(range(pg_n))
+
     if pg is not None and pg_link_idx:
         if x_scaler is None:
             raise ValueError("x_scaler is required when linking x dispatch features to pg.")
-        order = tuple(pg_link_order) if pg_link_order is not None else tuple(range(pg_n))
         if len(order) != pg_n:
             raise ValueError(f"pg_link_order length mismatch: expected {pg_n}, got {len(order)}")
         if min(order, default=0) < 0 or max(order, default=-1) >= pg_n:
@@ -252,11 +254,12 @@ def build_input_feature_constraints(
         #     _link_derived("D_agg", (sg_d_sum + 8) / float(n_total_md))
 
     # Dispatch-dependent derived features (P_GENROU_TOTAL, P_REGCV1_TOTAL, reserves, etc.)
+    # Enter this block when pg exists — even without direct dispatch features (pg_link_idx),
+    # because reserve features (P_GENROU_RESERVE_i) are derived from pg and need linking.
     if (
         x_scaler is not None
         and x_feature_names is not None
         and pg is not None
-        and pg_link_idx
     ):
         n_gen = int(n_genrou if n_genrou is not None else 0)
         n_ibr = int(n_regcv1 if n_regcv1 is not None else len(m_idx))

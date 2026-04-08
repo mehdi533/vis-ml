@@ -824,8 +824,6 @@ def _resolve_ed_cost_arrays(cfg: Mapping[str, Any], ss: andes.System) -> tuple[n
 
 
 def _build_input_block(cfg: Mapping[str, Any], data: dict[str, Any]) -> list[cp.Constraint]:
-    has_dispatch = bool(data.get("has_dispatch", False))
-    has_pg_feat = bool(data["pg_feat_idx"])
     return build_input_feature_constraints(
         x=data["x"],
         x_seed_sc=data["x_seed_sc"],
@@ -835,32 +833,31 @@ def _build_input_block(cfg: Mapping[str, Any], data: dict[str, Any]) -> list[cp.
         m_max_sc=data["m_max_sc"],
         d_min_sc=data["d_min_sc"],
         d_max_sc=data["d_max_sc"],
-        pg=data["pg"] if has_dispatch else None,
-        pg_feature_idx=data["pg_feat_idx"] if has_pg_feat else None,
+        pg=data["pg"] if data["pg_feat_idx"] else None,
+        pg_feature_idx=data["pg_feat_idx"] if data["pg_feat_idx"] else None,
         x_scaler=data["x_scaler"],
-        pg_link_order=data["configured_pg_link_order"] if has_dispatch else None,
+        pg_link_order=data["configured_pg_link_order"] if data["pg_feat_idx"] else None,
         x_feature_names=data["x_features"],
         n_genrou=data["n_genrou"],
         n_regcv1=data["n_regcv1"],
         genrou_m_fixed=data["genrou_m_fixed_arr"],
         genrou_d_fixed=data["genrou_d_fixed_arr"],
-        pg_max=data["pg_max"] if has_dispatch else None,
-        dispatch_total_constant=data["dispatch_total_constant"] if has_dispatch else None,
+        pg_max=data["pg_max"] if data["pg_feat_idx"] else None,
+        dispatch_total_constant=data["dispatch_total_constant"] if data["pg_feat_idx"] else None,
         vis_tie_groups=cfg.get("constraints", {}).get("vis_tie_groups"),
     )
 
 
 def _build_output_block(cfg: Mapping[str, Any], data: dict[str, Any]) -> list[cp.Constraint]:
-    has_dispatch = bool(data.get("has_dispatch", True))
     return build_output_feature_constraints(
         y=data["y"],
         y_min_sc=data["y_min_sc"],
         y_max_sc=data["y_max_sc"],
-        enforce_dispatch_output_link=bool(cfg.get("constraints", {}).get("enforce_dispatch_output_link", True)) and has_dispatch,
+        enforce_dispatch_output_link=bool(cfg.get("constraints", {}).get("enforce_dispatch_output_link", True)),
         y_ibr_idx=np.asarray(cfg.get("constraints", {}).get("y_ibr_idx", [2, 3, 4, 5]), dtype=int),
         pg=data["pg"],
-        pg_min=data["pg_min"] if has_dispatch else None,
-        pg_max=data["pg_max"] if has_dispatch else None,
+        pg_min=data["pg_min"],
+        pg_max=data["pg_max"],
         ibr_idx=np.asarray(cfg["ibr"]["indices"], dtype=int),
         y_scaler=data["y_scaler"],
         active_output_idx=cfg.get("constraints", {}).get(
@@ -948,8 +945,7 @@ def _build_network_blocks(
     line_artifacts = None
     n1_stats: dict[str, int | bool] | None = None
     n1_redispatch_stats: dict[str, int | bool] | None = None
-    has_dispatch = bool(data.get("has_dispatch", True))
-    if not switches.line or not has_dispatch:
+    if not switches.line:
         return blocks, line_artifacts, n1_stats, n1_redispatch_stats
 
     flows, line_constraints, line_artifacts = build_basecase_line_constraints(
@@ -1034,28 +1030,24 @@ def _build_constraint_blocks(
     )
     blocks.update(network_blocks)
 
-    # 5. Economic-dispatch block (only when dispatch variables are in the model)
-    has_dispatch = bool(data.get("has_dispatch", True))
-    if has_dispatch:
-        blocks["ed"] = build_ed_constraints(
-            pg=data["pg"],
-            pg_min=data["pg_min"],
-            pg_max=data["pg_max"],
-            pd=data["pd"],
-            step_scale=data["step_scale"],
-        )
-    else:
-        blocks["ed"] = []
+    # 5. Economic-dispatch block
+    blocks["ed"] = build_ed_constraints(
+        pg=data["pg"],
+        pg_min=data["pg_min"],
+        pg_max=data["pg_max"],
+        pd=data["pd"],
+        step_scale=data["step_scale"],
+    )
 
     use_n1_redispatch = switches.n1 and bool(cfg.get("constraints", {}).get("use_n1_redispatch", False))
     block_enabled = {
         "input": bool(switches.input),
         "output": bool(switches.output),
         "nn": bool(switches.nn),
-        "line": bool(switches.line) and has_dispatch,
-        "n1": bool(switches.n1 and not use_n1_redispatch) and has_dispatch,
-        "n1_redispatch": bool(use_n1_redispatch) and has_dispatch,
-        "ed": bool(switches.ed) and has_dispatch,
+        "line": bool(switches.line),
+        "n1": bool(switches.n1 and not use_n1_redispatch),
+        "n1_redispatch": bool(use_n1_redispatch),
+        "ed": bool(switches.ed),
     }
     return (
         blocks,
@@ -1092,8 +1084,7 @@ def _run_feasibility_checks(
 ) -> None:
     def _fresh_problem_payload():
         fresh = dict(data)
-        has_dispatch = bool(fresh.get("has_dispatch", True))
-        fresh["pg"] = cp.Variable(data["pg"].shape[0], name="pg_chk") if has_dispatch and data["pg"] is not None else None
+        fresh["pg"] = cp.Variable(data["pg"].shape[0], name="pg_chk")
         fresh["x"] = cp.Variable(data["x"].shape[0], name="x_chk")
         fresh["y"] = cp.Variable(data["y"].shape[0], name="y_chk")
         fresh_blocks, fresh_enabled, fresh_nn_debug_subblocks, _, _, _ = _build_constraint_blocks(
@@ -1103,26 +1094,22 @@ def _run_feasibility_checks(
             logger,
         )
         tie_breaker = float(fresh.get("tie_breaker", 0.0))
-        if has_dispatch:
-            objective_dispatch = _build_dispatch_objective_expr(
-                a=fresh["ed_a"],
-                b=fresh["ed_b"],
-                c=fresh["ed_c"],
-                pg=fresh["pg"],
-            )
-            objective_reserve, _, _ = _build_reserve_objective_expr(
-                b_r=fresh["ed_b_r"],
-                pg=fresh["pg"],
-                pg_max=fresh["pg_max"],
-                y=fresh["y"],
-                y_scaler=fresh["y_scaler"],
-                ibr_idx=fresh["ibr_idx"],
-                y_ibr_idx=fresh["y_ibr_idx"],
-                enable_postcont_down_term=False,
-            )
-        else:
-            objective_dispatch = 0.0
-            objective_reserve = 0.0
+        objective_dispatch = _build_dispatch_objective_expr(
+            a=fresh["ed_a"],
+            b=fresh["ed_b"],
+            c=fresh["ed_c"],
+            pg=fresh["pg"],
+        )
+        objective_reserve, _, _ = _build_reserve_objective_expr(
+            b_r=fresh["ed_b_r"],
+            pg=fresh["pg"],
+            pg_max=fresh["pg_max"],
+            y=fresh["y"],
+            y_scaler=fresh["y_scaler"],
+            ibr_idx=fresh["ibr_idx"],
+            y_ibr_idx=fresh["y_ibr_idx"],
+            enable_postcont_down_term=False,
+        )
         objective_expr = objective_dispatch + objective_reserve + (tie_breaker * cp.sum(fresh["y"]) if tie_breaker > 0 else 0)
         return fresh, fresh_blocks, fresh_enabled, fresh_nn_debug_subblocks, cp.Minimize(objective_expr)
 
@@ -1428,10 +1415,6 @@ def run_optimization(cfg: dict[str, Any], *, config_path: str | None = None):
     dispatch_feature_names = [f"P_GENROU_{i + 1}" for i in range(n_genrou)] + [
         f"P_REGCV1_{i + 1}" for i in range(n_regcv1)
     ]
-    reserve_feature_names = [f"P_GENROU_RESERVE_{i + 1}" for i in range(n_genrou)] + [
-        f"P_REGCV1_RESERVE_{i + 1}" for i in range(n_regcv1)
-    ]
-    has_reserve_features = any(name in name_to_idx for name in reserve_feature_names)
     missing_dispatch = [name for name in dispatch_feature_names if name not in name_to_idx]
 
     # Dispatch features are optional: if the surrogate model doesn't use them (e.g., trained on only M/D),
@@ -1520,32 +1503,6 @@ def run_optimization(cfg: dict[str, Any], *, config_path: str | None = None):
                 hi_raw=hi_raw,
             )
 
-    # Set bounds for reserve features when they are in x_features (reserve = pmax - pg)
-    if has_reserve_features:
-        for k, name in enumerate(reserve_feature_names):
-            if name not in name_to_idx:
-                continue
-            # Determine which dispatch_feature_names entry this reserve corresponds to
-            if k < n_genrou:
-                src_k = int(effective_pg_link_order[k]) if k < len(effective_pg_link_order) else int(k)
-            else:
-                local_ibr = k - n_genrou
-                src_k = int(effective_pg_link_order[n_genrou + local_ibr]) if (n_genrou + local_ibr) < len(effective_pg_link_order) else int(n_genrou + local_ibr)
-            pg_lo = float(min(pg_min[src_k], pg_max[src_k]))
-            pg_hi = float(max(pg_min[src_k], pg_max[src_k]))
-            # reserve_i = pmax_i - pg_i, so reserve ranges from (pmax - pmax) to (pmax - pmin)
-            reserve_lo = 0.0
-            reserve_hi = pg_hi - pg_lo
-            _set_feature_scaled_bounds(
-                x_min_sc=x_min_sc,
-                x_max_sc=x_max_sc,
-                x_scaler=x_scaler,
-                name_to_idx=name_to_idx,
-                feature_name=name,
-                lo_raw=reserve_lo,
-                hi_raw=reserve_hi,
-            )
-
     # Compute total bounds for REGCV1 (used for P_REGCV1_SHARE bounds calculation)
     if n_regcv1 > 0:
         p_regcv1_lo = float(np.sum(dispatch_raw_lo[n_genrou: n_genrou + n_regcv1]))
@@ -1614,12 +1571,7 @@ def run_optimization(cfg: dict[str, Any], *, config_path: str | None = None):
             hi_raw=max(share_lo, share_hi),
         )
 
-    # Dispatch is present when the model has P_GENROU_i / P_REGCV1_i features as inputs,
-    # OR when reserve features (P_GENROU_RESERVE_i, P_REGCV1_RESERVE_i) are present
-    # (reserves are derived from dispatch: reserve = pmax - pg).
-    has_dispatch = bool(pg_feat_idx) or has_reserve_features
-
-    pg = cp.Variable(pg_min.size, name="pg") if has_dispatch else None
+    pg = cp.Variable(pg_min.size, name="pg")
     x = cp.Variable(x_seed_sc.size, name="x")
     y = cp.Variable(y_min_sc.size, name="y")
 
@@ -1629,7 +1581,6 @@ def run_optimization(cfg: dict[str, Any], *, config_path: str | None = None):
         "pg": pg,
         "x": x,
         "y": y,
-        "has_dispatch": has_dispatch,
         "x_seed_sc": x_seed_sc,
         "x_features": x_features,
         "x_scaler": x_scaler,
@@ -1689,24 +1640,17 @@ def run_optimization(cfg: dict[str, Any], *, config_path: str | None = None):
     block_data["ibr_idx"] = ibr_idx
     block_data["y_ibr_idx"] = y_ibr_idx
     block_data["enable_postcont_reserve_term"] = enable_postcont_reserve_term
-    if has_dispatch:
-        objective_dispatch = _build_dispatch_objective_expr(a=a, b=b, c=c, pg=pg)
-        objective_reserve, objective_reserve_up, objective_reserve_postcont = _build_reserve_objective_expr(
-            b_r=b_r,
-            pg=pg,
-            pg_max=pg_max,
-            y=y,
-            y_scaler=y_scaler,
-            ibr_idx=ibr_idx,
-            y_ibr_idx=y_ibr_idx,
-            enable_postcont_down_term=enable_postcont_reserve_term,
-        )
-    else:
-        objective_dispatch: cp.Expression | float = 0.0
-        objective_reserve: cp.Expression | float = 0.0
-        objective_reserve_up: cp.Expression | float = 0.0
-        objective_reserve_postcont: cp.Expression | float = 0.0
-        logger.info("No dispatch features in model — skipping dispatch/reserve objectives.")
+    objective_dispatch = _build_dispatch_objective_expr(a=a, b=b, c=c, pg=pg)
+    objective_reserve, objective_reserve_up, objective_reserve_postcont = _build_reserve_objective_expr(
+        b_r=b_r,
+        pg=pg,
+        pg_max=pg_max,
+        y=y,
+        y_scaler=y_scaler,
+        ibr_idx=ibr_idx,
+        y_ibr_idx=y_ibr_idx,
+        enable_postcont_down_term=enable_postcont_reserve_term,
+    )
     objective_expr = objective_dispatch + objective_reserve + (float(tie_breaker) * cp.sum(y) if tie_breaker > 0 else 0)
 
     md_reg_weight = float(cfg.get("constraints", {}).get("md_regularization_weight", 0.0))
@@ -1773,14 +1717,11 @@ def run_optimization(cfg: dict[str, Any], *, config_path: str | None = None):
     infeasible_status = {"infeasible", "infeasible_inaccurate", "unbounded", "infeasible_or_unbounded"}
     is_infeasible = status in infeasible_status
 
-    if has_dispatch and pg is not None:
-        pg_opt = (
-            np.asarray(pg.value, dtype=float).reshape(-1)
-            if pg.value is not None
-            else np.full(pg_min.size, np.nan, dtype=float)
-        )
-    else:
-        pg_opt = pg_base.copy()
+    pg_opt = (
+        np.asarray(pg.value, dtype=float).reshape(-1)
+        if pg.value is not None
+        else np.full(pg_min.size, np.nan, dtype=float)
+    )
     if x.value is not None:
         x_opt_sc = np.asarray(x.value, dtype=float).reshape(-1)
     elif is_infeasible:
