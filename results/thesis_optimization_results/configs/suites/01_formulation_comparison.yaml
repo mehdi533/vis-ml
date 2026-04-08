@@ -91,7 +91,7 @@ runs:
         use_n1_redispatch: false
         use_ed: true
         nn_mode: milp
-        enforce_dispatch_output_link: false
+        enforce_dispatch_output_link: true
 
   - id: ed_line_n1_surrogate
     name: ED + Line + N-1 + Surrogate
@@ -110,7 +110,7 @@ runs:
         use_n1_redispatch: false
         use_ed: true
         nn_mode: milp
-        enforce_dispatch_output_link: false
+        enforce_dispatch_output_link: true
 
   - id: ed_line_n1_surrogate_redispatch
     name: ED + Line + N-1 + Surrogate + Redispatch
@@ -129,4 +129,4 @@ runs:
         use_n1_redispatch: true
         use_ed: true
         nn_mode: milp
-        enforce_dispatch_output_link: false
+        enforce_dispatch_output_link: true

@@ -641,7 +641,7 @@ def _build_dispatch_objective_expr(
     c: np.ndarray,
     pg: cp.Expression,
 ) -> cp.Expression:
-    return cp.sum(a + cp.multiply(b, pg) + cp.multiply(c, cp.square(pg)))
+    return cp.sum(c + cp.multiply(b, pg) + cp.multiply(a, cp.square(pg)))
 
 
 def _build_reserve_objective_expr(

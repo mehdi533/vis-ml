@@ -24,18 +24,32 @@ FORMULATION_COLORS = {
 def set_thesis_style() -> None:
     plt.rcParams.update(
         {
-            "figure.figsize": (6.4, 4.2),
+            "figure.figsize": (7.0, 4.4),
             "figure.dpi": 140,
+            "savefig.dpi": 300,
+            "font.family": "DejaVu Serif",
+            "axes.facecolor": "white",
+            "figure.facecolor": "white",
             "axes.grid": True,
-            "grid.alpha": 0.2,
-            "grid.linestyle": "--",
+            "grid.alpha": 0.18,
+            "grid.linestyle": "-",
+            "grid.color": "#6e6259",
             "axes.spines.top": False,
             "axes.spines.right": False,
-            "axes.titlesize": 11,
-            "axes.labelsize": 10,
-            "legend.fontsize": 8.5,
-            "xtick.labelsize": 8.5,
-            "ytick.labelsize": 8.5,
+            "axes.spines.left": True,
+            "axes.spines.bottom": True,
+            "axes.edgecolor": "#4b433d",
+            "axes.linewidth": 0.8,
+            "axes.titlesize": 12,
+            "axes.titleweight": "semibold",
+            "axes.labelsize": 10.5,
+            "axes.labelcolor": "#2b2826",
+            "legend.fontsize": 9,
+            "legend.frameon": False,
+            "xtick.labelsize": 9,
+            "ytick.labelsize": 9,
+            "xtick.color": "#2b2826",
+            "ytick.color": "#2b2826",
         }
     )
 
@@ -49,7 +63,6 @@ def save_figure(fig: plt.Figure, stem: str, output_dir: Optional[Path] = None) -
     target_dir.mkdir(parents=True, exist_ok=True)
     png_path = target_dir / f"{stem}.png"
     pdf_path = target_dir / f"{stem}.pdf"
-    fig.tight_layout()
     fig.savefig(png_path, bbox_inches="tight")
     fig.savefig(pdf_path, bbox_inches="tight")
     return png_path, pdf_path

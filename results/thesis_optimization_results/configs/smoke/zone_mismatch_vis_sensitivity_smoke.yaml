@@ -28,7 +28,7 @@ runs:
           TimeLimit: 300
       constraints:
         nn_mode: milp
-        enforce_dispatch_output_link: false
+        enforce_dispatch_output_link: true
 
   - id: retained_vis_area_tied
     comparison_family: zone_mismatch_vis_smoke
@@ -41,7 +41,7 @@ runs:
           TimeLimit: 300
       constraints:
         nn_mode: milp
-        enforce_dispatch_output_link: false
+        enforce_dispatch_output_link: true
         vis_tie_groups:
           - [0, 2]
           - [1, 3]

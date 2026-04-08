@@ -10,6 +10,7 @@ from typing import Any
 
 import andes
 import numpy as np
+import pandas as pd
 import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -177,6 +178,43 @@ def _default_metric_map(output_names: list[str]) -> dict[str, str]:
     return out
 
 
+def _metric_category(metric_name: str) -> str:
+    name = str(metric_name)
+    if name == "rocof_COI":
+        return "rocof"
+    if name == "dev_COI":
+        return "frequency_deviation"
+    if name.startswith("Delta_P_IBR_"):
+        return "ibr_power"
+    return "other"
+
+
+def _load_ibr_limit_map(summary: dict[str, Any]) -> dict[str, dict[str, float]]:
+    artifacts = dict(summary.get("artifacts", {}) or {})
+    raw = str(artifacts.get("dispatch_impact_csv", "")).strip()
+    if not raw:
+        return {}
+    path = Path(raw)
+    if not path.exists():
+        return {}
+    df = pd.read_csv(path)
+    ibr_df = df.loc[df["row_type"].astype(str) == "ibr_summary"].copy()
+    if ibr_df.empty:
+        return {}
+
+    out: dict[str, dict[str, float]] = {}
+    for _, row in ibr_df.iterrows():
+        idx = int(float(row.get("index", 0)))
+        out[f"Delta_P_IBR_{idx + 1}"] = {
+            "scheduled_headroom_up": float(row.get("headroom_up", np.nan)),
+            "scheduled_headroom_down": float(row.get("headroom_down", np.nan)),
+            "scheduled_reserve_up": float(row.get("reserve_up", np.nan)),
+            "physical_min": float(row.get("delta_p_physical_min", np.nan)),
+            "physical_max": float(row.get("delta_p_physical_max", np.nan)),
+        }
+    return out
+
+
 def _limit_membership(value: float, low: float, high: float) -> int:
     if not (np.isfinite(value) and np.isfinite(low) and np.isfinite(high)):
         return -1
@@ -252,12 +290,14 @@ def main() -> None:
             pred_values = np.asarray(summary.get("predicted_metrics", {}).get("values", []), dtype=float)
             pred_lo = np.asarray(summary.get("predicted_metrics", {}).get("limits_low", []), dtype=float)
             pred_hi = np.asarray(summary.get("predicted_metrics", {}).get("limits_high", []), dtype=float)
+            ibr_limit_map = _load_ibr_limit_map(summary)
 
             metric_map = _default_metric_map(pred_names)
             metric_map.update(explicit_metric_map)
 
             ss = andes.load(system_case, setup=False)
             ss.config.freq = float(opt_cfg.get("system", {}).get("frequency_hz", 50.0))
+            system_base_mva = float(getattr(getattr(ss, "config", None), "mva", np.nan))
             _apply_base_scale(ss, base_scale)
             _apply_dispatch(ss, pg_opt)
             _apply_md(ss, m_opt, d_opt)
@@ -298,6 +338,11 @@ def main() -> None:
             replay_ok_flags: list[int] = []
             feasibility_cases: list[str] = []
             n_viol = 0
+            n_headroom_exceeded = 0
+            n_physical_limit_exceeded = 0
+            rocof_violation_count = 0
+            frequency_violation_count = 0
+            ibr_power_violation_count = 0
 
             for i, name in enumerate(pred_names):
                 replay_vals[i] = _lookup_metric(y_metrics, name, metric_map)
@@ -313,8 +358,15 @@ def main() -> None:
                 predicted_ok = _limit_membership(pred_val, low, high)
                 replay_ok = _limit_membership(replay_val, low, high)
                 feasibility_case = _feasibility_case(predicted_ok, replay_ok)
+                metric_category = _metric_category(name)
                 if replay_ok == 0:
                     n_viol += 1
+                    if metric_category == "rocof":
+                        rocof_violation_count += 1
+                    elif metric_category == "frequency_deviation":
+                        frequency_violation_count += 1
+                    elif metric_category == "ibr_power":
+                        ibr_power_violation_count += 1
                 predicted_ok_flags.append(predicted_ok)
                 replay_ok_flags.append(replay_ok)
                 feasibility_cases.append(feasibility_case)
@@ -325,6 +377,46 @@ def main() -> None:
                         violation_mag = float(low - replay_val)
                     elif np.isfinite(high) and replay_val > high:
                         violation_mag = float(replay_val - high)
+
+                ibr_limits = dict(ibr_limit_map.get(name, {}) or {})
+                scheduled_headroom_up = float(ibr_limits.get("scheduled_headroom_up", np.nan))
+                scheduled_headroom_down = float(ibr_limits.get("scheduled_headroom_down", np.nan))
+                scheduled_reserve_up = float(ibr_limits.get("scheduled_reserve_up", np.nan))
+                physical_min = float(ibr_limits.get("physical_min", np.nan))
+                physical_max = float(ibr_limits.get("physical_max", np.nan))
+
+                headroom_violation_magnitude = 0.0
+                headroom_violation_flag = 0
+                if np.isfinite(replay_val):
+                    if np.isfinite(scheduled_headroom_up) and replay_val > scheduled_headroom_up + 1e-8:
+                        headroom_violation_magnitude = float(replay_val - scheduled_headroom_up)
+                        headroom_violation_flag = 1
+                    elif np.isfinite(scheduled_headroom_down) and replay_val < -scheduled_headroom_down - 1e-8:
+                        headroom_violation_magnitude = float((-scheduled_headroom_down) - replay_val)
+                        headroom_violation_flag = 1
+                if headroom_violation_flag:
+                    n_headroom_exceeded += 1
+
+                physical_limit_violation_magnitude = 0.0
+                physical_limit_violation_flag = 0
+                if np.isfinite(replay_val):
+                    if np.isfinite(physical_min) and replay_val < physical_min - 1e-8:
+                        physical_limit_violation_magnitude = float(physical_min - replay_val)
+                        physical_limit_violation_flag = 1
+                    elif np.isfinite(physical_max) and replay_val > physical_max + 1e-8:
+                        physical_limit_violation_magnitude = float(replay_val - physical_max)
+                        physical_limit_violation_flag = 1
+                if physical_limit_violation_flag:
+                    n_physical_limit_exceeded += 1
+
+                relevant_limit = np.nan
+                if metric_category == "ibr_power" and np.isfinite(replay_val):
+                    if replay_val >= 0:
+                        relevant_limit = scheduled_headroom_up if np.isfinite(scheduled_headroom_up) else physical_max
+                    else:
+                        relevant_limit = -scheduled_headroom_down if np.isfinite(scheduled_headroom_down) else physical_min
+                elif np.isfinite(replay_val):
+                    relevant_limit = high if replay_val >= 0 else low
 
                 detail_rows.append(
                     {
@@ -349,6 +441,18 @@ def main() -> None:
                         "is_replay_within_limits": int(replay_ok),
                         "feasibility_case": feasibility_case,
                         "replay_violation_magnitude": violation_mag,
+                        "metric_category": metric_category,
+                        "system_base_mva": system_base_mva,
+                        "scheduled_headroom_up": scheduled_headroom_up,
+                        "scheduled_headroom_down": scheduled_headroom_down,
+                        "scheduled_reserve_up": scheduled_reserve_up,
+                        "physical_min": physical_min,
+                        "physical_max": physical_max,
+                        "scheduled_headroom_violation_flag": int(headroom_violation_flag),
+                        "scheduled_headroom_violation_magnitude": float(headroom_violation_magnitude),
+                        "physical_limit_violation_flag": int(physical_limit_violation_flag),
+                        "physical_limit_violation_magnitude": float(physical_limit_violation_magnitude),
+                        "relevant_limit": float(relevant_limit) if np.isfinite(relevant_limit) else np.nan,
                     }
                 )
 
@@ -375,6 +479,12 @@ def main() -> None:
                     "mean_rel_error": float(np.nanmean(rel_err)) if rel_err.size else np.nan,
                     "max_rel_error": float(np.nanmax(rel_err)) if rel_err.size else np.nan,
                     "replay_violation_count": int(n_viol),
+                    "rocof_violation_count": int(rocof_violation_count),
+                    "frequency_violation_count": int(frequency_violation_count),
+                    "ibr_power_violation_count": int(ibr_power_violation_count),
+                    "scheduled_headroom_exceedance_count": int(n_headroom_exceeded),
+                    "physical_limit_exceedance_count": int(n_physical_limit_exceeded),
+                    "system_base_mva": system_base_mva,
                     "summary_json": str(summary_path),
                     "optimization_config": str(opt_cfg_path),
                 }

@@ -26,7 +26,7 @@ runs:
         use_n1_redispatch: false
         use_ed: true
         nn_mode: milp
-        enforce_dispatch_output_link: false
+        enforce_dispatch_output_link: true
 
   - id: ed_line_n1_surrogate_redispatch
     name: Redispatch Sensitivity
@@ -45,4 +45,4 @@ runs:
         use_n1_redispatch: true
         use_ed: true
         nn_mode: milp
-        enforce_dispatch_output_link: false
+        enforce_dispatch_output_link: true

@@ -641,7 +641,7 @@ def _build_dispatch_objective_expr(
     c: np.ndarray,
     pg: cp.Expression,
 ) -> cp.Expression:
-    return cp.sum(a + cp.multiply(b, pg) + cp.multiply(c, cp.square(pg)))
+    return cp.sum(c + cp.multiply(b, pg) + cp.multiply(a, cp.square(pg)))
 
 
 def _build_reserve_objective_expr(
@@ -1614,12 +1614,13 @@ def run_optimization(cfg: dict[str, Any], *, config_path: str | None = None):
             hi_raw=max(share_lo, share_hi),
         )
 
-    # Dispatch is present when the model has P_GENROU_i / P_REGCV1_i features as inputs,
-    # OR when reserve features (P_GENROU_RESERVE_i, P_REGCV1_RESERVE_i) are present
-    # (reserves are derived from dispatch: reserve = pmax - pg).
-    has_dispatch = bool(pg_feat_idx) or has_reserve_features
+    # Dispatch variables always exist — the ED cost, power balance, and PTDF line
+    # flow constraints need pg regardless of whether the surrogate model includes
+    # dispatch features.  When dispatch/reserve features ARE in the surrogate,
+    # pg is additionally linked to x via pg_feat_idx.
+    has_dispatch = True
 
-    pg = cp.Variable(pg_min.size, name="pg") if has_dispatch else None
+    pg = cp.Variable(pg_min.size, name="pg")
     x = cp.Variable(x_seed_sc.size, name="x")
     y = cp.Variable(y_min_sc.size, name="y")
 

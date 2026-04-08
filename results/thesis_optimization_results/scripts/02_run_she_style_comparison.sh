@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=/dev/null
 source "${SCRIPT_DIR}/common_env.sh"
 
-SUITE_CONFIG="${SUITE_CONFIG:-results/thesis_optimization_results/configs/suites/formulation_comparison.yaml}"
+SUITE_CONFIG="${SUITE_CONFIG:-results/thesis_optimization_results/configs/suites/02_she_vis_rted_style_comparison.yaml}"
 STOP_ON_ERROR="${STOP_ON_ERROR:-0}"
 LOG_TAIL_LINES="${LOG_TAIL_LINES:-120}"
 

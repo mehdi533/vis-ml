@@ -16,7 +16,7 @@ system:
 scenario:
   base_scale: 0.6
   step_scale: 1.2
-  load_step_time: 3.0
+  load_step_time: 1.0
 
 seed:
   M: 4.0
@@ -24,18 +24,15 @@ seed:
 
 model:
   # This must point to an optimization-ready surrogate artifact bundle.
-  # The full thesis shortlist models under results/thesis_model_results/... are trained on
-  # 1206 inputs, including ~998 x0__ initial-state channels and line-contingency fields.
-  # Those are not directly buildable by the current scheduling optimizer.
-  type: MTLSharedHeads
+  type: MTLSH
   model_dir: results/thesis_model_results/outputs/optimization_ready_mtlsh/MTLSH__kendall__minmax__seed42
-  retain_reason: "Retained surrogate: best accuracy/complexity compromise among embeddable candidates."
+  retain_reason: "Retained surrogate: MTLSH with M_i, D_i, M_agg, D_agg only."
   in_dim: 178
   n_tasks: 6
   shared_sizes: [32]
   head_sizes: [16]
   dropout: 0.0
-  convex: true
+  convex: false
 
 features:
   # Strict policy: build all surrogate inputs from the current system state only.
@@ -44,25 +41,16 @@ features:
   # For line-contingency embedding runs, set:
   # contingency_mode: line
   # contingency_line_uid: <line_uid>
-  # Resolve optimization x_features from the shared feature registry, excluding x0__ channels.
-  x_features_from_registry: true
+  # Resolve optimization x_features directly from the retained model bundle so
+  # the optimizer uses the exact exported training contract.
+  x_features_from_registry: false
+  x_features_from_model_dir: true
   feature_names_path: configs/data_generation_feature_names.yaml
   registry_feature_groups: ["x_op", "x_cont", "x_sched"]
   exclude_prefixes: ["x0__"]
-  # Apply the same feature filters used in model training.
-  # The model was trained with only M_agg, D_agg, M_i, D_i from x_sched (no dispatch or reserves).
-  registry_group_overrides:
-    x_sched:
-      keep_fields:
-      - M_agg
-      - D_agg
-      keep_prefix_keys:
-      - M
-      - D
   registry_filter_to_buildable: true
   registry_align_to_model_contract: true
   registry_include_unbuildable_model_features: false
-  x_features_from_model_dir: false
   missing_feature_source: none
   fixed_source_override_non_sched: false
   allow_missing_features: false
@@ -76,8 +64,8 @@ ibr:
   indices: [0, 5, 7, 8]
 
 bounds:
-  M_bounds: [0.0, 8.0]
-  D_bounds: [0.0, 6.0]
+  M_bounds: [0, 8.0]
+  D_bounds: [0, 6.0]
   y_min: [-1, -0.8, -5.0, -5.0, -5.0, -5.0]
   y_max: [1, 0.8, 5.0, 5.0, 5.0, 5.0]
 
@@ -92,7 +80,7 @@ constraints:
   use_ed: true
   nn_mode: milp
   y_ibr_idx: [2, 3, 4, 5]
-  enforce_dispatch_output_link: false
+  enforce_dispatch_output_link: true
 
 ed_costs:
   cost_table_path: configs/table_3_1_dispatch_costs.yaml

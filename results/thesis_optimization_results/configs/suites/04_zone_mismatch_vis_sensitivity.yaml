@@ -60,7 +60,7 @@ runs:
           TimeLimit: 3600
       constraints:
         nn_mode: milp
-        enforce_dispatch_output_link: false
+        enforce_dispatch_output_link: true
 
   - id: retained_vis_area_tied
     comparison_family: zone_mismatch_vis
@@ -73,7 +73,7 @@ runs:
           TimeLimit: 3600
       constraints:
         nn_mode: milp
-        enforce_dispatch_output_link: false
+        enforce_dispatch_output_link: true
         vis_tie_groups:
           - [0, 2]  # WEST: REGCV1_1, REGCV1_3
           - [1, 3]  # EAST: REGCV1_2, REGCV1_4

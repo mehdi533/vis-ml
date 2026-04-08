@@ -1,17 +1,17 @@
-name: chapter5_optimization_formulation_comparison_smoke
+name: chapter5_optimization_formulation_comparison_smoke_mtlsh176
 baseline_id: ed
 
-results_root: ../../local_validation/smoke/formulations/formulations
+results_root: ../../local_validation/smoke_mtlsh176/formulations
 
 output:
-  summary_csv: ../../local_validation/smoke/formulation_comparison_smoke_summary.csv
-  summary_markdown: ../../local_validation/smoke/formulation_comparison_smoke_summary.md
-  summary_json: ../../local_validation/smoke/formulation_comparison_smoke_summary.json
+  summary_csv: ../../local_validation/smoke_mtlsh176/formulation_comparison_smoke_summary.csv
+  summary_markdown: ../../local_validation/smoke_mtlsh176/formulation_comparison_smoke_summary.md
+  summary_json: ../../local_validation/smoke_mtlsh176/formulation_comparison_smoke_summary.json
 
 runs:
   - id: ed
     name: ED
-    description: Smoke baseline for the Chapter 5 formulation suite.
+    description: Smoke baseline for the Chapter 5 formulation suite with the 176-feature MTLSH handoff.
     base_config: ../base_optimization.yaml
     overrides:
       solver:
@@ -28,7 +28,7 @@ runs:
 
   - id: ed_surrogate
     name: ED + Surrogate
-    description: Smoke surrogate-only run for replay and export validation.
+    description: Smoke surrogate-only run for replay and export validation with the 176-feature MTLSH handoff.
     base_config: ../base_optimization.yaml
     overrides:
       solver:
@@ -47,7 +47,7 @@ runs:
 
   - id: ed_line_n1_surrogate
     name: ED + Line + N-1 + Surrogate
-    description: Smoke retained formulation for the full preventive path.
+    description: Smoke retained formulation for the full preventive path with the 176-feature MTLSH handoff.
     base_config: ../base_optimization.yaml
     overrides:
       solver:

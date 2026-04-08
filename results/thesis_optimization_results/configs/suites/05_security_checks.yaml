@@ -26,4 +26,4 @@ runs:
         use_n1_redispatch: false
         use_ed: true
         nn_mode: milp
-        enforce_dispatch_output_link: false
+        enforce_dispatch_output_link: true
