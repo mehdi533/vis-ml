@@ -3,7 +3,18 @@
 This module runs ANDES simulations and writes a flat dataset for VIS model training/evaluation.
 
 Code entrypoint: `data_generation/run_sims.py`  
-Config file: `data_generation/generation.yaml`
+Config file: `configs/data_generation/generation.yaml`
+
+Core extension points (Phase 1+2 refactor):
+
+- Disturbance dispatcher: `data_generation/disturbance_dispatch.py`
+  - `DisturbanceSpec`
+  - `DisturbanceHandler`
+  - `HANDLERS` and `DisturbanceDispatcher`
+- Stable API surface: `data_generation/run_sims.py`
+  - `load_config(path)`
+  - `run_generation(config_path)`
+  - `run_one_sim(config, sim_id, rng=None)`
 
 ## YAML configuration
 
@@ -16,6 +27,7 @@ Top-level keys:
 - `n_sims`: number of sampled scenarios.
 - `workers`: number of multiprocessing workers.
 - `stream_level`: ANDES logger level.
+- `features.include_initial_state` (default true): include initial dynamic-state (`x0__*`) columns.
 
 Sampling/disturbance:
 
@@ -59,7 +71,7 @@ Plot export:
 
 ## What is saved in CSV
 
-Column schema is built in `run_sims._build_fieldnames(...)`.
+Column schema is built via `data_generation.extract_metrics.simulation_row_fieldnames(...)`.
 
 Core metadata:
 
@@ -114,7 +126,7 @@ Sampling/ED diagnostics:
 - `ed_total_cost`, `ed_constant_cost`, `ed_energy_cost`, `ed_reserve_cost`, `ed_quadratic_cost`
 - Prefault reserve aggregates: `reserve_p_genrou`, `reserve_p_ibr`, `reserve_q_genrou`, `reserve_q_ibr`
 - Per-unit schedulable active reserves: `P_GENROU_RESERVE_i`, `P_REGCV1_RESERVE_i`
-- Initial dynamic-state columns are written inline to the main CSV with the configured `x0__` prefix.
+- Initial dynamic-state columns are written inline to the main CSV with the configured `x0__` prefix when `features.include_initial_state=true`.
 
 ## How key quantities are computed
 

@@ -1,0 +1,35 @@
+tds:
+  t_end: 20.0
+  t_step: 0.01
+  method: backeuler
+  no_tqdm: true
+  criteria: 0
+
+contingency:
+  type: load_step
+  time: 1.0
+  scale: 1.4
+
+limits:
+  frequency_hz: 50.0
+  delta_f_hz: 0.65
+  rocof_hz_per_s: 1.0
+
+output:
+  directory: ../../local_validation/replay_trace_tightfreq_custom_065
+  style_config: configs/figure/thesis_plot_style.yaml
+  title: ""
+  panel_title: ""
+  plot_mode: combined
+  ibr_scale: 100.0
+  ibr_unit: MW
+
+runs:
+  - label: "Default"
+    summary_json: ../../results/tight_frequency_custom/global_b0p5_s1p4/retained_default/retained_default__global_b0p5_s1p4_summary.json
+    linestyle: "-"
+    color: "#1f77b4"
+  - label: "Tight Bounds"
+    summary_json: ../../results/tight_frequency_custom/global_b0p5_s1p4/retained_df0p65_rocof1/retained_df0p65_rocof1__global_b0p5_s1p4_summary.json
+    linestyle: "--"
+    color: "#ff7f0e"

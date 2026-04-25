@@ -1,4 +1,5 @@
 import argparse
+import copy
 import csv
 import io
 import multiprocessing as mp
@@ -12,10 +13,9 @@ import numpy as np
 import yaml
 import andes
 
-import sys as _sys
-
-_sys.path.insert(0, str(Path(__file__).resolve().parent))
-from extract_metrics import (
+from data_generation.debug_tools import save_coi_trace_csv, save_debug_coi_plot
+from data_generation.disturbance_dispatch import DisturbanceDispatcher, resolve_disturbance_kind, sample_value
+from data_generation.extract_metrics import (
     extract_initial_state_metrics,
     extract_line_metrics,
     extract_operating_point_snapshot,
@@ -25,11 +25,12 @@ from extract_metrics import (
 )
 
 
-DEFAULT_TABLE_3_1_COST_PATH = "configs/table_3_1_dispatch_costs.yaml"
-DEFAULT_FEATURE_NAMES_PATH = "configs/data_generation_feature_names.yaml"
+DEFAULT_DISPATCH_COST_PATH = "configs/shared/ieee39_regcv1_dispatch_costs.yaml"
+DEFAULT_FEATURE_NAMES_PATH = "configs/shared/data_generation_feature_names.yaml"
 
 
 def _run_with_suppressed_pandapower_noise(fn, *args, **kwargs):
+    """Internal helper to run with suppressed pandapower noise."""
     with warnings.catch_warnings():
         warnings.filterwarnings(
             "ignore",
@@ -45,268 +46,6 @@ def _run_with_suppressed_pandapower_noise(fn, *args, **kwargs):
             return fn(*args, **kwargs)
 
 
-def _save_debug_coi_plot(
-    *,
-    ss,
-    plotter,
-    output_dir: Path,
-    sim_id: int,
-    contingency: Optional[Dict],
-    step_scale: float,
-) -> None:
-    """Save a per-simulation COI frequency/RoCoF plot next to the CSV.
-
-    Kept as a small runner-level helper so it is easy to remove after the
-    debugging pass.
-    """
-
-    try:
-        import matplotlib
-
-        matplotlib.use("Agg")
-        import matplotlib.pyplot as plt
-    except Exception as exc:
-        print(f"[debug-plot] sim_id={sim_id} skipped COI plot: matplotlib unavailable ({exc})")
-        return
-
-    try:
-        time = np.asarray(plotter.get_values(0), dtype=float).reshape(-1)
-        coi_indices = list(plotter.find("omega COI", idx_only=True))
-        ibr_freq_indices = list(plotter.find("omega REGCV1", idx_only=True))
-        if not ibr_freq_indices:
-            ibr_freq_indices = list(plotter.find("dw REGCV1", idx_only=True))
-        genrou_freq_indices = list(plotter.find("omega GENROU", idx_only=True))
-        ibr_indices = list(plotter.find("Pe REGCV1", idx_only=True))
-        ibr_q_indices = list(plotter.find("Qe REGCV1", idx_only=True))
-        pref2_indices = list(plotter.find("Pref2 REGCV1", idx_only=True))
-        genrou_indices = list(plotter.find("Pe GENROU", idx_only=True))
-        genrou_q_indices = list(plotter.find("Qe GENROU", idx_only=True))
-        channel_names = [str(value) for value in list(getattr(plotter, "_uname", []))]
-    except Exception as exc:
-        print(f"[debug-plot] sim_id={sim_id} skipped COI plot: unable to read plotter ({exc})")
-        return
-
-    if time.size < 2 or not coi_indices:
-        return
-
-    try:
-        f0 = float(getattr(getattr(ss, "config", None), "freq", 50.0) or 50.0)
-        f_coi_hz = np.asarray(plotter.get_values([int(coi_indices[0])]), dtype=float).reshape(-1) * f0
-        if f_coi_hz.size != time.size:
-            return
-        rocof_hz_s = np.gradient(f_coi_hz, time, edge_order=2 if time.size > 2 else 1)
-
-        ibr_freq_series: List[Tuple[str, np.ndarray]] = []
-        for idx in ibr_freq_indices:
-            series = np.asarray(plotter.get_values([int(idx)]), dtype=float).reshape(-1)
-            if series.size != time.size or series.size == 0:
-                continue
-            label = channel_names[int(idx)] if 0 <= int(idx) < len(channel_names) else f"REGCV1_freq_{idx}"
-            if label.startswith("dw REGCV1"):
-                series_hz = (1.0 + series) * f0
-            else:
-                series_hz = series * f0
-            ibr_freq_series.append((label, series_hz))
-
-        genrou_freq_series: List[Tuple[str, np.ndarray]] = []
-        for idx in genrou_freq_indices:
-            series = np.asarray(plotter.get_values([int(idx)]), dtype=float).reshape(-1)
-            if series.size != time.size or series.size == 0:
-                continue
-            label = channel_names[int(idx)] if 0 <= int(idx) < len(channel_names) else f"GENROU_freq_{idx}"
-            genrou_freq_series.append((label, series * f0))
-
-        ibr_series: List[Tuple[str, np.ndarray]] = []
-        for idx in ibr_indices:
-            series = np.asarray(plotter.get_values([int(idx)]), dtype=float).reshape(-1)
-            if series.size != time.size or series.size == 0:
-                continue
-            baseline = float(series[0])
-            label = channel_names[int(idx)] if 0 <= int(idx) < len(channel_names) else f"REGCV1_{idx}"
-            ibr_series.append((label, series - baseline))
-
-        ibr_q_series: List[Tuple[str, np.ndarray]] = []
-        for idx in ibr_q_indices:
-            series = np.asarray(plotter.get_values([int(idx)]), dtype=float).reshape(-1)
-            if series.size != time.size or series.size == 0:
-                continue
-            baseline = float(series[0])
-            label = channel_names[int(idx)] if 0 <= int(idx) < len(channel_names) else f"REGCV1_Q_{idx}"
-            ibr_q_series.append((label, series - baseline))
-
-        pref2_series: List[Tuple[str, np.ndarray]] = []
-        for idx in pref2_indices:
-            series = np.asarray(plotter.get_values([int(idx)]), dtype=float).reshape(-1)
-            if series.size != time.size or series.size == 0:
-                continue
-            label = channel_names[int(idx)] if 0 <= int(idx) < len(channel_names) else f"Pref2_REGCV1_{idx}"
-            pref2_series.append((label, series))
-
-        genrou_series: List[Tuple[str, np.ndarray]] = []
-        for idx in genrou_indices:
-            series = np.asarray(plotter.get_values([int(idx)]), dtype=float).reshape(-1)
-            if series.size != time.size or series.size == 0:
-                continue
-            baseline = float(series[0])
-            label = channel_names[int(idx)] if 0 <= int(idx) < len(channel_names) else f"GENROU_{idx}"
-            genrou_series.append((label, series - baseline))
-
-        genrou_q_series: List[Tuple[str, np.ndarray]] = []
-        for idx in genrou_q_indices:
-            series = np.asarray(plotter.get_values([int(idx)]), dtype=float).reshape(-1)
-            if series.size != time.size or series.size == 0:
-                continue
-            baseline = float(series[0])
-            label = channel_names[int(idx)] if 0 <= int(idx) < len(channel_names) else f"GENROU_Q_{idx}"
-            genrou_q_series.append((label, series - baseline))
-    except Exception as exc:
-        print(f"[debug-plot] sim_id={sim_id} skipped COI plot: unable to build series ({exc})")
-        return
-
-    line_uid = -1 if contingency is None else int(contingency.get("uid", -1))
-    plot_path = output_dir / f"sim_{sim_id:06d}_line_{line_uid}_coi_debug.png"
-
-    fig, axes = plt.subplots(5, 2, figsize=(15, 17), sharex=True)
-    axes = axes.reshape(-1)
-
-    axes[0].plot(time, f_coi_hz, color="tab:blue", linewidth=1.5)
-    axes[0].axhline(f0, color="0.5", linestyle="--", linewidth=1.0)
-    axes[0].set_ylabel("COI frequency [Hz]")
-    axes[0].grid(True, alpha=0.3)
-
-    axes[1].plot(time, rocof_hz_s, color="tab:red", linewidth=1.5)
-    axes[1].axhline(0.0, color="0.5", linestyle="--", linewidth=1.0)
-    axes[1].set_ylabel("COI RoCoF [Hz/s]")
-    axes[1].grid(True, alpha=0.3)
-
-    for label, series in ibr_freq_series:
-        axes[2].plot(time, series, linewidth=1.2, label=label)
-    axes[2].axhline(f0, color="0.5", linestyle="--", linewidth=1.0)
-    axes[2].set_ylabel("IBR frequency [Hz]")
-    axes[2].grid(True, alpha=0.3)
-    if ibr_freq_series:
-        axes[2].legend(loc="best", fontsize=8, ncol=2)
-
-    for label, series in genrou_freq_series:
-        axes[3].plot(time, series, linewidth=1.2, label=label)
-    axes[3].axhline(f0, color="0.5", linestyle="--", linewidth=1.0)
-    axes[3].set_ylabel("GENROU frequency [Hz]")
-    axes[3].grid(True, alpha=0.3)
-    if genrou_freq_series:
-        axes[3].legend(loc="best", fontsize=8, ncol=2)
-
-    for label, series in ibr_series:
-        axes[4].plot(time, series, linewidth=1.2, label=label)
-    axes[4].axhline(0.0, color="0.5", linestyle="--", linewidth=1.0)
-    axes[4].set_ylabel("IBR ΔPe [p.u.]")
-    axes[4].grid(True, alpha=0.3)
-    if ibr_series:
-        axes[4].legend(loc="best", fontsize=8, ncol=2)
-
-    for label, series in genrou_series:
-        axes[5].plot(time, series, linewidth=1.2, label=label)
-    axes[5].axhline(0.0, color="0.5", linestyle="--", linewidth=1.0)
-    axes[5].set_ylabel("GENROU ΔPe [p.u.]")
-    axes[5].grid(True, alpha=0.3)
-    if genrou_series:
-        axes[5].legend(loc="best", fontsize=8, ncol=2)
-
-    for label, series in pref2_series:
-        axes[6].plot(time, series, linewidth=1.2, label=label)
-    axes[6].set_ylabel("REGCV1 Pref2 [p.u.]")
-    axes[6].grid(True, alpha=0.3)
-    if pref2_series:
-        axes[6].legend(loc="best", fontsize=8, ncol=2)
-
-    for label, series in ibr_q_series:
-        axes[7].plot(time, series, linewidth=1.2, label=label)
-    axes[7].axhline(0.0, color="0.5", linestyle="--", linewidth=1.0)
-    axes[7].set_ylabel("IBR ΔQe [p.u.]")
-    axes[7].grid(True, alpha=0.3)
-    if ibr_q_series:
-        axes[7].legend(loc="best", fontsize=8, ncol=2)
-
-    for label, series in genrou_q_series:
-        axes[8].plot(time, series, linewidth=1.2, label=label)
-    axes[8].axhline(0.0, color="0.5", linestyle="--", linewidth=1.0)
-    axes[8].set_ylabel("GENROU ΔQe [p.u.]")
-    axes[8].grid(True, alpha=0.3)
-    if genrou_q_series:
-        axes[8].legend(loc="best", fontsize=8, ncol=2)
-
-    axes[9].axis("off")
-
-    for idx in (8, 9):
-        axes[idx].set_xlabel("Time [s]")
-
-    fig.suptitle(f"sim_id={sim_id}, line_uid={line_uid}, step_scale={step_scale:.4f}")
-    fig.tight_layout()
-    fig.savefig(plot_path, dpi=150, bbox_inches="tight")
-    plt.close(fig)
-
-
-def _sample_from_bins(bins: Sequence[Dict], rng: np.random.Generator) -> Tuple[float, str]:
-    probs = np.asarray([b.get("prob", 1.0) for b in bins], dtype=float)
-    probs = probs / probs.sum()
-    idx = int(rng.choice(len(bins), p=probs))
-    bin_cfg = bins[idx]
-    low, high = float(bin_cfg["low"]), float(bin_cfg["high"])
-    val = float(rng.uniform(low, high))
-    label = str(bin_cfg.get("label", f"bin{idx}"))
-    return val, label
-
-
-def _sample_scalar(range_cfg: Dict, rng: np.random.Generator, *, default_low: float, default_high: float, log_uniform: bool = False) -> float:
-    low = float(range_cfg.get("low", default_low))
-    high = float(range_cfg.get("high", default_high))
-    if log_uniform:
-        return float(np.exp(rng.uniform(np.log(low), np.log(high))))
-    return float(rng.uniform(low, high))
-
-
-def _sample_value(value_cfg: Dict, rng: np.random.Generator, *, default_low: float, default_high: float) -> Tuple[float, str]:
-    if isinstance(value_cfg, (list, tuple)) and len(value_cfg) >= 2:
-        value_cfg = {"low": value_cfg[0], "high": value_cfg[1]}
-    if isinstance(value_cfg, (int, float)):
-        value_cfg = {"low": value_cfg, "high": value_cfg}
-    if "bins" in value_cfg and value_cfg["bins"]:
-        return _sample_from_bins(value_cfg["bins"], rng)
-    log_u = bool(value_cfg.get("log_uniform", False))
-    val = _sample_scalar(value_cfg, rng, default_low=default_low, default_high=default_high, log_uniform=log_u)
-    return val, "uniform_log" if log_u else "uniform"
-
-
-def _select_step_targets(ss, load_cfg: Dict, rng: Optional[np.random.Generator] = None) -> List[str]:
-    """Return PQ device names to apply the step scale to.
-
-    Priority rules:
-    - if load_cfg["pq_names"] is provided and non-empty, start from that list;
-      otherwise default to all PQ names in the case.
-    - if load_cfg["owners"] is provided, keep only PQs whose owner is in that
-      list (ownership is read from ss.PQ.owner).
-    - if load_cfg["random_owner_per_sim"] is true, sample one owner from
-      `load_cfg["owners"]` and keep only PQs in that owner for this simulation.
-    """
-
-    pq_names_cfg = list(load_cfg.get("pq_names") or [])
-    if not pq_names_cfg:
-        pq_names_cfg = list(ss.PQ.name.v) if getattr(ss, "PQ", None) and ss.PQ.n else []
-
-    owner_values = [str(o) for o in list(load_cfg.get("owners") or [])]
-    if bool(load_cfg.get("random_owner_per_sim", False)) and owner_values:
-        if rng is None:
-            raise ValueError("random_owner_per_sim requires an RNG.")
-        sampled_owner = str(rng.choice(owner_values))
-        owner_values = [sampled_owner]
-
-    owner_filter = set(owner_values)
-    if owner_filter and getattr(ss.PQ, "n", 0):
-        name_to_owner = {str(name): str(owner) for name, owner in zip(ss.PQ.name.v, ss.PQ.owner.v)}
-        pq_names_cfg = [name for name in pq_names_cfg if name_to_owner.get(str(name)) in owner_filter]
-
-    return pq_names_cfg
-
-
 def _build_fieldnames(
     pq_names: Sequence[str],
     owner_labels: Sequence[str],
@@ -317,6 +56,7 @@ def _build_fieldnames(
     initial_state_fields: Sequence[str],
     feature_names_path: Optional[str],
 ) -> List[str]:
+    """Internal helper to build fieldnames."""
     return simulation_row_fieldnames(
         pq_names=pq_names,
         owner_labels=owner_labels,
@@ -330,15 +70,24 @@ def _build_fieldnames(
 
 
 def load_config(path: str) -> Dict:
+    """Load config."""
     with open(path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 
 def _feature_names_path(cfg: Dict) -> str:
+    """Internal helper to feature names path."""
     return str(cfg.get("feature_names_path") or DEFAULT_FEATURE_NAMES_PATH)
 
 
+def _include_initial_state(cfg: Dict) -> bool:
+    """Internal helper to resolve initial-state feature inclusion."""
+    features_cfg = cfg.get("features", {}) or {}
+    return bool(features_cfg.get("include_initial_state", True))
+
+
 def _assert_line_metrics_dc_ready(cfg: Dict) -> None:
+    """Internal helper to assert line metrics dc ready."""
     cont_cfg = cfg.get("contingency", {}) or {}
     line_n1_cfg = cont_cfg.get("line_n1", {}) or {}
     if not bool(line_n1_cfg.get("enable", False)):
@@ -353,11 +102,13 @@ def _assert_line_metrics_dc_ready(cfg: Dict) -> None:
 
 
 def _rng_for_sim(seed: int, sim_id: int) -> np.random.Generator:
+    """Internal helper to rng for sim."""
     sim_seed = np.random.SeedSequence([seed, sim_id])
     return np.random.default_rng(sim_seed)
 
 
 def _chunk_sim_ids(n_sims: int, workers: int) -> List[List[int]]:
+    """Internal helper to chunk sim ids."""
     if workers <= 1:
         return [list(range(n_sims))]
     chunk_size = (n_sims + workers - 1) // workers
@@ -365,6 +116,7 @@ def _chunk_sim_ids(n_sims: int, workers: int) -> List[List[int]]:
 
 
 def _worker_output_path(output_dir: Path, output_csv: str, worker_id: int) -> Path:
+    """Internal helper to worker output path."""
     base = Path(output_csv)
     suffix = base.suffix if base.suffix else ".csv"
     return output_dir / f"{base.stem}_worker_{worker_id:02d}{suffix}"
@@ -372,6 +124,8 @@ def _worker_output_path(output_dir: Path, output_csv: str, worker_id: int) -> Pa
 
 def _dispatch_ibr_indices(ss, fallback: Optional[Sequence[int]] = None) -> List[int]:
     """Return 0-based dispatch-vector positions for controllable IBRs."""
+    if not getattr(getattr(ss, "REGCV1", None), "n", 0):
+        return []
     regcv1_gen = getattr(getattr(ss, "REGCV1", None), "gen", None)
     regcv1_gen_vals = getattr(regcv1_gen, "v", None)
     if regcv1_gen_vals is not None and len(regcv1_gen_vals) > 0:
@@ -389,6 +143,7 @@ def _dispatch_ibr_indices(ss, fallback: Optional[Sequence[int]] = None) -> List[
 
 
 def _resolve_repo_path(path_str: Optional[str], default_rel: str) -> Path:
+    """Internal helper to resolve repo path."""
     path = Path(path_str) if path_str else Path(default_rel)
     if path.is_absolute():
         return path
@@ -397,6 +152,7 @@ def _resolve_repo_path(path_str: Optional[str], default_rel: str) -> Path:
 
 
 def _midpoint_from_cfg(value_cfg, *, default_low: float, default_high: float) -> float:
+    """Internal helper to midpoint from cfg."""
     if isinstance(value_cfg, (list, tuple)) and len(value_cfg) >= 2:
         return 0.5 * (float(value_cfg[0]) + float(value_cfg[1]))
     if isinstance(value_cfg, (int, float)):
@@ -412,23 +168,24 @@ def _midpoint_from_cfg(value_cfg, *, default_low: float, default_high: float) ->
 
 
 @lru_cache(maxsize=None)
-def _load_table_3_1_bus_costs(cost_table_path: str) -> Dict[int, Dict[str, float | str]]:
+def _load_dispatch_bus_costs(cost_table_path: str) -> Dict[int, Dict[str, float | str]]:
+    """Load generator dispatch-cost coefficients indexed by generator bus."""
     path = Path(cost_table_path)
     with open(path, "r", encoding="utf-8") as f:
         payload = yaml.safe_load(f) or {}
 
     generators = payload.get("generators")
     if not isinstance(generators, list) or not generators:
-        raise RuntimeError(f"Invalid Table 3.1 cost file at {path}: missing non-empty 'generators' list.")
+        raise RuntimeError(f"Invalid dispatch cost file at {path}: missing non-empty 'generators' list.")
 
     costs: Dict[int, Dict[str, float | str]] = {}
     for row in generators:
         if not isinstance(row, dict):
-            raise RuntimeError(f"Invalid Table 3.1 cost row in {path}: expected mapping, got {type(row).__name__}.")
+            raise RuntimeError(f"Invalid dispatch cost row in {path}: expected mapping, got {type(row).__name__}.")
         try:
             bus = int(row["bus"])
             if bus in costs:
-                raise RuntimeError(f"Duplicate generator bus entry in Table 3.1 cost file: {path} (bus {bus})")
+                raise RuntimeError(f"Duplicate generator bus entry in dispatch cost file: {path} (bus {bus})")
             label = str(row.get("label", f"bus_{bus}"))
             costs[bus] = {
                 "label": label,
@@ -438,17 +195,17 @@ def _load_table_3_1_bus_costs(cost_table_path: str) -> Dict[int, Dict[str, float
                 "b_r": float(row["b_r"]),
             }
         except KeyError as exc:
-            raise RuntimeError(f"Missing required Table 3.1 key {exc!s} in {path}.") from exc
+            raise RuntimeError(f"Missing required dispatch cost key {exc!s} in {path}.") from exc
         except Exception as exc:
-            raise RuntimeError(f"Invalid Table 3.1 row for bus={row.get('bus')} in {path}.") from exc
+            raise RuntimeError(f"Invalid dispatch cost row for bus={row.get('bus')} in {path}.") from exc
 
     return costs
 
 
-def _table_3_1_dispatch_cost_arrays(ss, ed_cfg: Dict) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Build fixed ED coefficient arrays from Table 3.1 using generator bus numbers."""
-    cost_table_path = _resolve_repo_path(ed_cfg.get("cost_table_path"), DEFAULT_TABLE_3_1_COST_PATH)
-    table_costs = _load_table_3_1_bus_costs(str(cost_table_path))
+def _dispatch_cost_arrays(ss, ed_cfg: Dict) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Build fixed ED coefficient arrays from generator bus numbers."""
+    cost_table_path = _resolve_repo_path(ed_cfg.get("cost_table_path"), DEFAULT_DISPATCH_COST_PATH)
+    table_costs = _load_dispatch_bus_costs(str(cost_table_path))
     gen_buses = [int(v) for v in list(ss.PV.bus.v) + list(ss.Slack.bus.v)]
     a = np.zeros(len(gen_buses), dtype=float)
     b = np.zeros(len(gen_buses), dtype=float)
@@ -468,7 +225,7 @@ def _table_3_1_dispatch_cost_arrays(ss, ed_cfg: Dict) -> Tuple[np.ndarray, np.nd
 
     if missing:
         raise RuntimeError(
-            "Missing Table 3.1 ED coefficients for generator buses: "
+            "Missing ED coefficients for generator buses: "
             + ", ".join(str(bus) for bus in missing)
         )
 
@@ -588,13 +345,14 @@ def _build_ed_line_constraints(ss, Pg_var):
     return [flows <= fmax_pu, flows >= -fmax_pu]
 
 
-def _run_ed_dispatch(
+def run_ed_dispatch(
     ss,
     ed_cfg: Dict,
-    ibr_idx: Sequence[int],
+    ibr_idx: Optional[Sequence[int]] = None,
 ) -> Tuple[np.ndarray, Dict[str, float | str]]:
-    """Solve ED with fixed Table 3.1 coefficients on the PV+Slack dispatch vector."""
+    """Solve ED with fixed cost coefficients on the PV+Slack dispatch vector."""
     import cvxpy as cp  # lazy import so runs without ED dependency when disabled
+    _ = ibr_idx
     ng = ss.PV.n + ss.Slack.n
     if ng == 0:
         return np.zeros(0), {
@@ -611,10 +369,10 @@ def _run_ed_dispatch(
     Pd = float(np.sum(ss.PQ.p0.v))
     Pg_min = np.asarray(ss.PV.pmin.v + ss.Slack.pmin.v, dtype=float)
     Pg_max = np.asarray(ss.PV.pmax.v + ss.Slack.pmax.v, dtype=float)
-    a, b, c, b_r = _table_3_1_dispatch_cost_arrays(ss, ed_cfg)
+    a, b, c, b_r = _dispatch_cost_arrays(ss, ed_cfg)
     if a.size != ng:
         raise RuntimeError(
-            f"Table 3.1 ED coefficient size mismatch: expected {ng}, got {a.size}."
+            f"Dispatch-cost coefficient size mismatch: expected {ng}, got {a.size}."
         )
 
     Pg = cp.Variable(ng)
@@ -760,10 +518,14 @@ def _apply_base_operating_point_scale(ss, base_scale: float, *, scale_pv: bool) 
 
 
 def _assign_vis_coefficients(ss, M_vec: np.ndarray, D_vec: np.ndarray) -> None:
+    """Internal helper to assign vis coefficients."""
+    if not getattr(getattr(ss, "REGCV1", None), "n", 0):
+        return
     ss.REGCV1.M.v, ss.REGCV1.D.v = M_vec, D_vec
 
 
 def _configure_pq_model(ss) -> None:
+    """Internal helper to configure pq model."""
     ss.PQ.config.p2p = 1
     ss.PQ.config.q2q = 1
     ss.PQ.config.p2z = 0
@@ -775,7 +537,8 @@ def _configure_pq_model(ss) -> None:
     ss.PV.config.allow_adjust = 0
 
 
-def _configure_tds(ss, tds_cfg: Dict) -> None:
+def configure_tds(ss, tds_cfg: Dict) -> None:
+    """Configure ANDES TDS settings from the generation config."""
     ss.TDS.config.no_tqdm = bool(tds_cfg.get("no_tqdm", True))
     ss.TDS.config.criteria = int(tds_cfg.get("criteria", 0))
     ss.TDS.config.tol = float(tds_cfg.get("tol", 1e-3))
@@ -788,7 +551,7 @@ def _configure_tds(ss, tds_cfg: Dict) -> None:
     ss.TDS.config.shrinkt = int(tds_cfg.get("shrinkt", 1))
 
 
-def _define_operating_point(
+def define_operating_point(
     ss,
     *,
     base_scale: float,
@@ -798,13 +561,13 @@ def _define_operating_point(
     scale_pv: bool,
 ) -> Dict[str, object]:
     """
-    Define the pre-disturbance operating point and, when enabled, solve the ED.
+    Define the pre-disturbance operating point and optionally solve ED.
 
     Sequence:
     1. Rescale the base operating point.
     2. Assign sampled VIS coefficients.
     3. Solve the pre-contingency ED over the PV+Slack dispatch vector.
-       The ED objective uses the fixed Table 3.1 coefficients and can enforce PTDF-based
+       The ED objective uses the fixed dispatch-cost coefficients and can enforce PTDF-based
        line-flow limits through `_build_ed_line_constraints(...)`.
     4. Freeze the resulting PQ state so the prefault x_op/x_cont features can be extracted later.
     """
@@ -824,7 +587,7 @@ def _define_operating_point(
     pg_dispatch = np.array([], dtype=float)
     if ed_cfg.get("enable", False):
         ibr_idx = _dispatch_ibr_indices(ss, fallback=ed_cfg.get("ibr_idx") or [])
-        pg_dispatch, ed_meta = _run_ed_dispatch(
+        pg_dispatch, ed_meta = run_ed_dispatch(
             ss,
             ed_cfg,
             ibr_idx=ibr_idx,
@@ -850,6 +613,7 @@ def _discover_initial_state_fieldnames(
     regcv1_ids: Sequence[str],
     andes_opts: Dict,
 ) -> List[str]:
+    """Internal helper to discover initial state fieldnames."""
     ss = andes.load(case_path, setup=False, **andes_opts)
     ss.config.freq = float(50)
 
@@ -867,7 +631,7 @@ def _discover_initial_state_fieldnames(
     dry_ed_cfg = dict(cfg.get("ed", {}))
     dry_ed_cfg["enable"] = False
 
-    _define_operating_point(
+    define_operating_point(
         ss,
         base_scale=base_scale,
         M_vec=M_vec,
@@ -877,7 +641,7 @@ def _discover_initial_state_fieldnames(
     )
     ss.setup()
     ss.PFlow.run()
-    _configure_tds(ss, cfg["tds"])
+    configure_tds(ss, cfg["tds"])
     ss.TDS.init()
     ss.TDS.load_plotter()
     fieldnames = initial_state_fieldnames_from_plotter(
@@ -895,82 +659,6 @@ def _discover_initial_state_fieldnames(
         feature_names_path=_feature_names_path(cfg),
     )
 
-
-def _line_rating_from_ss(ss, uid: int) -> float:
-    for attr in ("rate_a", "rateA", "RATE_A"):
-        obj = getattr(ss.Line, attr, None)
-        if obj is None:
-            continue
-        vals = getattr(obj, "v", None)
-        if vals is None or uid >= len(vals):
-            continue
-        try:
-            return float(vals[uid])
-        except Exception:
-            return float("nan")
-    return float("nan")
-
-
-def _extract_line_records(ss) -> List[Dict[str, float | int | str]]:
-    records: List[Dict[str, float | int | str]] = []
-    n_line = int(getattr(ss.Line, "n", 0))
-    idx_vals = list(getattr(getattr(ss.Line, "idx", None), "v", []))
-    name_vals = list(getattr(getattr(ss.Line, "name", None), "v", []))
-    bus1_vals = list(getattr(getattr(ss.Line, "bus1", None), "v", []))
-    bus2_vals = list(getattr(getattr(ss.Line, "bus2", None), "v", []))
-    u_vals = list(getattr(getattr(ss.Line, "u", None), "v", []))
-
-    for uid in range(n_line):
-        idx_val = idx_vals[uid] if uid < len(idx_vals) else uid + 1
-        name_val = name_vals[uid] if uid < len(name_vals) else f"Line_{idx_val}"
-        try:
-            bus1 = float(bus1_vals[uid]) if uid < len(bus1_vals) else np.nan
-        except Exception:
-            bus1 = np.nan
-        try:
-            bus2 = float(bus2_vals[uid]) if uid < len(bus2_vals) else np.nan
-        except Exception:
-            bus2 = np.nan
-        in_service = bool(u_vals[uid]) if uid < len(u_vals) else True
-        records.append(
-            {
-                "uid": uid,
-                "idx": idx_val,
-                "name": str(name_val),
-                "bus1": bus1,
-                "bus2": bus2,
-                "rating": _line_rating_from_ss(ss, uid),
-                "in_service": in_service,
-            }
-        )
-    return records
-
-
-def _pick_line_contingencies(ss, cont_cfg: Dict, rng: np.random.Generator) -> List[Dict[str, float | int | str]]:
-    line_records = _extract_line_records(ss)
-    if not line_records:
-        return []
-
-    active = [r for r in line_records if bool(r.get("in_service", True))]
-    line_ids_cfg = list(cont_cfg.get("line_ids") or [])
-    if line_ids_cfg:
-        wanted = {str(v) for v in line_ids_cfg}
-        selected = [
-            r
-            for r in active
-            if (str(r["idx"]) in wanted) or (str(r["name"]) in wanted) or (str(r["uid"]) in wanted)
-        ]
-    else:
-        selected = active
-
-    max_lines = int(cont_cfg.get("max_lines", 0) or 0)
-    if max_lines > 0 and len(selected) > max_lines:
-        pick = rng.choice(len(selected), size=max_lines, replace=False)
-        selected = [selected[int(i)] for i in np.sort(pick)]
-
-    return selected
-
-
 def _run_worker(
     worker_id: int,
     sim_ids: Sequence[int],
@@ -984,6 +672,7 @@ def _run_worker(
     fieldnames: Sequence[str],
     output_dir: Path,
 ) -> Optional[str]:
+    """Internal helper to run worker."""
     if not sim_ids:
         return None
     worker_csv = _worker_output_path(output_dir, cfg.get("output_csv", "simulation_results.csv"), worker_id)
@@ -1012,6 +701,7 @@ def _run_worker(
 
 
 def _merge_worker_csvs(csv_path: Path, worker_paths: Iterable[Path], fieldnames: Sequence[str]) -> None:
+    """Internal helper to merge worker csvs."""
     with open(csv_path, "w", newline="", encoding="utf-8") as f_out:
         writer = csv.DictWriter(f_out, fieldnames=fieldnames)
         writer.writeheader()
@@ -1023,6 +713,7 @@ def _merge_worker_csvs(csv_path: Path, worker_paths: Iterable[Path], fieldnames:
 
 
 def _log_row_nan_health(row: Dict, *, sim_id: int) -> None:
+    """Internal helper to log row nan health."""
     key_cols = [
         "line_rating",
         "pre_fault_flow",
@@ -1053,46 +744,11 @@ def run_single_sim(
     feature_names_path: str,
     output_dir: Optional[Path] = None,
 ):
+    """Run single sim."""
     base_scale = rng.uniform(cfg["base_load_scale"]["low"], cfg["base_load_scale"]["high"])
 
-    cont_cfg = cfg.get("contingency", {})
-    load_step_cfg = dict(cont_cfg.get("load_step", {}) or {})
-    line_n1_cfg = dict(cont_cfg.get("line_n1", {}) or {})
-
-    # Backward compatibility with older contingency.mode schema.
-    if ("mode" in cont_cfg) and (not load_step_cfg) and (not line_n1_cfg):
-        cont_mode = str(cont_cfg.get("mode", "none")).lower()
-        valid_modes = {"none", "load_step", "line_n1"}
-        if cont_mode not in valid_modes:
-            raise ValueError(
-                f"Unsupported contingency.mode={cont_mode!r}. Expected one of {sorted(valid_modes)}."
-            )
-        load_step_cfg["enable"] = bool(cont_mode == "load_step" or cont_cfg.get("include_load_step", False))
-        line_n1_cfg["enable"] = bool(cont_mode == "line_n1")
-        line_n1_cfg["trip_time"] = cont_cfg.get("trip_time")
-        line_n1_cfg["line_ids"] = cont_cfg.get("line_ids")
-        line_n1_cfg["max_lines"] = cont_cfg.get("max_lines")
-
-    load_step_enabled = bool(load_step_cfg.get("enable", False))
-    line_n1_enabled = bool(line_n1_cfg.get("enable", False))
-
-    load_step_time = float(load_step_cfg.get("time", cfg.get("tds", {}).get("load_step_time", 0.1)))
-    load_step_scale_cfg = load_step_cfg.get("scale", cfg.get("load_step_scale", {}))
-    default_low = float(load_step_scale_cfg.get("low", 1.0))
-    default_high = float(load_step_scale_cfg.get("high", default_low))
-
-    if load_step_enabled:
-        step_scale, step_bin = _sample_value(
-            load_step_scale_cfg,
-            rng,
-            default_low=default_low,
-            default_high=default_high,
-        )
-    else:
-        step_scale, step_bin = 1.0, "disabled"
-
     M_samples = [
-        _sample_value(
+        sample_value(
             cfg.get("ibr", {}).get("M_range", {}),
             rng,
             default_low=cfg["ibr"]["M_range"][0],
@@ -1101,7 +757,7 @@ def run_single_sim(
         for _ in range(len(regcv1_ids))
     ]
     D_samples = [
-        _sample_value(
+        sample_value(
             cfg.get("ibr", {}).get("D_range", {}),
             rng,
             default_low=cfg["ibr"]["D_range"][0],
@@ -1121,25 +777,26 @@ def run_single_sim(
     if pycode_env:
         andes_opts["options"] = {"pycode_path": pycode_env}
 
-    if line_n1_enabled:
-        ss_pick = andes.load(case_path, setup=False, **andes_opts)
-        line_records = _pick_line_contingencies(ss_pick, line_n1_cfg, rng)
-        if not line_records:
-            raise ValueError(
-                "contingency.line_n1.enable=true, but no valid in-service lines were found "
-                "for contingency.line_n1.line_ids/max_lines."
-            )
-        trip_time = float(line_n1_cfg.get("trip_time", load_step_time))
-        contingencies = line_records
-    else:
-        trip_time = float("nan")
-        contingencies = [None]
+    disturbance_ss = None
+    disturbance_kind = resolve_disturbance_kind(cfg)
+    if disturbance_kind in {"line_n1", "line_plus_load"}:
+        disturbance_ss = andes.load(case_path, setup=False, **andes_opts)
+    disturbance_dispatcher = DisturbanceDispatcher()
+    disturbance_specs = disturbance_dispatcher.plan(disturbance_ss, cfg, rng)
 
     rows: List[Dict] = []
-    for cont in contingencies:
+    include_initial_state = _include_initial_state(cfg)
+    for spec in disturbance_specs:
+        cont = spec.contingency()
+        load_step_enabled = spec.kind in {"load_step", "line_plus_load"}
+        load_step_time = float(spec.load_step_time)
+        step_scale = float(spec.load_step_scale)
+        step_bin = str(spec.meta.get("step_bin_label", "disabled"))
+        trip_time = float(spec.trip_time)
+
         ss = andes.load(case_path, setup=False, **andes_opts)
         ss.config.freq = float(50)
-        operating_point = _define_operating_point(
+        operating_point = define_operating_point(
             ss,
             base_scale=base_scale,
             M_vec=M_vec,
@@ -1154,22 +811,7 @@ def run_single_sim(
         ed_meta = dict(operating_point["ed_meta"])
         pq_owner_list = [owner_map.get(str(o), str(o)) for o in ss.PQ.owner.v]
 
-        if load_step_enabled:
-            step_targets = _select_step_targets(ss, cfg.get("load", {}), rng=rng)
-            for dev in step_targets:
-                ss.add(model="Alter", param_dict=dict(t=load_step_time, model="PQ", dev=dev, src="Ppf", attr="v", method="*", amount=step_scale))
-                ss.add(model="Alter", param_dict=dict(t=load_step_time, model="PQ", dev=dev, src="Qpf", attr="v", method="*", amount=step_scale))
-
-        if cont is not None:
-            # N-1 line outage via Toggle at contingency time.
-            ss.add(
-                model="Toggle",
-                param_dict={
-                    "t": trip_time,
-                    "model": "Line",
-                    "dev": cont["idx"],
-                },
-            )
+        disturbance_dispatcher.apply(ss, spec, cfg, rng)
 
         ss.setup()
         ss.PFlow.run()
@@ -1183,13 +825,13 @@ def run_single_sim(
             feature_names_path=feature_names_path,
         )
 
-        _configure_tds(ss, cfg["tds"])
+        configure_tds(ss, cfg["tds"])
 
         ss.TDS.init()
         success = bool(ss.TDS.run())
         ss.TDS.load_plotter()
         if bool(cfg.get("debug", {}).get("save_coi_plots", False)) and output_dir is not None:
-            _save_debug_coi_plot(
+            save_debug_coi_plot(
                 ss=ss,
                 plotter=ss.TDS.plotter,
                 output_dir=output_dir,
@@ -1197,9 +839,21 @@ def run_single_sim(
                 contingency=cont,
                 step_scale=step_scale,
             )
-        initial_state_snapshot = extract_initial_state_metrics(
-            ss.TDS.plotter,
-            feature_names_path=feature_names_path,
+        if bool(cfg.get("debug", {}).get("save_coi_traces", False)) and output_dir is not None:
+            trace_dir = Path(cfg.get("debug", {}).get("coi_trace_dir") or output_dir)
+            save_coi_trace_csv(
+                ss=ss,
+                plotter=ss.TDS.plotter,
+                output_dir=trace_dir,
+                sim_id=sim_id,
+            )
+        initial_state_snapshot = (
+            extract_initial_state_metrics(
+                ss.TDS.plotter,
+                feature_names_path=feature_names_path,
+            )
+            if include_initial_state
+            else None
         )
 
         pq_p_after = ss.PQ.Ppf.v
@@ -1244,6 +898,7 @@ def run_single_sim(
             line_metrics_snapshot=line_metrics_snapshot,
             operating_point_snapshot=operating_point_snapshot,
             initial_state_snapshot=initial_state_snapshot,
+            include_initial_state=include_initial_state,
             ed_meta=ed_meta,
             plotter=ss.TDS.plotter,
             feature_names_path=feature_names_path,
@@ -1261,28 +916,22 @@ def run_single_sim(
     return rows
 
 
-def main() -> None:
-    parser = argparse.ArgumentParser(description="Run ANDES sims and extract metrics.")
-    parser.add_argument("--config", default="data_generation/generation.yaml", help="Path to YAML config.")
-    args = parser.parse_args()
-
-    print("Loading config from ", args.config)
-    cfg = load_config(args.config)
-    _assert_line_metrics_dc_ready(cfg)
-    andes.config_logger(stream_level=int(cfg.get("stream_level", 30)))
-
-    case_path = str(cfg["case"])
-
-    output_dir = Path(cfg["output_dir"])
-    output_dir.mkdir(parents=True, exist_ok=True)
-    csv_path = output_dir / cfg.get("output_csv", "simulation_results.csv")
-
-    # Allow overriding ANDES pycode/autogen path to avoid permission issues on shared installs.
-    andes_opts = {}
+def _andes_options_from_env() -> Dict:
+    """Internal helper to andes options from env."""
+    andes_opts: Dict = {}
     pycode_env = os.environ.get("ANDES_PYCODE_PATH")
     if pycode_env:
         andes_opts["options"] = {"pycode_path": pycode_env}
+    return andes_opts
 
+
+def _resolve_simulation_inputs(
+    cfg: Dict,
+    *,
+    case_path: str,
+    andes_opts: Dict,
+) -> Dict[str, object]:
+    """Internal helper to resolve simulation inputs."""
     base_ss = andes.load(case_path, setup=False, **andes_opts)
     pq_names = list(base_ss.PQ.name.v) if base_ss.PQ.n else []
     if cfg["load"].get("pq_names"):
@@ -1291,11 +940,20 @@ def main() -> None:
     owner_map = {str(o): str(o) for o in set(base_ss.PQ.owner.v)} if getattr(base_ss, "PQ", None) else {}
     owner_labels = sorted(owner_map.values())
 
-    regcv1_ids = cfg["ibr"].get("indices") or []
-    if not regcv1_ids:
-        n_ibr = int(cfg["ibr"].get("n_ibr", 4))
-        regcv1_ids = list(base_ss.REGCV1.idx.v)[:n_ibr]
-    if not regcv1_ids:
+    regcv1_model = getattr(base_ss, "REGCV1", None)
+    n_regcv1 = int(getattr(regcv1_model, "n", 0) or 0)
+    regcv1_ids = list(cfg.get("ibr", {}).get("indices") or [])
+    if n_regcv1 <= 0:
+        cfg.setdefault("ibr", {})
+        cfg["ibr"]["indices"] = []
+        cfg["ibr"]["n_ibr"] = 0
+        regcv1_ids = []
+    else:
+        if not regcv1_ids:
+            n_ibr = int(cfg.get("ibr", {}).get("n_ibr", n_regcv1))
+            regcv1_ids = list(getattr(getattr(base_ss.REGCV1, "idx", None), "v", []) or [])[:n_ibr]
+        regcv1_ids = regcv1_ids[:n_regcv1]
+    if n_regcv1 > 0 and not regcv1_ids:
         raise ValueError("No REGCV1 entries found to assign M/D parameters.")
 
     n_genrou = int(getattr(base_ss, "GENROU", None).n) if getattr(base_ss, "GENROU", None) else 0
@@ -1304,11 +962,16 @@ def main() -> None:
     bus_numbers = [int(v) for v in bus_idx_vals]
     line_uids = list(range(n_line))
     feature_names_path = _feature_names_path(cfg)
-    initial_state_fields = _discover_initial_state_fieldnames(
-        cfg=cfg,
-        case_path=case_path,
-        regcv1_ids=regcv1_ids,
-        andes_opts=andes_opts,
+    include_initial_state = _include_initial_state(cfg)
+    initial_state_fields = (
+        _discover_initial_state_fieldnames(
+            cfg=cfg,
+            case_path=case_path,
+            regcv1_ids=regcv1_ids,
+            andes_opts=andes_opts,
+        )
+        if include_initial_state
+        else []
     )
     fieldnames = _build_fieldnames(
         pq_names,
@@ -1320,6 +983,37 @@ def main() -> None:
         initial_state_fields,
         feature_names_path,
     )
+    return {
+        "pq_names": pq_names,
+        "owner_map": owner_map,
+        "regcv1_ids": regcv1_ids,
+        "line_uids": line_uids,
+        "feature_names_path": feature_names_path,
+        "fieldnames": fieldnames,
+        "include_initial_state": include_initial_state,
+    }
+
+
+def run_generation(config_path: str) -> Path:
+    """Run generation."""
+    print("Loading config from ", config_path)
+    cfg = load_config(config_path)
+    _assert_line_metrics_dc_ready(cfg)
+    andes.config_logger(stream_level=int(cfg.get("stream_level", 30)))
+
+    case_path = str(cfg["case"])
+    output_dir = Path(cfg["output_dir"])
+    output_dir.mkdir(parents=True, exist_ok=True)
+    csv_path = output_dir / cfg.get("output_csv", "simulation_results.csv")
+    andes_opts = _andes_options_from_env()
+
+    sim_inputs = _resolve_simulation_inputs(cfg, case_path=case_path, andes_opts=andes_opts)
+    pq_names = sim_inputs["pq_names"]
+    owner_map = sim_inputs["owner_map"]
+    regcv1_ids = sim_inputs["regcv1_ids"]
+    line_uids = sim_inputs["line_uids"]
+    feature_names_path = sim_inputs["feature_names_path"]
+    fieldnames = sim_inputs["fieldnames"]
 
     n_sims = int(cfg["n_sims"])
     workers = max(1, int(cfg.get("workers", 1)))
@@ -1345,7 +1039,7 @@ def main() -> None:
                     for name in fieldnames:
                         row.setdefault(name, np.nan)
                     writer.writerow(row)
-        return
+        return csv_path
 
     sim_chunks = _chunk_sim_ids(n_sims, workers)
     worker_args = []
@@ -1373,6 +1067,43 @@ def main() -> None:
 
     merge_paths = [Path(path) for path in worker_paths if path]
     _merge_worker_csvs(csv_path, merge_paths, fieldnames)
+    return csv_path
+
+
+def run_one_sim(
+    config: Dict,
+    sim_id: int,
+    rng: Optional[np.random.Generator] = None,
+) -> List[Dict]:
+    """Run one sim."""
+    cfg = copy.deepcopy(config)
+    case_path = str(cfg["case"])
+    andes_opts = _andes_options_from_env()
+    sim_inputs = _resolve_simulation_inputs(cfg, case_path=case_path, andes_opts=andes_opts)
+    sim_rng = rng if rng is not None else _rng_for_sim(int(cfg["seed"]), sim_id)
+    output_dir = Path(cfg["output_dir"]) if cfg.get("output_dir") else None
+    if output_dir is not None:
+        output_dir.mkdir(parents=True, exist_ok=True)
+    return run_single_sim(
+        cfg,
+        sim_id,
+        sim_rng,
+        case_path,
+        sim_inputs["pq_names"],
+        sim_inputs["owner_map"],
+        sim_inputs["regcv1_ids"],
+        sim_inputs["line_uids"],
+        sim_inputs["feature_names_path"],
+        output_dir,
+    )
+
+
+def main() -> None:
+    """Run the CLI entrypoint."""
+    parser = argparse.ArgumentParser(description="Run ANDES sims and extract metrics.")
+    parser.add_argument("--config", default="configs/data_generation/generation.yaml", help="Path to YAML config.")
+    args = parser.parse_args()
+    run_generation(args.config)
 
 
 if __name__ == "__main__":

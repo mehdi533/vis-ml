@@ -1,0 +1,24 @@
+run_dir: results/thesis_model_results/outputs/optimization_ready_mtlsh_with_dispatch/MTLSH__kendall__minmax__seed42
+output_dir: results/thesis_model_results/figures/mtlsh_activation_motion
+focus_target: dev_COI
+sched_feature_mode: md_only
+candidate_search_size: 1200
+animation_frames: 24
+
+pair_selection:
+  score_weights:
+    shared_flips: 1.0
+    focus_head_flips: 3.0
+    total_head_flips: 0.4
+    non_sched_diff: -8.0
+    sched_diff: 2.5
+  min_shared_flip_target: 8
+  min_focus_head_flip_target: 4
+
+edge_display:
+  top_sched_to_shared_per_neuron: 3
+  top_shared_to_head_per_neuron: 2
+
+style:
+  figure_width: 18.0
+  figure_height: 10.5

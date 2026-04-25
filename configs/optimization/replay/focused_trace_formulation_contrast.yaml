@@ -1,0 +1,33 @@
+tds:
+  t_end: 20.0
+  t_step: 0.01
+  method: backeuler
+  no_tqdm: true
+  criteria: 0
+
+contingency:
+  type: load_step
+  time: 1.0
+
+output:
+  directory: ../../local_validation/replay_trace_formulation_contrast
+  style_config: configs/figure/thesis_plot_style.yaml
+  title: ""
+  panel_title: ""
+  plot_mode: combined
+  ibr_scale: 100.0
+  ibr_unit: MW
+
+runs:
+  - label: "ED"
+    summary_json: ../../results/formulations/ed/ed_summary.json
+  - label: "ED + Sur."
+    summary_json: ../../results/formulations/ed_surrogate/ed_surrogate_summary.json
+  - label: "Full"
+    summary_json: ../../results/formulations/ed_line_n1_surrogate/ed_line_n1_surrogate_summary.json
+  - label: "No VI (ED dispatch)"
+    summary_json: ../../results/formulations/ed/ed_summary.json
+    linestyle: ":"
+    md_override:
+      m: [0.0, 0.0, 0.0, 0.0]
+      d: [0.0, 0.0, 0.0, 0.0]

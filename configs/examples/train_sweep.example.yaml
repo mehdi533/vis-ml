@@ -1,0 +1,72 @@
+# Training sweep config for models/train_sweep.py
+output_dir: models_trained
+skip_if_exists: false
+seed: 42
+
+model:
+  shared_sizes: [128, 64]
+  head_sizes: [32]
+  hidden_sizes: [256, 128, 64]
+  activation: relu
+  dropout: 0.1
+  group_shared_sizes: [64]
+  # Optional architecture-specific knobs:
+  # group_head_indices: [[0, 1], [2, 3, 4, 5]]
+  # attention_hidden_dim: 32
+  # attention_temperature: 1.0
+  # attention_dropout: 0.0
+  # kan_grid_size: 8
+  # kan_grid_min: -1.0
+  # kan_grid_max: 1.0
+  # PICNN / PICNN_MTLSH only:
+  # u_feature_cols: [M_1, D_1, M_2, D_2, M_3, D_3, M_4, D_4]
+
+data:
+  csv_path: results/to_export/simulation_results.csv
+  feature_names_path: configs/shared/data_generation_feature_names.yaml
+  use_registry_feature_allowlist: true
+  target_cols: [rocof_COI, dev_COI]
+  # Optional: pin an explicit ordered feature contract instead of inferring
+  # features from all remaining CSV columns after drops.
+  # feature_cols: [base_load_scale, load_step_scale, ...]
+  drop_cols: [sim_id, seed, success, time_max_dev]
+  # Optional: remove whole column families by prefix to avoid label leakage.
+  # drop_prefixes: [Delta_P_IBR_abs_, rocof_abs_, dev_abs_]
+  use_recommended_scalers: true
+
+split:
+  test_size: 0.2
+  val_fraction: 0.5
+  random_state: 42
+
+training:
+  epochs: 150
+  lr: 0.001
+  weight_decay: 0.0001
+  batch_train: 512
+  batch_eval: 1024
+  loss_weights: []
+  use_lr_scheduler: true
+  lr_scheduler_patience: 6
+  lr_scheduler_factor: 0.5
+  lr_scheduler_min_lr: 1e-7
+
+sweep:
+  models: ["MTLSH"]
+  losses: ["mse"]
+  scalers: ["minmax"]
+  seeds: [42, 1337]
+  # Grid blocks:
+  # - sweep.model for architecture knobs
+  # - sweep.training for optimizer/batch knobs
+  # - sweep.data for dataset-side toggles
+  #
+  # For nested list values such as shared_sizes, use {"values": [[128, 64], [256, 128]]}.
+  # For exact paired overrides instead of a cartesian product, use:
+  # model:
+  #   rows:
+  #     - {shared_sizes: [16], head_sizes: [8]}
+  #     - {shared_sizes: [32], head_sizes: [16]}
+  model: {}
+  training: {}
+  data: {}

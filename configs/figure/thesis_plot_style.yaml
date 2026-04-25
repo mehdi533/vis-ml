@@ -1,0 +1,104 @@
+version: 1
+name: thesis_plot_style
+description: >
+  Centralized visual style contract for all thesis figures. This file is intended
+  for both plotting scripts and LLM-driven plot generation prompts.
+
+llm_contract:
+  objective: "Keep all thesis figures visually consistent and publication-ready."
+  required:
+    - "Use the rc_params below unless the target script explicitly overrides them."
+    - "Use semantic palettes from this file instead of ad-hoc hex colors."
+    - "Export both PDF and PNG with tight bounding boxes."
+  avoid:
+    - "Mixing unrelated color families for the same semantic category."
+    - "Large font-size jumps across figures."
+    - "Legend frames unless needed for overlap readability."
+
+style:
+  matplotlib:
+    rc_params:
+      figure.figsize: [7.0, 4.4]
+      figure.dpi: 140
+      savefig.dpi: 300
+      savefig.bbox: tight
+      font.family: DejaVu Serif
+      axes.facecolor: white
+      figure.facecolor: white
+      axes.grid: true
+      grid.alpha: 0.18
+      grid.linestyle: "-"
+      grid.color: "#6e6259"
+      axes.spines.top: false
+      axes.spines.right: false
+      axes.spines.left: true
+      axes.spines.bottom: true
+      axes.edgecolor: "#4b433d"
+      axes.linewidth: 0.8
+      axes.titlesize: 12
+      axes.titleweight: semibold
+      axes.labelsize: 10.5
+      axes.labelcolor: "#2b2826"
+      xtick.labelsize: 9
+      ytick.labelsize: 9
+      xtick.color: "#2b2826"
+      ytick.color: "#2b2826"
+      legend.fontsize: 9
+      legend.frameon: false
+
+  font_sizes:
+    axis_label: 12.5
+    tick: 11.0
+    legend: 12.0
+    title: 13.5
+
+  line:
+    default_width: 1.8
+    limit_width: 1.0
+    limit_style: "--"
+    disturbance_style: "--"
+    disturbance_color: "#8d0801"
+
+  palettes:
+    sampling:
+      global: "#2f6690"
+      zone_based: "#c65d3b"
+    formulation:
+      ed: "#4c6a92"
+      ed_line: "#7a8da6"
+      ed_line_n1: "#8f6f4b"
+      ed_surrogate: "#c46646"
+      ed_line_n1_surrogate: "#2f7f6d"
+      ed_line_n1_surrogate_redispatch: "#5b8c45"
+    replay:
+      default: "#1f77b4"
+      comparison: "#ff7f0e"
+      local: "#d62728"
+      tertiary: "#2ca02c"
+    schedule:
+      low_vis: "#355070"
+      medium_vis: "#6d597a"
+      high_vis: "#b56576"
+    zone_owner:
+      "1": "#4f7c5d"
+      "2": "#2f6690"
+      "3": "#c65d3b"
+      "4": "#805e73"
+    severity_bins:
+      bin_1: "#9ecae1"
+      bin_2: "#6baed6"
+      bin_3: "#4292c6"
+      bin_4: "#2171b5"
+      bin_5: "#084594"
+    ibr_units:
+      "1": "#355070"
+      "2": "#6d597a"
+      "3": "#b56576"
+      "4": "#e56b6f"
+
+  accents:
+    constraint_limit: "#c46646"
+    neutral_node_fill: "#d7d4cf"
+    neutral_node_edge: "#5d544e"
+    highlighted_ibr_fill: "#2a9d8f"
+    highlighted_ibr_edge: "#264653"

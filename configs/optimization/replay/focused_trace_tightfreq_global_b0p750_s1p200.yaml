@@ -1,0 +1,31 @@
+tds:
+  t_end: 20.0
+  t_step: 0.01
+  method: backeuler
+  no_tqdm: true
+  criteria: 0
+
+contingency:
+  type: load_step
+  time: 1.0
+  scale: 1.2
+
+limits:
+  frequency_hz: 50.0
+  delta_f_hz: 0.5
+  rocof_hz_per_s: 0.25
+
+output:
+  directory: ../../local_validation/replay_trace_tightfreq_global_b0p750_s1p200
+  title: ""
+  plot_mode: ibr_only
+  ibr_scale: 100.0
+  ibr_unit: MW
+
+runs:
+  - label: "Default bounds"
+    summary_json: ../../results/benchmark/main/global_b0p750_s1p200/ed_line_n1_surrogate/ed_line_n1_surrogate_summary.json
+    linestyle: "-"
+  - label: "Tighter |df| bounds"
+    summary_json: ../../results/tight_frequency_bounds_sweep/global_b0p750_s1p200/retained_df0p50_rocof0p25/retained_df0p50_rocof0p25__global_b0p750_s1p200_summary.json
+    linestyle: "--"

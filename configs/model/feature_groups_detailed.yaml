@@ -1,0 +1,283 @@
+groups:
+  x_op_static_prefault:
+    parent: x_op
+    exact:
+      - base_load_scale
+      - base_load_p_total
+      - base_load_q_total
+      - total_load_p_prefault
+      - total_load_q_prefault
+      - total_gen_p_prefault
+      - total_gen_q_prefault
+      - reserve_proxy_prefault
+      - bus_v_min_prefault
+      - bus_v_max_prefault
+      - bus_v_mean_prefault
+      - bus_v_std_prefault
+      - bus_v_max_abs_dev_prefault
+      - bus_angle_min_prefault
+      - bus_angle_max_prefault
+      - bus_angle_spread_prefault
+      - n_buses
+      - n_lines
+      - n_pq_loads
+      - n_genrou
+      - n_regcv1
+    prefixes:
+      - P_BASE_
+      - Q_BASE_
+
+  x_op_tds_bus_voltage_angle:
+    parent: x_op
+    prefixes:
+      - x0__a_Bus_
+      - x0__v_Bus_
+      - x0__p_Slack_
+      - x0__q_Slack_
+      - x0__q_PV_
+
+  x_op_tds_bus_frequency_rocof:
+    parent: x_op
+    prefixes:
+      - x0__L_y_BusFreq_
+      - x0__WO_x_BusFreq_
+      - x0__WO_y_BusFreq_
+      - x0__f_BusFreq_
+      - x0__L_y_BusROCOF_
+      - x0__WO_x_BusROCOF_
+      - x0__WO_y_BusROCOF_
+      - x0__Wf_x_BusROCOF_
+      - x0__Wf_y_BusROCOF_
+      - x0__f_BusROCOF_
+      - x0__delta_COI_
+      - x0__omega_COI_
+
+  x_op_tds_sync_rotor:
+    parent: x_op
+    prefixes:
+      - x0__delta_GENROU_
+      - x0__omega_GENROU_
+
+  x_op_tds_sync_electrical:
+    parent: x_op
+    prefixes:
+      - x0__e1q_GENROU_
+      - x0__e1d_GENROU_
+      - x0__e2d_GENROU_
+      - x0__e2q_GENROU_
+      - x0__Id_GENROU_
+      - x0__Iq_GENROU_
+      - x0__vd_GENROU_
+      - x0__vq_GENROU_
+      - x0__Pe_GENROU_
+      - x0__Qe_GENROU_
+      - x0__vf_GENROU_
+      - x0__tm_GENROU_
+      - x0__te_GENROU_
+      - x0__Se_GENROU_
+      - x0__XadIfd_GENROU_
+      - x0__XaqI1q_GENROU_
+      - x0__psid_GENROU_
+      - x0__psiq_GENROU_
+      - x0__psi2q_GENROU_
+      - x0__psi2d_GENROU_
+      - x0__psi2_GENROU_
+
+  x_op_tds_governor_turbine:
+    parent: x_op
+    prefixes:
+      - x0__LAG_y_TGOV1_
+      - x0__LL_x_TGOV1_
+      - x0__LAG_y_TGOV1N_TGOV1_
+      - x0__LL_x_TGOV1N_TGOV1_
+      - x0__paux_TGOV1_
+      - x0__pout_TGOV1_
+      - x0__wref_TGOV1_
+      - x0__pref_TGOV1_
+      - x0__LL_y_TGOV1_
+      - x0__pd_TGOV1_
+      - x0__wd_TGOV1_
+      - x0__pd_TGOV1N_TGOV1_
+      - x0__wd_TGOV1N_TGOV1_
+      - x0__paux_TGOV1N_TGOV1_
+      - x0__pout_TGOV1N_TGOV1_
+      - x0__pref_TGOV1N_TGOV1_
+      - x0__wref_TGOV1N_TGOV1_
+      - x0__LL_y_TGOV1N_TGOV1_
+      - x0__LAG_y_GAST_
+      - x0__LG2_y_GAST_
+      - x0__LG3_y_GAST_
+      - x0__paux_GAST_
+      - x0__pout_GAST_
+      - x0__wref_GAST_
+      - x0__pref_GAST_
+      - x0__v9_GAST_
+      - x0__pd_GAST_
+      - x0__wd_GAST_
+      - x0__LVG_y_GAST_
+      - x0__F1_y_IEESGO_
+      - x0__F2_x_IEESGO_
+      - x0__F2_y_IEESGO_
+      - x0__F3_y_IEESGO_
+      - x0__F4_y_IEESGO_
+      - x0__F5_y_IEESGO_
+      - x0__HL_x_IEESGO_
+      - x0__HL_y_IEESGO_
+      - x0__paux_IEESGO_
+      - x0__pout_IEESGO_
+      - x0__wref_IEESGO_
+      - x0__pref_IEESGO_
+
+  x_op_tds_exciter:
+    parent: x_op
+    prefixes:
+      - x0__vp_IEEEX1_
+      - x0__LS_y_IEEEX1_
+      - x0__LL_x_IEEEX1_
+      - x0__LA_y_IEEEX1_
+      - x0__W_x_IEEEX1_
+      - x0__v_IEEEX1_
+      - x0__vout_IEEEX1_
+      - x0__vref_IEEEX1_
+      - x0__Se_IEEEX1_
+      - x0__vi_IEEEX1_
+      - x0__LL_y_IEEEX1_
+      - x0__W_y_IEEEX1_
+
+  x_op_tds_pss:
+    parent: x_op
+    prefixes:
+      - x0__F1_x_IEEEST_
+      - x0__F1_y_IEEEST_
+      - x0__F2_x1_IEEEST_
+      - x0__F2_x2_IEEEST_
+      - x0__LL1_x_IEEEST_
+      - x0__LL2_x_IEEEST_
+      - x0__WO_x_IEEEST_
+      - x0__vsout_IEEEST_
+      - x0__sig_IEEEST_
+      - x0__F2_y_IEEEST_
+      - x0__LL1_y_IEEEST_
+      - x0__LL2_y_IEEEST_
+      - x0__Vks_y_IEEEST_
+      - x0__WO_y_IEEEST_
+      - x0__Vss_IEEEST_
+
+  x_op_tds_regcv1_outer:
+    parent: x_op
+    prefixes:
+      - x0__dw_REGCV1_
+      - x0__delta_REGCV1_
+      - x0__Pref2_REGCV1_
+      - x0__vref2_REGCV1_
+      - x0__omega_REGCV1_
+      - x0__Pe_REGCV1_
+      - x0__Qe_REGCV1_
+
+  x_op_tds_regcv1_inner:
+    parent: x_op
+    prefixes:
+      - x0__PIvd_xi_REGCV1_
+      - x0__PIvq_xi_REGCV1_
+      - x0__PIId_xi_REGCV1_
+      - x0__PIIq_xi_REGCV1_
+      - x0__udLag_y_REGCV1_
+      - x0__uqLag_y_REGCV1_
+      - x0__vd_REGCV1_
+      - x0__vq_REGCV1_
+      - x0__Id_REGCV1_
+      - x0__Iq_REGCV1_
+      - x0__PIvd_y_REGCV1_
+      - x0__PIvq_y_REGCV1_
+      - x0__PIId_y_REGCV1_
+      - x0__PIIq_y_REGCV1_
+      - x0__udref_REGCV1_
+      - x0__uqref_REGCV1_
+
+  x_op_tds_time:
+    parent: x_op
+    exact:
+      - x0__Time_s
+
+  x_cont_disturbance:
+    parent: x_cont
+    exact:
+      - load_step_scale
+      - load_step_time
+      - DELTA_PQ_tot
+    prefixes:
+      - DELTA_P_
+      - DELTA_P_OWNER_
+
+  x_cont_line_parameters:
+    parent: x_cont
+    exact:
+      - line_rating
+      - line_fn
+      - line_Vn1
+      - line_Vn2
+      - line_r
+      - line_x
+      - line_b
+      - line_g
+      - line_b1
+      - line_g1
+      - line_b2
+      - line_g2
+      - line_trans
+      - line_tap
+      - line_phi
+      - line_x_over_r
+    prefixes:
+      - line_oh_uid_
+
+  x_cont_prefault_stress:
+    parent: x_cont
+    exact:
+      - pre_fault_flow
+      - pre_fault_loading
+      - pre_p_from
+      - pre_p_to
+      - pre_loading_from
+      - pre_loading_to
+      - pre_flow_direction_p
+      - pre_v_from
+      - pre_v_to
+      - pre_theta_from
+      - pre_theta_to
+      - pre_delta_theta
+      - system_max_loading_prefault
+      - system_mean_loading_prefault
+      - system_top5_loading_mean_prefault
+      - ptdf_l1_norm_outaged_line
+      - max_abs_lodf_row
+      - predicted_max_post_cont_loading_dc
+
+  x_cont_topology:
+    parent: x_cont
+    exact:
+      - bus_degree_from
+      - bus_degree_to
+      - is_bridge
+      - n_components_after_trip
+      - largest_component_fraction_after_trip
+
+  x_sched_inertia_damping:
+    parent: x_sched
+    exact:
+      - M_agg
+      - D_agg
+    prefixes:
+      - M_
+      - D_
+
+  x_sched_dispatch:
+    parent: x_sched
+    exact:
+      - P_GENROU_TOTAL
+      - P_REGCV1_TOTAL
+      - P_DISPATCH_TOTAL
+      - P_REGCV1_SHARE
+    prefixes:
+      - P_GENROU_
+      - P_REGCV1_

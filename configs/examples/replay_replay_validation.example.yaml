@@ -1,0 +1,37 @@
+tds:
+  t_end: 21.0
+  t_step: 0.1
+  no_tqdm: true
+  criteria: 0
+  tol: 1.0e-3
+  fixt: 0
+  method: backeuler
+  honest: 0
+  max_iter: 35
+  shrinkt: 1
+
+contingency:
+  type: load_step
+  # If omitted, scale/time are read from each optimization config scenario.
+  # scale: 1.2
+  # time: 3.0
+
+output_metric_map:
+  rocof_COI: "coi.rocof_COI"
+  dev_COI: "coi.dev_COI"
+  Delta_P_IBR_1: "ibr_response.Delta_P_IBR_1"
+  Delta_P_IBR_2: "ibr_response.Delta_P_IBR_2"
+  Delta_P_IBR_3: "ibr_response.Delta_P_IBR_3"
+  Delta_P_IBR_4: "ibr_response.Delta_P_IBR_4"
+
+runs:
+  - suite_summary_json: ../../results/formulation_comparison_summary.json
+    formulation_ids:
+      - ed_surrogate
+      - ed_line_n1_surrogate
+      - ed_line_n1_surrogate_redispatch
+
+output:
+  summary_csv: ../../results/replay_validation_summary.csv
+  detail_csv: ../../results/replay_validation_detail.csv
+  summary_json: ../../results/replay_validation_summary.json

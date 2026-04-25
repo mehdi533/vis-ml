@@ -1,0 +1,90 @@
+output_dir: results/thesis_model_results/debug_outputs/loss_comparison_mtlsh
+skip_if_exists: false
+seed: 42
+
+model:
+  shared_sizes: [256, 128]
+  head_sizes: [64]
+  activation: relu
+  dropout: 0.0
+
+data:
+  csv_path: __simpqareas/exaple_40_samples.csv
+  feature_names_path: configs/shared/data_generation_feature_names.yaml
+  use_registry_feature_allowlist: true
+  drop_metadata_fields: true
+  drop_diagnostic_fields: true
+  target_cols: [rocof_COI, dev_COI, Delta_P_IBR_1, Delta_P_IBR_2, Delta_P_IBR_3, Delta_P_IBR_4]
+  drop_cols:
+    - sim_id
+    - seed
+    - success
+    - cont_type
+    - contingency_time
+    - line_uid
+    - line_name
+    - line_from_bus
+    - line_to_bus
+    - time_max_dev
+    - time_max_rocof
+    - f_ss_COI
+    - f_min_COI
+    - f_max_COI
+    - t_settle_COI
+    - rocof_abs_COI
+    - rocof_mean_COI
+    - rocof_rms_COI
+    - dev_abs_COI
+    - bus_freq_max_abs_dev_any
+    - bus_freq_mean_max_abs_dev
+    - bus_freq_p95_max_abs_dev
+    - bus_freq_nadir_min
+    - bus_freq_zenith_max
+    - bus_freq_n_buses_over_0p2
+    - bus_freq_n_buses_over_0p5
+    - bus_v_max_abs_dev_any
+    - bus_v_mean_max_abs_dev
+    - bus_v_p95_max_abs_dev
+    - bus_v_min_any
+    - bus_v_max_any
+    - bus_v_n_buses_below_0p95
+    - bus_v_n_buses_above_1p05
+    - step_bin_label
+    - M_bin_label
+    - D_bin_label
+    - plotter_csv
+    - is_bridge
+    - n_components_after_trip
+    - reserve_p_genrou
+    - reserve_p_ibr
+    - reserve_q_genrou
+    - reserve_q_ibr
+  drop_prefixes: [x0__, Delta_P_IBR_abs_, bus_freq_max_abs_dev_, bus_v_max_abs_dev_]
+  ignore_missing_drop_cols: true
+  use_recommended_scalers: false
+
+split:
+  test_size: 0.3
+  val_fraction: 0.5
+  random_state: 42
+
+training:
+  epochs: 5
+  lr: 0.001
+  weight_decay: 0.0001
+  batch_train: 8
+  batch_eval: 8
+  loss_weights: []
+  use_lr_scheduler: true
+  lr_scheduler_patience: 2
+  lr_scheduler_factor: 0.5
+  lr_scheduler_min_lr: 1e-7
+
+sweep:
+  models: [MTLSH]
+  losses: [mse, l1, smooth_l1, huber, kendall]
+  scalers: [minmax]
+  seeds: [42]
+  model: {}
+  training: {}
+  data: {}

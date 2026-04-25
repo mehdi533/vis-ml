@@ -1,0 +1,63 @@
+case: "data_generation/andes_cases/ieee39_full_ibrs.xlsx"
+output_dir: "results/thesis_data_generation_results/results/no_mismatch"
+output_csv: "simulation_results.csv"
+feature_names_path: "configs/shared/data_generation_feature_names.yaml"
+seed: 42
+n_sims: 20000
+workers: 128
+stream_level: 50
+
+base_load_scale:
+  low: 0.6
+  high: 1.0
+
+contingency:
+  load_step:
+    enable: false
+    time: 1.0
+    scale:
+      low: 0.5
+      high: 1.5
+      bins:
+        - {low: 0.5, high: 0.95, prob: 0.25, label: "below_nominal"}
+        - {low: 0.95, high: 1.05, prob: 0.50, label: "near_nominal"}
+        - {low: 1.05, high: 1.5, prob: 0.25, label: "above_nominal"}
+  line_n1:
+    enable: false
+    trip_time: 1.0
+    line_ids: []
+    max_lines: 1
+
+ibr:
+  model: "REGCV1"
+  n_ibr: 4
+  indices: [0, 5, 7, 8]
+  M_range: [0.0, 8.0]
+  D_range: [0.0, 6.0]
+
+load:
+  pq_names: ["PQ_1", "PQ_2", "PQ_3", "PQ_4", "PQ_5", "PQ_6", "PQ_7", "PQ_8", "PQ_9", "PQ_10", "PQ_11", "PQ_12", "PQ_13", "PQ_14", "PQ_15", "PQ_16", "PQ_17", "PQ_18", "PQ_19"]
+  pq_bus_ids: []
+  scale_pv: true
+  owners: ["1", "2", "3", "4"]
+  random_owner_per_sim: true
+
+ed:
+  enable: true
+  ibr_idx: [0, 5, 7, 8]
+  cost_table_path: "configs/shared/ieee39_regcv1_dispatch_costs.yaml"
+  solver: "OSQP"
+  verbose: false
+  line_limits_enable: true
+
+tds:
+  t_end: 10.0
+  t_step: 0.1
+  method: "backeuler"
+  max_iter: 35
+  tol: 1.0e-3
+  honest: 1
+  fixt: 0
+  shrinkt: 1
+  criteria: 0
+  no_tqdm: true
