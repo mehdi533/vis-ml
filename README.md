@@ -8,12 +8,11 @@ Repository for virtual inertia studies with three core workflow blocks:
 2. `models/`: surrogate model training/evaluation/export.
 3. `scheduling/`: optimization and replay validation.
 
-## Canonical Support Folders
+## Support Folders
 
 - `scripts/results/`: reusable orchestration/post-processing scripts.
-- `tmp/`: local scratch and baseline snapshots.
 
-## Canonical Config Layout
+## Config Layout
 
 - `configs/shared/`: shared registries/tables used across workflows.
 - `configs/data_generation/`: data-generation scenario configs.
@@ -26,16 +25,6 @@ Repository for virtual inertia studies with three core workflow blocks:
 - Model training: `python models/train_sweep.py --config configs/model/train_sweep.yaml`
 - Scheduling/optimization smoke (recommended first run): `python scheduling/run_experiment_suite.py --suite configs/scheduling/smoke/formulation_comparison_smoke.yaml --execution-mode subprocess`
 - Single optimization run (strict base config): `python scheduling/problem.py --config configs/scheduling/base_optimization.yaml`
-
-## Cleanup Baseline
-
-A baseline snapshot for this cleanup pass is stored under:
-
-- `tmp/cleanup_baseline_2026-04-24/`
-
-Key references:
-
-- `docs/VIS_SCHEDULING_EXTENSION_POINTS.md`
 
 ## Acknowledgements
 
