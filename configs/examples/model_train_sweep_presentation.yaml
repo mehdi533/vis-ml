@@ -7,7 +7,7 @@ skip_if_exists: false
 seed: 42
 
 model:
-  shared_sizes: [128, 64]
+  shared_sizes: [64]
   head_sizes: [32]
   hidden_sizes: [128, 64, 32]
   activation: relu
@@ -44,9 +44,42 @@ data:
     - line_from_bus
     - line_to_bus
     - time_max_dev
+    - time_max_rocof
+    - f_ss_COI
+    - f_min_COI
+    - f_max_COI
+    - t_settle_COI
+    - rocof_abs_COI
+    - rocof_mean_COI
+    - rocof_rms_COI
+    - dev_abs_COI
+    - bus_freq_max_abs_dev_any
+    - bus_freq_mean_max_abs_dev
+    - bus_freq_p95_max_abs_dev
+    - bus_freq_nadir_min
+    - bus_freq_zenith_max
+    - bus_freq_n_buses_over_0p2
+    - bus_freq_n_buses_over_0p5
+    - bus_v_max_abs_dev_any
+    - bus_v_mean_max_abs_dev
+    - bus_v_p95_max_abs_dev
+    - bus_v_min_any
+    - bus_v_max_any
+    - bus_v_n_buses_below_0p95
+    - bus_v_n_buses_above_1p05
+    - step_bin_label
+    - M_bin_label
+    - D_bin_label
     - plotter_csv
+    - is_bridge
+    - n_components_after_trip
+    - reserve_p_genrou
+    - reserve_p_ibr
+    - reserve_q_genrou
+    - reserve_q_ibr
   drop_prefixes: [x0__, Delta_P_IBR_abs_, bus_freq_max_abs_dev_, bus_v_max_abs_dev_]
   ignore_missing_drop_cols: true
+  use_recommended_scalers: false
   # Optional extra controls:
   # feature_cols: [base_load_scale, M_1, D_1]
   # allowed_feature_cols: [base_load_scale, M_1, D_1]
