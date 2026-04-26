@@ -17,6 +17,5 @@ results/
 # optional local-only model eval utility
 models/eval_on_csv.py
 
-configs/examples/
 configs/figure/
 configs/presentation/

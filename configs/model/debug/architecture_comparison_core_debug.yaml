@@ -1,9 +1,0 @@
-inherits: configs/model/studies/architecture/core.yaml
-
-output_dir: results/thesis_model_results/debug_outputs/architecture_comparison_core
-
-training:
-  epochs: 2
-  batch_train: 8
-  batch_eval: 8
-  lr_scheduler_patience: 2

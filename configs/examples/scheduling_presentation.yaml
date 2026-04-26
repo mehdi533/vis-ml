@@ -1,0 +1,115 @@
+# Presentation example: single scheduling/optimization run
+# Run:
+#   ../venv/bin/python scheduling/problem.py --config configs/examples/scheduling_presentation.yaml
+# Optional suite runner (with a suite yaml):
+#   ../venv/bin/python scheduling/run_experiment_suite.py --suite configs/scheduling/smoke/formulation_comparison_smoke.yaml --execution-mode subprocess
+
+formulation:
+  id: presentation_demo
+  name: Presentation Demo
+  description: Minimal retained formulation example for a live demo.
+
+system:
+  case: data_generation/andes_cases/ieee39_full_ibrs.xlsx
+  frequency_hz: 50.0
+
+scenario:
+  base_scale: 0.6
+  step_scale: 1.2
+  load_step_time: 1.0
+  # Optional:
+  # id: global_uniform
+  # contingency_mode: line
+  # contingency_line_uid: 44
+
+seed:
+  M: 0.0
+  D: 0.0
+
+model:
+  type: MTLSH
+  model_dir: results/thesis_model_results/outputs/optimization_ready_mtlsh/MTLSH__kendall__minmax__seed42
+  in_dim: 178
+  n_tasks: 6
+  shared_sizes: [32]
+  head_sizes: [16]
+  dropout: 0.0
+  convex: false
+
+features:
+  strict_from_system: true
+  contingency_mode: load_mismatch
+  x_features_from_registry: false
+  x_features_from_model_dir: true
+  feature_names_path: configs/shared/data_generation_feature_names.yaml
+  registry_feature_groups: ["x_op", "x_cont", "x_sched"]
+  exclude_prefixes: ["x0__"]
+  registry_filter_to_buildable: true
+  registry_align_to_model_contract: true
+  registry_include_unbuildable_model_features: false
+  missing_feature_source: none
+  fixed_source_override_non_sched: false
+  allow_missing_features: false
+  allow_constant_fill_for_unresolved_missing: false
+  missing_fill_value: 0.0
+
+outputs:
+  y_names: ["rocof_COI", "dev_COI", "Delta_P_IBR_1", "Delta_P_IBR_2", "Delta_P_IBR_3", "Delta_P_IBR_4"]
+
+ibr:
+  indices: [0, 5, 7, 8]
+
+bounds:
+  M_bounds: [0.0, 8.0]
+  D_bounds: [0.0, 6.0]
+  y_min: [-1.0, -0.2, -5.0, -5.0, -5.0, -5.0]
+  y_max: [1.0, 0.2, 5.0, 5.0, 5.0, 5.0]
+  # Optional tighter sensitivity:
+  # y_min: [-0.8, -0.15, -5.0, -5.0, -5.0, -5.0]
+  # y_max: [0.8, 0.15, 5.0, 5.0, 5.0, 5.0]
+
+constraints:
+  use_input: true
+  use_output: true
+  use_nn: true
+  use_line: true
+  use_n1: true
+  use_n1_redispatch: false
+  exclude_islanding_critical_n1: true
+  exclude_n1_line_uids: []
+  use_ed: true
+  nn_mode: milp
+  y_ibr_idx: [2, 3, 4, 5]
+  enforce_dispatch_output_link: true
+  tie_breaker: 0.0
+  # Optional redispatch mode:
+  # use_n1_redispatch: true
+
+ed_costs:
+  cost_table_path: configs/shared/ieee39_regcv1_dispatch_costs.yaml
+
+solver:
+  name: GUROBI
+  verbose: true
+  reoptimize: true
+  feasibility_checks: true
+  extra_kwargs:
+    TimeLimit: 600
+    MIPGap: 1.0e-3
+  # Optional alternative:
+  # name: MOSEK
+
+plots:
+  enabled: false
+  dir: results/presentation_examples/scheduling/plots
+  m_d: false
+  pred_vs_opt: false
+  dispatch: false
+  network: false
+  network_layout: kamada
+
+output:
+  results_dir: results/presentation_examples/scheduling
+  run_tag: presentation_demo
+  log_file: results/presentation_examples/scheduling/presentation_demo.log
+  fail_on_infeasible: false

@@ -1,7 +1,0 @@
-inherits: configs/model/studies/architecture/core.yaml
-
-output_dir: results/thesis_model_results/outputs/architecture_comparison_core_kendall_standard
-
-sweep:
-  losses: [kendall]
-  scalers: [standard]
