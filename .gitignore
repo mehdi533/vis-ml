@@ -8,7 +8,8 @@ ieee39_full_*
 *.pt
 *.pytest_cache
 # results
-/results/
+results/*
+results/
 /models_trained/
 *.png
 *.pdf
@@ -16,6 +17,6 @@ ieee39_full_*
 # optional local-only model eval utility
 models/eval_on_csv.py
 
-/configs/examples/
-/configs/figure/
-/configs/presentation/
+configs/examples/
+configs/figure/
+configs/presentation/
