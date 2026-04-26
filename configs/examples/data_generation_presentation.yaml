@@ -7,12 +7,12 @@ output_dir: "results/presentation_examples/data_generation"
 output_csv: "simulation_results.csv"
 feature_names_path: "configs/shared/data_generation_feature_names.yaml"
 seed: 42
-n_sims: 100
+n_sims: 16
 workers: 4
 stream_level: 50
 
 features:
-  include_initial_state: true
+  include_initial_state: false
 
 base_load_scale:
   low: 0.5

@@ -405,37 +405,6 @@ def run_ed_dispatch(
     ss.PV.p0.v = Pg_val[: ss.PV.n]
     ss.Slack.p0.v = Pg_val[ss.PV.n :]
 
-    # genrou_dispatch_by_name: Dict[str, float] = {}
-    # if hasattr(ss, "GENROU") and ss.GENROU.n:
-    #     genrou_names = [str(value) for value in list(getattr(ss.GENROU.name, "v", []))]
-    #     genrou_static_idx = list(getattr(getattr(ss.GENROU, "gen", None), "v", []))
-    #     for local_idx, static_idx_raw in enumerate(genrou_static_idx):
-    #         try:
-    #             static_idx = int(static_idx_raw) - 1
-    #         except Exception:
-    #             continue
-    #         if 0 <= static_idx < Pg_val.size and local_idx < len(genrou_names):
-    #             genrou_dispatch_by_name[genrou_names[local_idx]] = float(Pg_val[static_idx])
-
-    # if hasattr(ss, "REGCV1") and ss.REGCV1.n:
-    #     for local_idx, gen_idx in enumerate(ibr_idx):
-    #         if 0 <= gen_idx < Pg_val.size and local_idx < ss.REGCV1.n:
-    #             dispatch_value = float(Pg_val[gen_idx])
-    #             try:
-    #                 ss.REGCV1.pref.v[local_idx] = dispatch_value
-    #             except Exception:
-    #                 pass
-    #             # Keep any exposed secondary reference aligned with the ED dispatch
-    #             # so TDS does not create an artificial post-initialization transient.
-    #             for attr_name in ("Pref2", "pref2"):
-    #                 try:
-    #                     attr = getattr(ss.REGCV1, attr_name, None)
-    #                     values = getattr(attr, "v", None)
-    #                     if values is not None and local_idx < len(values):
-    #                         values[local_idx] = dispatch_value
-    #                 except Exception:
-    #                     pass
-
     return Pg_val, {
         "ed_enabled": 1,
         "ed_solver": str(ed_cfg.get("solver", "OSQP")),
@@ -446,58 +415,6 @@ def run_ed_dispatch(
         "ed_reserve_cost": reserve_cost,
         "ed_quadratic_cost": quadratic_cost,
     }
-
-
-# def _sync_static_generators_from_pflow(ss) -> None:
-#     """Sync solved PF injections back into static-generator p0/q0 parameters.
-
-#     ANDES dynamic model initialization uses static-generator p0/q0 values for
-#     several linked dynamic devices. After PFlow, PV.q0 and Slack.p0/q0 can be
-#     stale unless we copy the solved injections back explicitly.
-#     """
-
-#     pv_p = np.asarray(getattr(getattr(ss.PV, "p", None), "v", []), dtype=float)
-#     pv_q = np.asarray(getattr(getattr(ss.PV, "q", None), "v", []), dtype=float)
-#     if pv_p.size == ss.PV.n:
-#         ss.PV.p0.v[:] = pv_p
-#     if pv_q.size == ss.PV.n:
-#         ss.PV.q0.v[:] = pv_q
-
-#     slack_p = np.asarray(getattr(getattr(ss.Slack, "p", None), "v", []), dtype=float)
-#     slack_q = np.asarray(getattr(getattr(ss.Slack, "q", None), "v", []), dtype=float)
-#     if slack_p.size == ss.Slack.n:
-#         ss.Slack.p0.v[:] = slack_p
-#     if slack_q.size == ss.Slack.n:
-#         ss.Slack.q0.v[:] = slack_q
-
-
-# def _sync_dynamic_references_from_static_generators(ss) -> None:
-#     """Align dynamic-device references with the current static-generator p0/q0."""
-
-#     static_p = np.asarray(ss.PV.p0.v + ss.Slack.p0.v, dtype=float)
-
-#     if hasattr(ss, "REGCV1") and ss.REGCV1.n:
-#         regcv1_gen_vals = list(getattr(getattr(ss.REGCV1, "gen", None), "v", []))
-#         for local_idx, gen_idx_raw in enumerate(regcv1_gen_vals):
-#             try:
-#                 gen_idx = int(gen_idx_raw) - 1
-#             except Exception:
-#                 continue
-#             if not (0 <= gen_idx < static_p.size):
-#                 continue
-#             dispatch_value = float(static_p[gen_idx])
-#             try:
-#                 ss.REGCV1.pref.v[local_idx] = dispatch_value
-#             except Exception:
-#                 pass
-#             for attr_name in ("Pref2", "pref2"):
-#                 try:
-#                     attr = getattr(ss.REGCV1, attr_name, None)
-#                     values = getattr(attr, "v", None)
-#                     if values is not None and local_idx < len(values):
-#                         values[local_idx] = dispatch_value
-#                 except Exception:
-#                     pass
 
 
 def _apply_base_operating_point_scale(ss, base_scale: float, *, scale_pv: bool) -> None:

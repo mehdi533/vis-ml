@@ -1,2 +1,0 @@
-# Compatibility wrapper. Canonical path: configs/model/studies/shortlist/detailed_eval.yaml
-inherits: configs/model/studies/shortlist/detailed_eval.yaml

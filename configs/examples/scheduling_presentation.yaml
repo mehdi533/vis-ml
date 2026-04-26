@@ -94,15 +94,6 @@ solver:
   # Optional alternative:
   # name: MOSEK
 
-plots:
-  enabled: true
-  dir: results/presentation_examples/scheduling/plots
-  m_d: true
-  pred_vs_opt: true
-  dispatch: true
-  network: true
-  network_layout: kamada
-
 output:
   results_dir: results/presentation_examples/scheduling
   run_tag: presentation_demo
