@@ -71,7 +71,7 @@ constraints:
   use_nn: true
   use_line: true
   use_n1: true
-  use_n1_redispatch: false
+  use_n1_redispatch: true
   exclude_islanding_critical_n1: true
   exclude_n1_line_uids: []
   use_ed: true
@@ -79,8 +79,6 @@ constraints:
   y_ibr_idx: [2, 3, 4, 5]
   enforce_dispatch_output_link: true
   tie_breaker: 0.0
-  # Optional redispatch mode:
-  # use_n1_redispatch: true
 
 ed_costs:
   cost_table_path: configs/shared/ieee39_regcv1_dispatch_costs.yaml
@@ -97,16 +95,16 @@ solver:
   # name: MOSEK
 
 plots:
-  enabled: false
+  enabled: true
   dir: results/presentation_examples/scheduling/plots
-  m_d: false
-  pred_vs_opt: false
-  dispatch: false
-  network: false
+  m_d: true
+  pred_vs_opt: true
+  dispatch: true
+  network: true
   network_layout: kamada
 
 output:
   results_dir: results/presentation_examples/scheduling
   run_tag: presentation_demo
   log_file: results/presentation_examples/scheduling/presentation_demo.log
-  fail_on_infeasible: false
+  fail_on_infeasible: true

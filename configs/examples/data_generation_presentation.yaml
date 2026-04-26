@@ -81,4 +81,4 @@ tds:
   no_tqdm: true
 
 debug:
-  save_coi_plots: false
+  save_coi_plots: true
