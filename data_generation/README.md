@@ -152,4 +152,4 @@ When `ed.line_limits_enable=true`:
 - Invalid entries are backfilled from ANDES `Line.rate_a`, then `Line.Sn` when branch/line alignment is available.
 - If any branch still has invalid limits, ED fails fast with an explicit error.
 
-This avoids silently accepting fake limits such as `99999`.
+This avoids silently accepting fake limits such as `99999` (from pandapower).
