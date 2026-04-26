@@ -1,8 +1,6 @@
 # YAML Config Examples
 
-Copy any example to your working location and tweak values. Each example matches a script/entrypoint in the repo.
-
-Canonical example location: `configs/examples/`
+Examples location: `configs/examples/`
 
 - `configs/examples/sim_generation.example.yaml` → used by `data_generation/run_sims.py`.
 - `configs/examples/cost_mtlsh_convex.example.yaml` → cost/model config for convex scheduling helpers in `scheduling/`.
@@ -17,7 +15,6 @@ Canonical example location: `configs/examples/`
   `results/presentation_vis/<case_label>/std_ieee39/`.
 
 Usage:
-1. Copy from canonical examples, e.g.:
-   `cp configs/examples/sim_generation.example.yaml tmp/my_sim_generation.yaml`
-2. Adjust paths so they are *relative to repo root*.
+1. Copy from canonical examples.
+2. Adjust paths if necessary.
 3. Keep seeds/paths stable for reproducibility.
