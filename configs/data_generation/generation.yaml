@@ -1,3 +1,5 @@
+# Template data generation config
+
 case: "data_generation/andes_cases/ieee39_full_ibrs.xlsx"
 output_dir: "results/to_export_no_step_ed_test"
 output_csv: "simulation_results.csv"

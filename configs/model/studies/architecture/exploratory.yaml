@@ -1,0 +1,17 @@
+inherits: configs/model/base/train_defaults.yaml
+
+output_dir: results/thesis_model_results/outputs/architecture_comparison_exploratory
+
+model:
+  attention_hidden_dim: 64
+  attention_temperature: 1.0
+  attention_dropout: 0.0
+  kan_grid_size: 8
+  kan_grid_min: -1.0
+  kan_grid_max: 1.0
+
+sweep:
+  models: [MTLGSH_ATT]
+  losses: [mse]
+  scalers: [minmax]
+  seeds: [42]

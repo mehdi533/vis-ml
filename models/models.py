@@ -1,3 +1,8 @@
+# models.py
+# Neural architecture registry used by the training/evaluation workflow.
+
+from __future__ import annotations
+
 from dataclasses import dataclass
 from typing import List, Optional, Sequence, Tuple
 
@@ -5,7 +10,9 @@ import torch
 import torch.nn as nn
 from models.convex_models import FICNN, PICNN, PICNN_MTLSH, NonNegLinear
 
-
+# -----------------------------
+# Base tabular architectures
+# -----------------------------
 
 class MLP(nn.Module):
     """Simple feed-forward network with configurable hidden layers."""
@@ -661,6 +668,10 @@ class TabularPICNNMTLSH(nn.Module):
             v = None
         return self.picnn_mtlsh(u, v)
 
+
+# -----------------------------
+# Model registry / factory
+# -----------------------------
 
 MODEL_FACTORY = {
     "MLP": MLP,

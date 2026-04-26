@@ -1,17 +1,15 @@
+# train_sweep.py
+# Main training entrypoint for model/loss/scaler/seed sweep experiments.
+
+from __future__ import annotations
+
 import argparse
 import csv
 import json
-import os
-import sys
 import time
 from itertools import product
 from pathlib import Path
 from typing import Dict, Optional, Sequence
-
-if __package__ in (None, ""):
-    repo_root = Path(__file__).resolve().parent.parent
-    if str(repo_root) not in sys.path:
-        sys.path.insert(0, str(repo_root))
 
 import numpy as np
 import torch
@@ -20,14 +18,13 @@ from models.data_utils import (
     load_dataset,
     make_dataloaders,
     scale_data,
-    scale_data_with_recommendations,
     split_data,
 )
 from models.models import create_model
 from models.plotting import plot_losses, plot_scatter_per_target
 from models.testing import evaluate_model
 from models.training import save_model, train_model
-from models.workflow_utils import (
+from models.utils import (
     build_model_kwargs,
     build_override_grid,
     checkpoint_filenames,
@@ -41,6 +38,10 @@ from models.workflow_utils import (
     write_yaml,
 )
 
+
+# -----------------------------
+# Sweep / logging helpers
+# -----------------------------
 
 def _set_seed(seed: int) -> None:
     np.random.seed(seed)
@@ -117,6 +118,39 @@ def _override_fieldnames(prefix: str, override_list: Sequence[Dict]) -> list[str
     return [f"{prefix}_{key}" for key in keys]
 
 
+def _build_plot_context(run_cfg: Dict) -> Dict[str, object]:
+    plotting_cfg = dict(run_cfg.get("plotting", {}) or {})
+    system_cfg = dict(run_cfg.get("system", {}) or {})
+    data_cfg = dict(run_cfg.get("data", {}) or {})
+
+    context: Dict[str, object] = {}
+    if plotting_cfg.get("nominal_frequency_hz") is not None:
+        context["nominal_frequency_hz"] = plotting_cfg.get("nominal_frequency_hz")
+    elif system_cfg.get("nominal_frequency_hz") is not None:
+        context["nominal_frequency_hz"] = system_cfg.get("nominal_frequency_hz")
+
+    if plotting_cfg.get("system_base_mva") is not None:
+        context["system_base_mva"] = plotting_cfg.get("system_base_mva")
+    elif system_cfg.get("system_base_mva") is not None:
+        context["system_base_mva"] = system_cfg.get("system_base_mva")
+
+    if plotting_cfg.get("ibr_device_base_mva") is not None:
+        context["ibr_device_base_mva"] = plotting_cfg.get("ibr_device_base_mva")
+
+    if plotting_cfg.get("case_path") is not None:
+        context["case_path"] = plotting_cfg.get("case_path")
+    elif data_cfg.get("case_path") is not None:
+        context["case_path"] = data_cfg.get("case_path")
+    elif system_cfg.get("case") is not None:
+        context["case_path"] = system_cfg.get("case")
+
+    return context
+
+
+# -----------------------------
+# Single-run execution
+# -----------------------------
+
 def train_one(
     cfg: Dict,
     run_dir: Path,
@@ -165,54 +199,25 @@ def train_one(
         random_state=int(split_cfg.get("random_state", 42)),
     )
 
-    use_reco = bool(data_cfg.get("use_recommended_scalers", False))
-    if use_reco:
-        csv_dir = os.path.dirname(data_cfg["csv_path"])
-        x_scaler_csv = data_cfg.get("x_scaler_csv") or os.path.join(csv_dir, "scaler_recommendations.csv")
-        y_scaler_csv = data_cfg.get("y_scaler_csv") or os.path.join(csv_dir, "label_scaler_recommendations.csv")
-        (
-            X_train_n,
-            X_val_n,
-            X_test_n,
-            y_train_n,
-            y_val_n,
-            y_test_n,
-            y_scaler,
-        ) = scale_data_with_recommendations(
-            X_train,
-            X_val,
-            X_test,
-            y_train,
-            y_val,
-            y_test,
-            feature_cols=feature_cols,
-            target_cols=target_cols,
-            x_scaler_csv=x_scaler_csv,
-            y_scaler_csv=y_scaler_csv,
-            x_scaler_path=str(run_dir / "x_scaler.pkl"),
-            y_scaler_path=str(run_dir / "y_scaler.pkl"),
-            default_scaler_type=scaler_type,
-        )
-    else:
-        (
-            X_train_n,
-            X_val_n,
-            X_test_n,
-            y_train_n,
-            y_val_n,
-            y_test_n,
-            y_scaler,
-        ) = scale_data(
-            X_train,
-            X_val,
-            X_test,
-            y_train,
-            y_val,
-            y_test,
-            x_scaler_path=str(run_dir / "x_scaler.pkl"),
-            y_scaler_path=str(run_dir / "y_scaler.pkl"),
-            scaler_type=scaler_type,
-        )
+    (
+        X_train_n,
+        X_val_n,
+        X_test_n,
+        y_train_n,
+        y_val_n,
+        y_test_n,
+        y_scaler,
+    ) = scale_data(
+        X_train,
+        X_val,
+        X_test,
+        y_train,
+        y_val,
+        y_test,
+        x_scaler_path=str(run_dir / "x_scaler.pkl"),
+        y_scaler_path=str(run_dir / "y_scaler.pkl"),
+        scaler_type=scaler_type,
+    )
 
     train_cfg = dict(run_cfg["training"])
     (
@@ -332,7 +337,13 @@ def train_one(
         train_eval_losses=train_eval_losses,
         out_path=str(run_dir / "loss_curve.png"),
     )
-    plot_scatter_per_target(y_true, y_pred, target_cols, out_dir=str(run_dir))
+    plot_scatter_per_target(
+        y_true,
+        y_pred,
+        target_cols,
+        out_dir=str(run_dir),
+        plot_context=_build_plot_context(run_cfg),
+    )
     save_model(model, path=str(run_dir / checkpoint_names["final_state_dict"]))
 
     label_rows = []
@@ -401,10 +412,14 @@ def train_one(
     return label_rows, [run_row]
 
 
+# -----------------------------
+# CLI entrypoint
+# -----------------------------
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Train multiple models from a YAML sweep.")
     parser.add_argument("config_path", nargs="?", help="Optional positional path to sweep config.")
-    parser.add_argument("--config", default="models/train_sweep.yaml", help="Path to sweep config.")
+    parser.add_argument("--config", default="configs/model/train_sweep.yaml", help="Path to sweep config.")
     args = parser.parse_args()
 
     config_path = args.config_path or args.config

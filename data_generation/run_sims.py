@@ -1,3 +1,6 @@
+# run_sims.py
+# Simulation runner and CSV export entrypoints for data-generation workflows.
+
 import argparse
 import copy
 import csv
@@ -30,7 +33,7 @@ DEFAULT_FEATURE_NAMES_PATH = "configs/shared/data_generation_feature_names.yaml"
 
 
 def _run_with_suppressed_pandapower_noise(fn, *args, **kwargs):
-    """Internal helper to run with suppressed pandapower noise."""
+    """Helper to run with suppressed pandapower noise."""
     with warnings.catch_warnings():
         warnings.filterwarnings(
             "ignore",
@@ -56,7 +59,7 @@ def _build_fieldnames(
     initial_state_fields: Sequence[str],
     feature_names_path: Optional[str],
 ) -> List[str]:
-    """Internal helper to build fieldnames."""
+    """Helper to build fieldnames."""
     return simulation_row_fieldnames(
         pq_names=pq_names,
         owner_labels=owner_labels,
@@ -70,24 +73,24 @@ def _build_fieldnames(
 
 
 def load_config(path: str) -> Dict:
-    """Load config."""
+    """Load generation-config YAML."""
     with open(path, "r", encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 
 def _feature_names_path(cfg: Dict) -> str:
-    """Internal helper to feature names path."""
+    """Helper to feature names path."""
     return str(cfg.get("feature_names_path") or DEFAULT_FEATURE_NAMES_PATH)
 
 
 def _include_initial_state(cfg: Dict) -> bool:
-    """Internal helper to resolve initial-state feature inclusion."""
+    """Helper to resolve initial-state feature inclusion."""
     features_cfg = cfg.get("features", {}) or {}
     return bool(features_cfg.get("include_initial_state", True))
 
 
 def _assert_line_metrics_dc_ready(cfg: Dict) -> None:
-    """Internal helper to assert line metrics dc ready."""
+    """Helper to assert line metrics dc ready."""
     cont_cfg = cfg.get("contingency", {}) or {}
     line_n1_cfg = cont_cfg.get("line_n1", {}) or {}
     if not bool(line_n1_cfg.get("enable", False)):
@@ -102,13 +105,13 @@ def _assert_line_metrics_dc_ready(cfg: Dict) -> None:
 
 
 def _rng_for_sim(seed: int, sim_id: int) -> np.random.Generator:
-    """Internal helper to rng for sim."""
+    """Helper to rng for sim."""
     sim_seed = np.random.SeedSequence([seed, sim_id])
     return np.random.default_rng(sim_seed)
 
 
 def _chunk_sim_ids(n_sims: int, workers: int) -> List[List[int]]:
-    """Internal helper to chunk sim ids."""
+    """Helper to chunk sim ids."""
     if workers <= 1:
         return [list(range(n_sims))]
     chunk_size = (n_sims + workers - 1) // workers
@@ -116,7 +119,7 @@ def _chunk_sim_ids(n_sims: int, workers: int) -> List[List[int]]:
 
 
 def _worker_output_path(output_dir: Path, output_csv: str, worker_id: int) -> Path:
-    """Internal helper to worker output path."""
+    """Helper to worker output path."""
     base = Path(output_csv)
     suffix = base.suffix if base.suffix else ".csv"
     return output_dir / f"{base.stem}_worker_{worker_id:02d}{suffix}"
@@ -143,7 +146,7 @@ def _dispatch_ibr_indices(ss, fallback: Optional[Sequence[int]] = None) -> List[
 
 
 def _resolve_repo_path(path_str: Optional[str], default_rel: str) -> Path:
-    """Internal helper to resolve repo path."""
+    """Helper to resolve repo path."""
     path = Path(path_str) if path_str else Path(default_rel)
     if path.is_absolute():
         return path
@@ -152,7 +155,7 @@ def _resolve_repo_path(path_str: Optional[str], default_rel: str) -> Path:
 
 
 def _midpoint_from_cfg(value_cfg, *, default_low: float, default_high: float) -> float:
-    """Internal helper to midpoint from cfg."""
+    """Helper to midpoint from cfg."""
     if isinstance(value_cfg, (list, tuple)) and len(value_cfg) >= 2:
         return 0.5 * (float(value_cfg[0]) + float(value_cfg[1]))
     if isinstance(value_cfg, (int, float)):
@@ -518,14 +521,14 @@ def _apply_base_operating_point_scale(ss, base_scale: float, *, scale_pv: bool) 
 
 
 def _assign_vis_coefficients(ss, M_vec: np.ndarray, D_vec: np.ndarray) -> None:
-    """Internal helper to assign vis coefficients."""
+    """Helper to assign vis coefficients."""
     if not getattr(getattr(ss, "REGCV1", None), "n", 0):
         return
     ss.REGCV1.M.v, ss.REGCV1.D.v = M_vec, D_vec
 
 
 def _configure_pq_model(ss) -> None:
-    """Internal helper to configure pq model."""
+    """Helper to configure pq model."""
     ss.PQ.config.p2p = 1
     ss.PQ.config.q2q = 1
     ss.PQ.config.p2z = 0
@@ -613,7 +616,7 @@ def _discover_initial_state_fieldnames(
     regcv1_ids: Sequence[str],
     andes_opts: Dict,
 ) -> List[str]:
-    """Internal helper to discover initial state fieldnames."""
+    """Helper to discover initial state fieldnames."""
     ss = andes.load(case_path, setup=False, **andes_opts)
     ss.config.freq = float(50)
 
@@ -672,7 +675,7 @@ def _run_worker(
     fieldnames: Sequence[str],
     output_dir: Path,
 ) -> Optional[str]:
-    """Internal helper to run worker."""
+    """Helper to run worker."""
     if not sim_ids:
         return None
     worker_csv = _worker_output_path(output_dir, cfg.get("output_csv", "simulation_results.csv"), worker_id)
@@ -701,7 +704,7 @@ def _run_worker(
 
 
 def _merge_worker_csvs(csv_path: Path, worker_paths: Iterable[Path], fieldnames: Sequence[str]) -> None:
-    """Internal helper to merge worker csvs."""
+    """Helper to merge worker csvs."""
     with open(csv_path, "w", newline="", encoding="utf-8") as f_out:
         writer = csv.DictWriter(f_out, fieldnames=fieldnames)
         writer.writeheader()
@@ -713,7 +716,7 @@ def _merge_worker_csvs(csv_path: Path, worker_paths: Iterable[Path], fieldnames:
 
 
 def _log_row_nan_health(row: Dict, *, sim_id: int) -> None:
-    """Internal helper to log row nan health."""
+    """Helper to log row nan health."""
     key_cols = [
         "line_rating",
         "pre_fault_flow",
@@ -917,7 +920,7 @@ def run_single_sim(
 
 
 def _andes_options_from_env() -> Dict:
-    """Internal helper to andes options from env."""
+    """Helper to andes options from env."""
     andes_opts: Dict = {}
     pycode_env = os.environ.get("ANDES_PYCODE_PATH")
     if pycode_env:
@@ -931,7 +934,7 @@ def _resolve_simulation_inputs(
     case_path: str,
     andes_opts: Dict,
 ) -> Dict[str, object]:
-    """Internal helper to resolve simulation inputs."""
+    """Helper to resolve simulation inputs."""
     base_ss = andes.load(case_path, setup=False, **andes_opts)
     pq_names = list(base_ss.PQ.name.v) if base_ss.PQ.n else []
     if cfg["load"].get("pq_names"):
@@ -995,7 +998,7 @@ def _resolve_simulation_inputs(
 
 
 def run_generation(config_path: str) -> Path:
-    """Run generation."""
+    """Run the full data-generation workflow."""
     print("Loading config from ", config_path)
     cfg = load_config(config_path)
     _assert_line_metrics_dc_ready(cfg)
@@ -1075,7 +1078,7 @@ def run_one_sim(
     sim_id: int,
     rng: Optional[np.random.Generator] = None,
 ) -> List[Dict]:
-    """Run one sim."""
+    """Run a single simulation with the provided config."""
     cfg = copy.deepcopy(config)
     case_path = str(cfg["case"])
     andes_opts = _andes_options_from_env()

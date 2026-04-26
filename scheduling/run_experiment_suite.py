@@ -187,7 +187,7 @@ def _preflight_notes(cfg: dict[str, Any]) -> list[str]:
         notes.append(f"y_scaler_missing:{y_scaler}")
 
     if bool(feature_cfg.get("x_features_from_registry", False)):
-        registry_raw = str(feature_cfg.get("feature_names_path", "configs/data_generation_feature_names.yaml")).strip()
+        registry_raw = str(feature_cfg.get("feature_names_path", "configs/shared/data_generation_feature_names.yaml")).strip()
         registry_path = _resolve(registry_raw, ROOT)
         if not registry_path.exists():
             notes.append(f"feature_registry_missing:{registry_path}")
@@ -401,10 +401,7 @@ def main() -> None:
     suite = _load_yaml(suite_path)
     run_optimization = None
     if args.execution_mode == "inprocess":
-        try:
-            from scheduling.problem import run_optimization as _run_optimization
-        except ModuleNotFoundError:
-            from final_optimization_folder.problem import run_optimization as _run_optimization
+        from scheduling.problem import run_optimization as _run_optimization
         run_optimization = _run_optimization
 
     suite_dir = suite_path.parent

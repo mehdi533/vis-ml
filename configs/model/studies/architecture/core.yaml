@@ -1,0 +1,20 @@
+inherits: configs/model/base/train_defaults.yaml
+
+output_dir: results/thesis_model_results/outputs/architecture_comparison_core
+
+model:
+  u_feature_spec:
+    scalar_fields: [M_agg, D_agg, P_GENROU_TOTAL, P_REGCV1_TOTAL, P_DISPATCH_TOTAL, P_REGCV1_SHARE]
+    prefixes:
+      - {name: M}
+      - {name: D}
+      - {name: p_genrou}
+      - {name: p_regcv1}
+      - {name: p_genrou_reserve}
+      - {name: p_regcv1_reserve}
+
+sweep:
+  models: [MLP, MTLSH, MTLGSH, FICNN, PICNN, PICNN_MTLSH]
+  losses: [mse]
+  scalers: [minmax]
+  seeds: [42]

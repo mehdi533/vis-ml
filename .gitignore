@@ -1,28 +1,21 @@
-MTLSH__mse__robust__seed42__batch_eval128__batch_train128__epochs200__lr0.0005__use_lr_schedulerFalse__weight_decay1e-05
-__models_trained
-__convex_opt
-__simpqareas
+*.DS_Store
 venv
-__results
-__outputs
 ieee39_full_*
 *__pycache__
 *.csv
 *.pkl
 *.txt
 *.pt
-optimization/plots
-optimization/results
-notebooks
-experiments
 *.pytest_cache
-tests
 # results
-optimization
-tests
-tmp/*
-tmp
-# results
-LaTeX
+/results/
+/models_trained/
 *.png
 *.pdf
+
+# optional local-only model eval utility
+models/eval_on_csv.py
+
+/configs/examples/
+/configs/figure/
+/configs/presentation/

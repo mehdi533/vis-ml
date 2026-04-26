@@ -1,3 +1,8 @@
+# testing.py
+# Model evaluation helpers and metrics exports for test/inference runs.
+
+from __future__ import annotations
+
 import csv
 import json
 from pathlib import Path
@@ -5,6 +10,10 @@ from pathlib import Path
 import numpy as np
 import torch
 
+
+# -----------------------------
+# Metric metadata
+# -----------------------------
 
 SYSTEM_BASE_MVA = 100.0
 
@@ -35,6 +44,10 @@ def _target_metric_metadata(name: str) -> dict:
         "display_scale": 1.0,
     }
 
+
+# -----------------------------
+# Metric computation / exports
+# -----------------------------
 
 def compute_prediction_metrics(y_true, y_pred, y_true_norm, y_pred_norm, target_cols):
     diff = y_pred - y_true
@@ -161,6 +174,10 @@ def _write_predictions_csv(output_dir: Path, target_cols, y_true, y_pred, y_true
 
     print(f"Saved test predictions to {pred_path}")
 
+
+# -----------------------------
+# Evaluation pipeline
+# -----------------------------
 
 def evaluate_model(
     model,

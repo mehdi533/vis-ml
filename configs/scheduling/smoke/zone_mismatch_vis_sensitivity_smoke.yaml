@@ -1,0 +1,47 @@
+name: chapter5_zone_mismatch_vis_sensitivity_smoke
+baseline_id: retained_vis
+
+results_root: ../../../results/thesis_optimization_results/local_validation/smoke/zone_mismatch_vis_sensitivity_formulations
+
+output:
+  summary_csv: ../../../results/thesis_optimization_results/local_validation/smoke/zone_mismatch_vis_sensitivity_smoke_summary.csv
+  summary_markdown: ../../../results/thesis_optimization_results/local_validation/smoke/zone_mismatch_vis_sensitivity_smoke_summary.md
+  summary_json: ../../../results/thesis_optimization_results/local_validation/smoke/zone_mismatch_vis_sensitivity_smoke_summary.json
+
+scenarios:
+  - id: global_uniform
+    name: Global uniform mismatch
+    description: Smoke scenario with uniform load mismatch.
+    overrides:
+      scenario:
+        step_scale: 1.2
+
+runs:
+  - id: retained_vis
+    comparison_family: zone_mismatch_vis_smoke
+    name: Retained VIS formulation
+    description: Smoke retained preventive formulation.
+    base_config: ../base_optimization.yaml
+    overrides:
+      solver:
+        extra_kwargs:
+          TimeLimit: 300
+      constraints:
+        nn_mode: milp
+        enforce_dispatch_output_link: true
+
+  - id: retained_vis_area_tied
+    comparison_family: zone_mismatch_vis_smoke
+    name: Retained VIS formulation (area-tied M/D)
+    description: Smoke retained preventive formulation with area-tied inertia and damping.
+    base_config: ../base_optimization.yaml
+    overrides:
+      solver:
+        extra_kwargs:
+          TimeLimit: 300
+      constraints:
+        nn_mode: milp
+        enforce_dispatch_output_link: true
+        vis_tie_groups:
+          - [0, 2]
+          - [1, 3]

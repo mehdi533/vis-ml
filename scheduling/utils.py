@@ -1,3 +1,6 @@
+# utils.py
+# Shared config, model, and feature-building helpers for scheduling workflows.
+
 from __future__ import annotations
 
 import logging
@@ -20,6 +23,10 @@ if DATA_GEN_ROOT.exists() and str(DATA_GEN_ROOT) not in sys.path:
 from extract_metrics import extract_line_metrics, extract_operating_point_snapshot, extract_x_cont, extract_x_op, extract_x_sched
 from models.models import create_model
 
+
+# -----------------------------
+# Config dataclasses
+# -----------------------------
 
 @dataclass(frozen=True)
 class ConstraintSwitches:
@@ -50,7 +57,12 @@ class PlotOptions:
     network_layout: str
 
 
+# -----------------------------
+# Path, model, and scaler helpers
+# -----------------------------
+
 def _resolve_repo_path(path_like: str | Path) -> Path:
+    """Resolve a path relative to repository root."""
     path = Path(path_like)
     return path if path.is_absolute() else (ROOT / path).resolve()
 
@@ -58,8 +70,9 @@ def _resolve_repo_path(path_like: str | Path) -> Path:
 def load_table_3_1_dispatch_cost_arrays(
     ss,
     *,
-    cost_table_path: str | Path = "configs/table_3_1_dispatch_costs.yaml",
+    cost_table_path: str | Path = "configs/shared/ieee39_regcv1_dispatch_costs.yaml",
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """Load dispatch and reserve cost arrays aligned with static generator ordering."""
     path = _resolve_repo_path(cost_table_path)
     with path.open("r", encoding="utf-8") as f:
         payload = yaml.safe_load(f) or {}
@@ -107,6 +120,7 @@ def load_table_3_1_dispatch_cost_arrays(
 
 
 def setup_logger(log_path: Path) -> logging.Logger:
+    """Create a file logger used by scheduling optimization runs."""
     logger = logging.getLogger("optimization")
     logger.setLevel(logging.INFO)
     logger.propagate = False
@@ -120,6 +134,7 @@ def setup_logger(log_path: Path) -> logging.Logger:
 
 
 def resolve_model_dir(model_cfg: Mapping[str, Any]) -> Path:
+    """Resolve and validate the configured model directory."""
     raw = str(model_cfg.get("model_dir", model_cfg.get("state_dict", ""))).strip()
     if not raw:
         raise ValueError("Missing model.model_dir in config.")
@@ -132,6 +147,7 @@ def resolve_model_dir(model_cfg: Mapping[str, Any]) -> Path:
 
 
 def resolve_state_dict_path(model_cfg: Mapping[str, Any]) -> Path:
+    """Resolve the first available model checkpoint path from known filenames."""
     model_dir = resolve_model_dir(model_cfg)
     candidates = [
         "vis_mlp_state_dict_best.pt",
@@ -152,6 +168,7 @@ def resolve_state_dict_path(model_cfg: Mapping[str, Any]) -> Path:
 
 
 def _normalize_model_type(model_type: str) -> str:
+    """Map supported model aliases to registry names."""
     aliases = {
         "MTLSharedHeads": "MTLSH",
         "MTLSH": "MTLSH",
@@ -166,6 +183,7 @@ def _normalize_model_type(model_type: str) -> str:
 
 
 def build_model_from_cfg(model_cfg: Mapping[str, Any]):
+    """Construct and load a trained surrogate model from config."""
     model_type = _normalize_model_type(str(model_cfg.get("type", "")).strip())
     out_dim = int(model_cfg.get("out_dim", model_cfg.get("n_tasks", 0)))
     if out_dim <= 0:
@@ -191,6 +209,7 @@ def build_model_from_cfg(model_cfg: Mapping[str, Any]):
 
 
 def load_scalers(cfg: Mapping[str, Any]):
+    """Load x/y scalers from explicit paths or model directory defaults."""
     model_dir = resolve_model_dir(cfg["model"])
     scalers_cfg = dict(cfg.get("scalers", {}) or {})
 
@@ -201,7 +220,12 @@ def load_scalers(cfg: Mapping[str, Any]):
     return joblib.load(x_path), joblib.load(y_path)
 
 
+# -----------------------------
+# Config parsing
+# -----------------------------
+
 def parse_constraint_switches(cfg: Mapping[str, Any]) -> ConstraintSwitches:
+    """Parse constraint-enable switches from config."""
     c = dict(cfg.get("constraints", {}) or {})
     return ConstraintSwitches(
         input=bool(c.get("use_input", True)),
@@ -214,6 +238,7 @@ def parse_constraint_switches(cfg: Mapping[str, Any]) -> ConstraintSwitches:
 
 
 def parse_solver_options(cfg: Mapping[str, Any]) -> SolverOptions:
+    """Parse solver runtime options from config."""
     s = dict(cfg.get("solver", {}) or {})
     return SolverOptions(
         name=str(s.get("name", "GUROBI")),
@@ -224,6 +249,7 @@ def parse_solver_options(cfg: Mapping[str, Any]) -> SolverOptions:
 
 
 def parse_plot_options(cfg: Mapping[str, Any]) -> PlotOptions:
+    """Parse optional plotting/export options from config."""
     p = dict(cfg.get("plots", {}) or {})
     return PlotOptions(
         enabled=bool(p.get("enabled", False)),
@@ -237,15 +263,22 @@ def parse_plot_options(cfg: Mapping[str, Any]) -> PlotOptions:
 
 
 def load_yaml(path: Path) -> dict[str, Any]:
+    """Load a YAML mapping from disk."""
     with path.open("r", encoding="utf-8") as f:
         return yaml.safe_load(f) or {}
 
 
 def load_optimization_config(path: str | Path) -> dict[str, Any]:
+    """Load an optimization config using repository-relative path resolution."""
     return load_yaml(_resolve_repo_path(path))
 
 
+# -----------------------------
+# System and feature helpers
+# -----------------------------
+
 def add_measurement_devices(ss):
+    """Ensure required PMU/ROCOF measurement devices exist in the system model."""
     existing_rocof = set()
     if getattr(ss, "BusROCOF", None) is not None and getattr(ss.BusROCOF, "n", 0) > 0:
         try:
@@ -271,6 +304,7 @@ def add_measurement_devices(ss):
 
 
 def _sanitize_label(value: str) -> str:
+    """Normalize owner labels to stable alphanumeric tokens."""
     safe = re.sub(r"[^A-Za-z0-9_]+", "_", str(value)).strip("_")
     return safe or "owner"
 
@@ -281,6 +315,7 @@ def resolve_load_step_target_names(
     target_pq_names: Sequence[str] | None = None,
     target_owner_labels: Sequence[str] | None = None,
 ) -> set[str]:
+    """Resolve targeted PQ names for load-step contingencies."""
     pq_model = getattr(ss, "PQ", None)
     if pq_model is None or int(getattr(pq_model, "n", 0)) <= 0:
         return set()
@@ -309,6 +344,7 @@ def build_post_step_p_vector(
     target_pq_names: Sequence[str] | None = None,
     target_owner_labels: Sequence[str] | None = None,
 ) -> np.ndarray:
+    """Build post-disturbance PQ active-power vector with optional target filtering."""
     pq_model = getattr(ss, "PQ", None)
     if pq_model is None or int(getattr(pq_model, "n", 0)) <= 0:
         return np.zeros(0, dtype=float)
@@ -333,6 +369,7 @@ def build_post_step_p_vector(
 
 
 def build_prefault_p_vector(ss) -> np.ndarray:
+    """Build prefault PQ active-power vector."""
     pq_model = getattr(ss, "PQ", None)
     if pq_model is None or int(getattr(pq_model, "n", 0)) <= 0:
         return np.zeros(0, dtype=float)
@@ -400,7 +437,7 @@ def build_features(
     Build optimization-side input features using the same extraction blocks as data_generation.
     """
     if feature_names_path is None:
-        feature_names_path = "configs/data_generation_feature_names.yaml"
+        feature_names_path = "configs/shared/data_generation_feature_names.yaml"
 
     pq_names = list(ss.PQ.name.v) if getattr(ss, "PQ", None) is not None and ss.PQ.n > 0 else []
     pq_owners = (

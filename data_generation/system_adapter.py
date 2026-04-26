@@ -1,3 +1,6 @@
+# system_adapter.py
+# Lightweight adapter over ANDES models for disturbance-generation workflows.
+
 from __future__ import annotations
 
 from typing import Dict, List, Tuple
@@ -8,23 +11,23 @@ import numpy as np
 class SystemAdapter:
     """Lightweight adapter for system-level ANDES interactions."""
     def __init__(self, ss) -> None:
-        """Initialize this instance."""
+        """Store the ANDES system handle."""
         self.ss = ss
 
     def pq_names(self) -> List[str]:
-        """Return pq names."""
+        """List PQ device names."""
         if not getattr(self.ss, "PQ", None) or not self.ss.PQ.n:
             return []
         return [str(name) for name in list(self.ss.PQ.name.v)]
 
     def pq_name_to_owner(self) -> Dict[str, str]:
-        """Return pq name to owner."""
+        """Map PQ device names to owner labels."""
         if not getattr(self.ss, "PQ", None) or not self.ss.PQ.n:
             return {}
         return {str(name): str(owner) for name, owner in zip(self.ss.PQ.name.v, self.ss.PQ.owner.v)}
 
     def add_load_step(self, *, dev: str, time_s: float, scale: float) -> None:
-        """Return add load step."""
+        """Add active/reactive load-step events for one PQ device."""
         self.ss.add(
             model="Alter",
             param_dict=dict(
@@ -51,7 +54,7 @@ class SystemAdapter:
         )
 
     def add_line_toggle(self, *, dev, time_s: float) -> None:
-        """Return add line toggle."""
+        """Add a line toggle event."""
         self.ss.add(
             model="Toggle",
             param_dict={
@@ -62,7 +65,7 @@ class SystemAdapter:
         )
 
     def line_records(self) -> List[Dict[str, float | int | str]]:
-        """Return line records."""
+        """Collect line records used by disturbance selection."""
         records: List[Dict[str, float | int | str]] = []
         n_line = int(getattr(self.ss.Line, "n", 0))
         idx_vals = list(getattr(getattr(self.ss.Line, "idx", None), "v", []))
@@ -97,7 +100,7 @@ class SystemAdapter:
         return records
 
     def _line_rating(self, uid: int) -> float:
-        """Internal helper to line rating."""
+        """Read a line rating from available ANDES Line attributes."""
         for attr in ("rate_a", "rateA", "RATE_A"):
             obj = getattr(self.ss.Line, attr, None)
             if obj is None:

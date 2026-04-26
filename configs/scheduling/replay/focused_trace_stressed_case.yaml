@@ -1,0 +1,24 @@
+tds:
+  t_end: 20.0
+  t_step: 0.01
+  method: backeuler
+  no_tqdm: true
+  criteria: 0
+
+contingency:
+  type: load_step
+  time: 1.0
+  scale: 1.2
+
+output:
+  directory: ../../../results/thesis_optimization_results/local_validation/replay_trace_stressed_case
+  ibr_scale: 100.0
+  ibr_unit: MW
+
+runs:
+  - label: "A: ED"
+    summary_json: ../../results/formulations/ed/ed_summary.json
+  - label: "D: ED + Surrogate"
+    summary_json: ../../results/formulations/ed_surrogate/ed_surrogate_summary.json
+  - label: "E: Full preventive"
+    summary_json: ../../results/formulations/ed_line_n1_surrogate/ed_line_n1_surrogate_summary.json

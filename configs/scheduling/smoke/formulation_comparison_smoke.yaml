@@ -1,0 +1,65 @@
+name: chapter5_optimization_formulation_comparison_smoke
+baseline_id: ed
+
+results_root: ../../../results/thesis_optimization_results/local_validation/smoke/formulations/formulations
+
+output:
+  summary_csv: ../../../results/thesis_optimization_results/local_validation/smoke/formulation_comparison_smoke_summary.csv
+  summary_markdown: ../../../results/thesis_optimization_results/local_validation/smoke/formulation_comparison_smoke_summary.md
+  summary_json: ../../../results/thesis_optimization_results/local_validation/smoke/formulation_comparison_smoke_summary.json
+
+runs:
+  - id: ed
+    name: ED
+    description: Smoke baseline for the Chapter 5 formulation suite.
+    base_config: ../base_optimization.yaml
+    overrides:
+      solver:
+        extra_kwargs:
+          TimeLimit: 120
+      constraints:
+        use_input: false
+        use_output: false
+        use_nn: false
+        use_line: false
+        use_n1: false
+        use_n1_redispatch: false
+        use_ed: true
+
+  - id: ed_surrogate
+    name: ED + Surrogate
+    description: Smoke surrogate-only run for replay and export validation.
+    base_config: ../base_optimization.yaml
+    overrides:
+      solver:
+        extra_kwargs:
+          TimeLimit: 300
+      constraints:
+        use_input: true
+        use_output: true
+        use_nn: true
+        use_line: false
+        use_n1: false
+        use_n1_redispatch: false
+        use_ed: true
+        nn_mode: milp
+        enforce_dispatch_output_link: true
+
+  - id: ed_line_n1_surrogate
+    name: ED + Line + N-1 + Surrogate
+    description: Smoke retained formulation for the full preventive path.
+    base_config: ../base_optimization.yaml
+    overrides:
+      solver:
+        extra_kwargs:
+          TimeLimit: 300
+      constraints:
+        use_input: true
+        use_output: true
+        use_nn: true
+        use_line: true
+        use_n1: true
+        use_n1_redispatch: false
+        use_ed: true
+        nn_mode: milp
+        enforce_dispatch_output_link: true

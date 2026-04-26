@@ -1,1 +1,4 @@
-"""Final optimization workflow for thesis experiments."""
+# __init__.py
+# Scheduling optimization and validation package.
+
+"""Scheduling optimization and validation package."""

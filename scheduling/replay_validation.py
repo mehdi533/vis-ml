@@ -142,13 +142,43 @@ def _add_load_step_contingency(ss, *, time: float, scale: float, pq_targets: lis
         ss.add(model="Alter", param_dict=dict(t=float(time), model="PQ", dev=dev, src="Qpf", attr="v", method="*", amount=float(scale)))
 
 
-def _add_line_trip_contingency(ss, *, time: float, line_dev: int) -> None:
+def _resolve_line_dev(
+    ss,
+    *,
+    line_uid: int | None = None,
+    line_dev: Any | None = None,
+) -> Any:
+    line_idx = list(getattr(getattr(ss, "Line", None), "idx", None).v)
+    if line_dev is not None:
+        if line_dev in line_idx:
+            return line_dev
+        line_dev_str = str(line_dev)
+        if line_dev_str in line_idx:
+            return line_dev_str
+    if line_uid is not None:
+        uid = int(line_uid)
+        if uid < 0 or uid >= len(line_idx):
+            raise KeyError(
+                f"<Line>: device not exist with uid={uid}. Valid line uid range is [0, {max(len(line_idx) - 1, 0)}]."
+            )
+        return line_idx[uid]
+    raise ValueError("Either line_uid or line_dev must be provided for a line-trip contingency.")
+
+
+def _add_line_trip_contingency(
+    ss,
+    *,
+    time: float,
+    line_uid: int | None = None,
+    line_dev: Any | None = None,
+) -> None:
+    resolved_dev = _resolve_line_dev(ss, line_uid=line_uid, line_dev=line_dev)
     ss.add(
         model="Toggle",
         param_dict={
             "t": float(time),
             "model": "Line",
-            "dev": int(line_dev),
+            "dev": resolved_dev,
         },
     )
 
@@ -315,8 +345,11 @@ def main() -> None:
                 _add_load_step_contingency(ss, time=step_time, scale=step_scale, pq_targets=targets)
             elif cont_type == "line_trip":
                 trip_time = float(contingency_cfg.get("time", default_step_time))
-                line_dev = int(contingency_cfg["line_dev"])
-                _add_line_trip_contingency(ss, time=trip_time, line_dev=line_dev)
+                raw_line_uid = contingency_cfg.get("line_uid")
+                raw_line_dev = contingency_cfg.get("line_dev")
+                line_uid = int(raw_line_uid) if raw_line_uid is not None else None
+                line_dev = int(raw_line_dev) if raw_line_dev is not None else None
+                _add_line_trip_contingency(ss, time=trip_time, line_uid=line_uid, line_dev=line_dev)
             elif cont_type == "none":
                 pass
             else:

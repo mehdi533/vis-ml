@@ -1,0 +1,26 @@
+tds:
+  t_end: 20.0
+  t_step: 0.01
+  method: backeuler
+  no_tqdm: true
+  criteria: 0
+
+contingency:
+  type: load_step
+
+output:
+  directory: ../../../results/thesis_optimization_results/local_validation/replay_trace_topk_global_b0p900_s1p030
+  title: "Replay traces under top-k screened N-1 schedules"
+  ibr_scale: 100.0
+  ibr_unit: MW
+
+runs:
+  - label: "Top-1 screened outages"
+    linestyle: "-"
+    summary_json: ../../results/mtlsh_topk_screening/global/global_b0p900_s1p030/ed_line_n1_surrogate_screen_top01/ed_line_n1_surrogate_screen_top01__global_b0p900_s1p030_summary.json
+  - label: "Top-3 screened outages"
+    linestyle: "--"
+    summary_json: ../../results/mtlsh_topk_screening/global/global_b0p900_s1p030/ed_line_n1_surrogate_screen_top03/ed_line_n1_surrogate_screen_top03__global_b0p900_s1p030_summary.json
+  - label: "Top-5 screened outages"
+    linestyle: ":"
+    summary_json: ../../results/mtlsh_topk_screening/global/global_b0p900_s1p030/ed_line_n1_surrogate_screen_top05/ed_line_n1_surrogate_screen_top05__global_b0p900_s1p030_summary.json

@@ -31,40 +31,46 @@ def sanitize_branch_fmax(
     sentinel_threshold: float = 1.0e4,
 ) -> np.ndarray:
     """
-    Sanitize RATE_A and convert to per-unit on ss.config.mva.
+    Build branch flow limits in per-unit on ``ss.config.mva``.
+
+    Prefer ``ss.Line.Sn`` by default, then fall back to ``ss.Line.rate_a``,
+    and finally keep the converted PYPOWER ``RATE_A`` entry when needed.
     """
     fmax_raw = np.asarray(np.real(branch[:, 5]), dtype=float).copy()
+    n_line = int(getattr(getattr(ss, "Line", None), "n", 0))
+    rate_a_vals = list(getattr(getattr(getattr(ss, "Line", None), "rate_a", None), "v", []))
+    sn_vals = list(getattr(getattr(getattr(ss, "Line", None), "Sn", None), "v", []))
+
+    if branch.shape[0] == n_line and n_line > 0:
+        for i in range(n_line):
+            sn = np.nan
+            if i < len(sn_vals):
+                try:
+                    sn = float(sn_vals[i])
+                except Exception:
+                    sn = np.nan
+            if np.isfinite(sn) and sn > 0 and sn < float(sentinel_threshold):
+                fmax_raw[i] = sn
+                continue
+
+            ra = np.nan
+            if i < len(rate_a_vals):
+                try:
+                    ra = float(rate_a_vals[i])
+                except Exception:
+                    ra = np.nan
+            if np.isfinite(ra) and ra > 0 and ra < float(sentinel_threshold):
+                fmax_raw[i] = ra
+
     valid_direct = np.isfinite(fmax_raw) & (fmax_raw > 0) & (fmax_raw < float(sentinel_threshold))
 
     if not np.all(valid_direct):
-        n_line = int(getattr(getattr(ss, "Line", None), "n", 0))
-        rate_a_vals = list(getattr(getattr(getattr(ss, "Line", None), "rate_a", None), "v", []))
-        sn_vals = list(getattr(getattr(getattr(ss, "Line", None), "Sn", None), "v", []))
-
-        if branch.shape[0] == n_line and n_line > 0:
-            bad_idx = np.where(~valid_direct)[0]
-            for i in bad_idx:
-                ra = np.nan
-                if i < len(rate_a_vals):
-                    try:
-                        ra = float(rate_a_vals[i])
-                    except Exception:
-                        ra = np.nan
-                if not (np.isfinite(ra) and ra > 0 and ra < float(sentinel_threshold)):
-                    if i < len(sn_vals):
-                        try:
-                            ra = float(sn_vals[i])
-                        except Exception:
-                            ra = np.nan
-                if np.isfinite(ra) and ra > 0 and ra < float(sentinel_threshold):
-                    fmax_raw[i] = ra
-
         valid_direct = np.isfinite(fmax_raw) & (fmax_raw > 0) & (fmax_raw < float(sentinel_threshold))
         if not np.all(valid_direct):
             bad = np.where(~valid_direct)[0]
             preview = ", ".join(str(int(i)) for i in bad[:10])
             raise RuntimeError(
-                "Invalid branch limits (RATE_A <= 0, NaN, or sentinel). "
+                "Invalid branch limits (Sn/rate_a/RATE_A <= 0, NaN, or sentinel). "
                 f"Bad indices sample: [{preview}]"
             )
 

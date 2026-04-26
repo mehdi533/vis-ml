@@ -1,3 +1,6 @@
+# debug_tools.py
+# Optional debugging outputs for per-simulation COI traces and plots.
+
 from __future__ import annotations
 
 import csv

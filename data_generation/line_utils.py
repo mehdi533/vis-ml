@@ -1,3 +1,6 @@
+# line_utils.py
+# Line-level metrics and DC proxy helpers used by feature extraction.
+
 import io
 import warnings
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
@@ -10,7 +13,7 @@ _WARNED_MESSAGES: set[str] = set()
 
 @contextmanager
 def _suppress_pandapower_interop_noise():
-    """Internal helper to suppress pandapower interop noise."""
+    """Helper to suppress pandapower interop noise."""
     with warnings.catch_warnings():
         warnings.filterwarnings(
             "ignore",
@@ -27,7 +30,7 @@ def _suppress_pandapower_interop_noise():
 
 
 def _to_float_or_nan(value) -> float:
-    """Internal helper to to float or nan."""
+    """Helper to float or nan."""
     try:
         if value is None:
             return float("nan")
@@ -38,13 +41,13 @@ def _to_float_or_nan(value) -> float:
 
 
 def _finite_or_neg_one(value) -> float:
-    """Internal helper to finite or neg one."""
+    """Helper to finite or neg one."""
     out = _to_float_or_nan(value)
     return out if np.isfinite(out) else -1.0
 
 
 def _warn_once(msg: str) -> None:
-    """Internal helper to warn once."""
+    """Helper to warn once."""
     if msg in _WARNED_MESSAGES:
         return
     _WARNED_MESSAGES.add(msg)
@@ -52,13 +55,13 @@ def _warn_once(msg: str) -> None:
 
 
 def _valid_rating(value) -> float:
-    """Internal helper to valid rating."""
+    """Helper to valid rating."""
     val = _to_float_or_nan(value)
     return val if np.isfinite(val) and val > 0 else np.nan
 
 
 def _rating_to_pu(rating_raw: float, base_mva: float) -> float:
-    """Internal helper to rating to pu."""
+    """Helper to rating to pu."""
     r = _valid_rating(rating_raw)
     if not np.isfinite(r):
         return np.nan
@@ -68,7 +71,7 @@ def _rating_to_pu(rating_raw: float, base_mva: float) -> float:
 
 
 def line_extra_fieldnames(line_uids: Sequence[int]) -> List[str]:
-    """Return line extra fieldnames."""
+    """Build line-related extra fieldnames."""
     fields = [
         "line_fn",
         "line_Vn1",
@@ -115,7 +118,7 @@ def line_extra_fieldnames(line_uids: Sequence[int]) -> List[str]:
 
 
 def _line_rating_from_ss(ss, uid: int) -> float:
-    """Internal helper to line rating from ss."""
+    """Helper to line rating from ss."""
     for attr in ("rate_a", "rateA", "RATE_A"):
         obj = getattr(ss.Line, attr, None)
         if obj is None:
@@ -130,7 +133,7 @@ def _line_rating_from_ss(ss, uid: int) -> float:
 
 
 def _line_ratings_from_pandapower(ss) -> Optional[np.ndarray]:
-    """Internal helper to line ratings from pandapower."""
+    """Helper to line ratings from pandapower."""
     try:
         from andes.interop import pandapower as ap
         from pandapower.pd2ppc import _pd2ppc
@@ -160,7 +163,7 @@ def _line_ratings_from_pandapower(ss) -> Optional[np.ndarray]:
 
 
 def _line_records(ss) -> List[Dict[str, float | int | str]]:
-    """Internal helper to line records."""
+    """Helper to line records."""
     records: List[Dict[str, float | int | str]] = []
     n_line = int(getattr(ss.Line, "n", 0))
     vals = {
@@ -205,7 +208,7 @@ def _line_records(ss) -> List[Dict[str, float | int | str]]:
 
 
 def _line_flow_component(ss, uid: int, candidates: Sequence[object]) -> float:
-    """Internal helper to line flow component."""
+    """Helper to line flow component."""
     for cand in candidates:
         if isinstance(cand, tuple) and len(cand) == 2:
             attr, preferred_sub = str(cand[0]), str(cand[1])
@@ -228,7 +231,7 @@ def _line_flow_component(ss, uid: int, candidates: Sequence[object]) -> float:
 
 
 def _line_prefault_flows(ss, uid: int) -> Dict[str, float]:
-    """Internal helper to line prefault flows."""
+    """Helper to line prefault flows."""
     p_from = _line_flow_component(ss, uid, (("Pij", "v"), ("p1", "v"), ("P1", "v"), ("pf", "v"), ("a1", "e")))
     p_to = _line_flow_component(ss, uid, (("Pji", "v"), ("p2", "v"), ("P2", "v"), ("pt", "v"), ("a2", "e")))
     return {
@@ -238,7 +241,7 @@ def _line_prefault_flows(ss, uid: int) -> Dict[str, float]:
 
 
 def _bus_state(ss, bus_number: float) -> Tuple[float, float]:
-    """Internal helper to bus state."""
+    """Helper to bus state."""
     if not np.isfinite(bus_number):
         return np.nan, np.nan
     bus_idx = list(getattr(getattr(ss.Bus, "idx", None), "v", []))
@@ -255,7 +258,7 @@ def _bus_state(ss, bus_number: float) -> Tuple[float, float]:
 
 
 def _line_parameters(record: Dict[str, float | int | str]) -> Dict[str, float]:
-    """Internal helper to line parameters."""
+    """Helper to line parameters."""
     r = _to_float_or_nan(record.get("r"))
     x = _to_float_or_nan(record.get("x"))
     x_over_r = x / r if np.isfinite(r) and np.isfinite(x) and abs(r) > 0 else np.nan
@@ -279,12 +282,12 @@ def _line_parameters(record: Dict[str, float | int | str]) -> Dict[str, float]:
 
 
 def _identity_one_hot(line_uids: Sequence[int], cont_uid: Optional[int]) -> Dict[str, int]:
-    """Internal helper to identity one hot."""
+    """Helper to identity one hot."""
     return {f"line_oh_uid_{int(uid)}": 1 if (cont_uid is not None and int(uid) == int(cont_uid)) else 0 for uid in line_uids}
 
 
 def _graph(records: Sequence[Dict[str, float | int | str]], skip_uid: Optional[int] = None) -> Tuple[Dict[int, set], set]:
-    """Internal helper to graph."""
+    """Helper to graph."""
     adj: Dict[int, set] = {}
     nodes = set()
     for rec in records:
@@ -306,7 +309,7 @@ def _graph(records: Sequence[Dict[str, float | int | str]], skip_uid: Optional[i
 
 
 def _components(adj: Dict[int, set], nodes: set) -> List[set]:
-    """Internal helper to components."""
+    """Helper to components."""
     seen = set()
     comps: List[set] = []
     for n in nodes:
@@ -327,7 +330,7 @@ def _components(adj: Dict[int, set], nodes: set) -> List[set]:
 
 
 def _topology_criticality(records: Sequence[Dict[str, float | int | str]], cont_uid: Optional[int], bus1: float, bus2: float) -> Dict[str, float]:
-    """Internal helper to topology criticality."""
+    """Helper to topology criticality."""
     adj_base, nodes_base = _graph(records, skip_uid=None)
     deg_from = int(len(adj_base.get(int(bus1), set()))) if np.isfinite(bus1) else np.nan
     deg_to = int(len(adj_base.get(int(bus2), set()))) if np.isfinite(bus2) else np.nan
@@ -355,7 +358,7 @@ def _topology_criticality(records: Sequence[Dict[str, float | int | str]], cont_
 
 
 def _system_loading_stats(ss, ratings: Optional[np.ndarray], base_mva: float) -> Tuple[float, float, float]:
-    """Internal helper to system loading stats."""
+    """Helper to system loading stats."""
     n_line = int(getattr(ss.Line, "n", 0))
     records = _line_records(ss)
     rec_by_uid = {int(r["uid"]): r for r in records if r.get("uid") is not None}
@@ -379,7 +382,7 @@ def _system_loading_stats(ss, ratings: Optional[np.ndarray], base_mva: float) ->
 
 
 def _total_generation(ss) -> float:
-    """Internal helper to total generation."""
+    """Helper to total generation."""
     total = 0.0
     found = False
     for model_name in ("PV", "Slack"):
@@ -396,7 +399,7 @@ def _total_generation(ss) -> float:
 
 
 def _reserve_proxy(ss) -> float:
-    """Internal helper to reserve proxy."""
+    """Helper to reserve proxy."""
     total = 0.0
     found = False
     for model_name in ("PV", "Slack"):
@@ -436,7 +439,7 @@ def _fallback_max_loading(ss, base_mva: float) -> float:
 
 
 def _global_stress(ss, ratings: Optional[np.ndarray], base_mva: float) -> Dict[str, float]:
-    """Internal helper to global stress."""
+    """Helper to global stress."""
     total_load_p = float(np.nansum(np.asarray(ss.PQ.Ppf.v, dtype=float))) if getattr(ss.PQ, "n", 0) > 0 else np.nan
     lmax, lmean, ltop5 = _system_loading_stats(ss, ratings, base_mva)
     return {
@@ -456,7 +459,7 @@ def _find_outage_branch_row(
     out_bus2_ppc: float,
     cont_uid: Optional[int],
 ) -> Optional[int]:
-    """Internal helper to find outage branch row."""
+    """Helper to find outage branch row."""
     n_branch = int(branch.shape[0])
     if n_branch <= 0:
         return None
@@ -481,7 +484,7 @@ def _find_outage_branch_row(
 
 
 def _map_ss_busnum_to_ppc_pos(ss, pp_net, bus_num: float) -> float:
-    """Internal helper to map ss busnum to ppc pos."""
+    """Helper to map ss busnum to ppc pos."""
     if not np.isfinite(bus_num):
         return np.nan
     try:
@@ -501,7 +504,7 @@ def _map_ss_busnum_to_ppc_pos(ss, pp_net, bus_num: float) -> float:
 
 
 def _map_ss_busnum_to_ppnet_bus_index(ss, pp_net, bus_num: float) -> Optional[int]:
-    """Internal helper to map ss busnum to ppnet bus index."""
+    """Helper to map ss busnum to ppnet bus index."""
     if not np.isfinite(bus_num):
         return None
     try:
@@ -521,7 +524,7 @@ def _map_ss_busnum_to_ppnet_bus_index(ss, pp_net, bus_num: float) -> Optional[in
 
 
 def _dc_sensitivity(ss, cont_uid: Optional[int], out_bus1: float, out_bus2: float, base_mva: float) -> Dict[str, float]:
-    """Internal helper to dc sensitivity."""
+    """Helper to dc sensitivity."""
     out = {
         "ptdf_l1_norm_outaged_line": 0.0,
         "max_abs_lodf_row": 0.0,

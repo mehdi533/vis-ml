@@ -22,30 +22,17 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-try:
-    from scheduling.constraints import (
-        build_basecase_line_constraints,
-        build_ed_constraints,
-        build_input_feature_constraints,
-        build_n1_constraints,
-        build_n1_redispatch_constraints,
-        build_output_feature_constraints,
-        evaluate_line_security_metrics,
-    )
-    from scheduling.constraints_nn import build_nn_constraints
-    from scheduling.constraints_nn import predict_outputs_scaled
-except ModuleNotFoundError:
-    from final_optimization_folder.constraints import (
-        build_basecase_line_constraints,
-        build_ed_constraints,
-        build_input_feature_constraints,
-        build_n1_constraints,
-        build_n1_redispatch_constraints,
-        build_output_feature_constraints,
-        evaluate_line_security_metrics,
-    )
-    from final_optimization_folder.constraints_nn import build_nn_constraints
-    from final_optimization_folder.constraints_nn import predict_outputs_scaled
+from scheduling.constraints import (
+    build_basecase_line_constraints,
+    build_ed_constraints,
+    build_input_feature_constraints,
+    build_n1_constraints,
+    build_n1_redispatch_constraints,
+    build_output_feature_constraints,
+    evaluate_line_security_metrics,
+)
+from scheduling.constraints_nn import build_nn_constraints
+from scheduling.constraints_nn import predict_outputs_scaled
 from scheduling.utils import (
     add_measurement_devices,
     build_features,
@@ -306,7 +293,7 @@ def _load_x_features_from_registry(
     load_step_target_pq_names: Sequence[str] | None = None,
     load_step_target_owners: Sequence[str] | None = None,
 ) -> list[str]:
-    raw_path = str(feature_cfg.get("feature_names_path", "configs/data_generation_feature_names.yaml")).strip()
+    raw_path = str(feature_cfg.get("feature_names_path", "configs/shared/data_generation_feature_names.yaml")).strip()
     reg_path = Path(raw_path)
     if not reg_path.is_absolute():
         reg_path = (ROOT / reg_path).resolve()
@@ -385,7 +372,7 @@ def _load_x_features_from_registry(
             m_seed=m_seed,
             d_seed=d_seed,
             contingency=contingency,
-            feature_names_path=str(feature_cfg.get("feature_names_path", "configs/data_generation_feature_names.yaml")),
+            feature_names_path=str(feature_cfg.get("feature_names_path", "configs/shared/data_generation_feature_names.yaml")),
             load_step_target_pq_names=load_step_target_pq_names,
             load_step_target_owners=load_step_target_owners,
         )
@@ -613,7 +600,6 @@ def _summary_row_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "objective_dispatch_only": payload.get("objective_dispatch_only"),
         "objective_reserve_only": payload.get("objective_reserve_only"),
         "objective_reserve_up_only": payload.get("objective_reserve_up_only"),
-        "objective_reserve_postcont_only": payload.get("objective_reserve_postcont_only"),
         "solve_time_sec": solver_stats.get("solve_time_sec"),
         "num_iters": solver_stats.get("num_iters"),
         "n_variables_total": problem_size.get("n_variables_total"),
@@ -626,12 +612,6 @@ def _summary_row_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "nn_mode": payload.get("nn_mode"),
         "solver_modeling_mode": payload.get("solver_modeling_mode"),
     }
-
-
-def _raw_output_expr(y_sc: cp.Expression, y_scaler, idx: int) -> cp.Expression:
-    scale = float(np.asarray(y_scaler.scale_, dtype=float).reshape(-1)[int(idx)])
-    offset = float(np.asarray(y_scaler.min_, dtype=float).reshape(-1)[int(idx)])
-    return (y_sc[int(idx)] - offset) / scale
 
 
 def _build_dispatch_objective_expr(
@@ -649,29 +629,56 @@ def _build_reserve_objective_expr(
     b_r: np.ndarray,
     pg: cp.Expression,
     pg_max: np.ndarray,
-    y: cp.Expression,
-    y_scaler,
-    ibr_idx: np.ndarray,
-    y_ibr_idx: np.ndarray,
-    enable_postcont_down_term: bool,
-) -> tuple[cp.Expression, cp.Expression, cp.Expression]:
-    reserve_up_expr = cp.sum(cp.multiply(b_r, pg_max - pg))
+) -> cp.Expression:
+    return cp.sum(cp.multiply(b_r, pg_max - pg))
 
-    reserve_postcont_expr: cp.Expression | float = 0.0
-    if enable_postcont_down_term and ibr_idx.size and y_ibr_idx.size:
-        terms: list[cp.Expression] = []
-        for local_i, gen_i in enumerate(np.asarray(ibr_idx, dtype=int).reshape(-1)):
-            if local_i >= int(y_ibr_idx.size):
-                break
-            out_idx = int(y_ibr_idx[local_i])
-            if out_idx < 0 or out_idx >= int(y.shape[0]):
-                continue
-            terms.append(float(b_r[int(gen_i)]) * (-_raw_output_expr(y, y_scaler, out_idx)))
-        if terms:
-            reserve_postcont_expr = cp.sum(cp.hstack(terms))
 
-    reserve_total_expr = reserve_up_expr + reserve_postcont_expr
-    return reserve_total_expr, reserve_up_expr, reserve_postcont_expr
+def _resolve_tie_breaker_weight(
+    cfg: Mapping[str, Any],
+    *,
+    switches,
+) -> tuple[float, float]:
+    """
+    Resolve configured and effective tie-breaker weight.
+
+    Tie-breaker activates only if NN constraints are enabled and
+    ``model.convex`` is true.
+    """
+    constraints_cfg = dict(cfg.get("constraints", {}) or {})
+    raw = float(constraints_cfg.get("tie_breaker", 0.0))
+    if raw <= 0:
+        return 0.0, 0.0
+
+    model_cfg = dict(cfg.get("model", {}) or {})
+    nn_enabled = bool(getattr(switches, "nn", False))
+    model_convex = bool(model_cfg.get("convex", False))
+    if not (nn_enabled and model_convex):
+        return raw, 0.0
+    return raw, raw
+
+
+def _resolve_nn_mode(cfg: Mapping[str, Any]) -> str:
+    """
+    Enforce NN mode policy:
+    - non-convex model -> ``milp``
+    - convex model -> ``convex``
+    """
+    constraints_cfg = dict(cfg.get("constraints", {}) or {})
+    raw_mode = str(constraints_cfg.get("nn_mode", "")).strip().lower()
+    if raw_mode and raw_mode not in {"milp", "convex"}:
+        raise ValueError(
+            f"Unsupported constraints.nn_mode='{raw_mode}'. Allowed values are: milp, convex."
+        )
+
+    model_convex = bool(dict(cfg.get("model", {}) or {}).get("convex", False))
+    expected = "convex" if model_convex else "milp"
+    if raw_mode and raw_mode != expected:
+        raise ValueError(
+            "Invalid nn mode for selected model type: "
+            f"constraints.nn_mode='{raw_mode}' but model.convex={model_convex}. "
+            f"Expected nn_mode='{expected}'."
+        )
+    return expected
 
 
 def _build_x_seed(
@@ -963,6 +970,45 @@ def _build_network_blocks(
         return blocks, line_artifacts, n1_stats, n1_redispatch_stats
 
     exclude_islanding_critical = bool(cfg.get("constraints", {}).get("exclude_islanding_critical_n1", True))
+    raw_included_outages = list(cfg.get("constraints", {}).get("include_n1_line_uids") or [])
+    raw_excluded_outages = list(cfg.get("constraints", {}).get("exclude_n1_line_uids") or [])
+    outage_candidate_mask = np.asarray(line_artifacts.outage_candidate_mask, dtype=bool).copy()
+    candidate_line_uids = np.flatnonzero(outage_candidate_mask).astype(int).tolist()
+    valid_outage_uids = set(candidate_line_uids)
+    if raw_included_outages:
+        included_outages: list[int] = []
+        keep_mask = np.zeros_like(outage_candidate_mask, dtype=bool)
+        for raw_uid in raw_included_outages:
+            uid = int(raw_uid)
+            if uid not in valid_outage_uids:
+                raise ValueError(
+                    f"constraints.include_n1_line_uids contains invalid line uid {uid}. "
+                    f"Valid candidate line uids are {candidate_line_uids}."
+                )
+            keep_mask[uid] = True
+            included_outages.append(uid)
+        outage_candidate_mask &= keep_mask
+        logger.info(
+            "n1_included_line_uids=%s n_candidate_outages=%d",
+            sorted(set(included_outages)),
+            int(np.sum(outage_candidate_mask)),
+        )
+    excluded_outages: list[int] = []
+    for raw_uid in raw_excluded_outages:
+        uid = int(raw_uid)
+        if uid not in valid_outage_uids:
+            raise ValueError(
+                f"constraints.exclude_n1_line_uids contains invalid line uid {uid}. "
+                f"Valid candidate line uids are {candidate_line_uids}."
+            )
+        outage_candidate_mask[uid] = False
+        excluded_outages.append(uid)
+    if excluded_outages:
+        logger.info(
+            "n1_excluded_line_uids=%s n_candidate_outages=%d",
+            sorted(set(excluded_outages)),
+            int(np.sum(outage_candidate_mask)),
+        )
     use_n1_redispatch = bool(cfg.get("constraints", {}).get("use_n1_redispatch", False))
     if not use_n1_redispatch:
         constraints_n1, n1_stats = build_n1_constraints(
@@ -971,7 +1017,7 @@ def _build_network_blocks(
             line_artifacts.ptdf,
             line_artifacts.fmax,
             critical_bus_nums=line_artifacts.critical_bus_nums,
-            outage_candidate_mask=line_artifacts.outage_candidate_mask,
+            outage_candidate_mask=outage_candidate_mask,
             exclude_islanding_critical=exclude_islanding_critical,
             collect_stats=True,
         )
@@ -990,7 +1036,7 @@ def _build_network_blocks(
             pg_min=data["pg_min"],
             pg_max=data["pg_max"],
             critical_bus_nums=line_artifacts.critical_bus_nums,
-            outage_candidate_mask=line_artifacts.outage_candidate_mask,
+            outage_candidate_mask=outage_candidate_mask,
             exclude_islanding_critical=exclude_islanding_critical,
             collect_stats=True,
         )
@@ -1110,15 +1156,10 @@ def _run_feasibility_checks(
                 c=fresh["ed_c"],
                 pg=fresh["pg"],
             )
-            objective_reserve, _, _ = _build_reserve_objective_expr(
+            objective_reserve = _build_reserve_objective_expr(
                 b_r=fresh["ed_b_r"],
                 pg=fresh["pg"],
                 pg_max=fresh["pg_max"],
-                y=fresh["y"],
-                y_scaler=fresh["y_scaler"],
-                ibr_idx=fresh["ibr_idx"],
-                y_ibr_idx=fresh["y_ibr_idx"],
-                enable_postcont_down_term=False,
             )
         else:
             objective_dispatch = 0.0
@@ -1262,7 +1303,9 @@ def run_optimization(cfg: dict[str, Any], *, config_path: str | None = None):
     switches = parse_constraint_switches(cfg)
     solver = parse_solver_options(cfg)
     plot_options = parse_plot_options(cfg)
-    nn_mode = str(cfg.get("constraints", {}).get("nn_mode", "milp"))
+    nn_mode = _resolve_nn_mode(cfg)
+    cfg.setdefault("constraints", {})
+    cfg["constraints"]["nn_mode"] = nn_mode
 
     ss = andes.load(cfg["system"]["case"], setup=False)
     ss.config.freq = float(cfg.get("system", {}).get("frequency_hz", 50.0))
@@ -1392,7 +1435,7 @@ def run_optimization(cfg: dict[str, Any], *, config_path: str | None = None):
         m_seed=m_seed,
         d_seed=d_seed,
         contingency=feature_contingency,
-        feature_names_path=str(feature_cfg.get("feature_names_path", "configs/data_generation_feature_names.yaml")),
+        feature_names_path=str(feature_cfg.get("feature_names_path", "configs/shared/data_generation_feature_names.yaml")),
         load_step_target_pq_names=load_step_target_pq_names,
         load_step_target_owners=load_step_target_owners,
         fixed_feature_values=fixed_feature_values,
@@ -1678,45 +1721,38 @@ def run_optimization(cfg: dict[str, Any], *, config_path: str | None = None):
 
     a, b, c, b_r = _resolve_ed_cost_arrays(cfg, ss)
 
-    tie_breaker = float(cfg.get("constraints", {}).get("tie_breaker", 0.0))
+    tie_breaker_cfg, tie_breaker = _resolve_tie_breaker_weight(
+        cfg,
+        switches=switches,
+    )
+    if tie_breaker_cfg > 0 and tie_breaker <= 0:
+        logger.info(
+            "tie_breaker disabled: requires use_nn=true and model.convex=true (use_nn=%s model.convex=%s)",
+            bool(switches.nn),
+            bool(cfg.get("model", {}).get("convex", False)),
+        )
     ibr_idx = np.asarray(cfg["ibr"]["indices"], dtype=int).reshape(-1)
     y_ibr_idx = np.asarray(cfg.get("constraints", {}).get("y_ibr_idx", [2, 3, 4, 5]), dtype=int).reshape(-1)
-    enable_postcont_reserve_term = bool(switches.nn)
     block_data["ed_a"] = a
     block_data["ed_b"] = b
     block_data["ed_c"] = c
     block_data["ed_b_r"] = b_r
     block_data["tie_breaker"] = tie_breaker
     block_data["ibr_idx"] = ibr_idx
-    block_data["y_ibr_idx"] = y_ibr_idx
-    block_data["enable_postcont_reserve_term"] = enable_postcont_reserve_term
     if has_dispatch:
         objective_dispatch = _build_dispatch_objective_expr(a=a, b=b, c=c, pg=pg)
-        objective_reserve, objective_reserve_up, objective_reserve_postcont = _build_reserve_objective_expr(
+        objective_reserve = _build_reserve_objective_expr(
             b_r=b_r,
             pg=pg,
             pg_max=pg_max,
-            y=y,
-            y_scaler=y_scaler,
-            ibr_idx=ibr_idx,
-            y_ibr_idx=y_ibr_idx,
-            enable_postcont_down_term=enable_postcont_reserve_term,
         )
+        objective_reserve_up = objective_reserve
     else:
         objective_dispatch: cp.Expression | float = 0.0
         objective_reserve: cp.Expression | float = 0.0
         objective_reserve_up: cp.Expression | float = 0.0
-        objective_reserve_postcont: cp.Expression | float = 0.0
         logger.info("No dispatch features in model — skipping dispatch/reserve objectives.")
     objective_expr = objective_dispatch + objective_reserve + (float(tie_breaker) * cp.sum(y) if tie_breaker > 0 else 0)
-
-    md_reg_weight = float(cfg.get("constraints", {}).get("md_regularization_weight", 0.0))
-    md_reg_expr: cp.Expression | float = 0.0
-    if md_reg_weight > 0 and (m_idx or d_idx):
-        md_seed_sc = x_seed_sc[list(m_idx) + list(d_idx)]
-        md_vars = cp.hstack([x[list(m_idx)], x[list(d_idx)]])
-        md_reg_expr = md_reg_weight * cp.sum_squares(md_vars - md_seed_sc)
-        objective_expr = objective_expr + md_reg_expr
 
     objective = cp.Minimize(objective_expr)
 
@@ -1870,7 +1906,6 @@ def run_optimization(cfg: dict[str, Any], *, config_path: str | None = None):
         pred_dp = float(y_opt[y_ibr_idx[local_i]]) if (local_i < y_ibr_idx.size and y_ibr_idx[local_i] < y_opt.size) else np.nan
         pmin_delta = float(pg_min[gen_i] - pg_base[gen_i])
         pmax_delta = float(pg_max[gen_i] - pg_base[gen_i])
-        reserve_postcont_cost_component = float(b_r[int(gen_i)] * (-pred_dp)) if np.isfinite(pred_dp) else np.nan
         dispatch_rows.append(
             {
                 "row_type": "ibr_summary",
@@ -1889,12 +1924,6 @@ def run_optimization(cfg: dict[str, Any], *, config_path: str | None = None):
                 "headroom_down": float(headroom_down[local_i]),
                 "reserve_unit_cost": float(b_r[int(gen_i)]),
                 "reserve_up_cost_component": float(b_r[int(gen_i)] * headroom_up[local_i]),
-                "reserve_postcont_cost_component": reserve_postcont_cost_component,
-                "reserve_total_cost_component": (
-                    float(b_r[int(gen_i)] * headroom_up[local_i]) + reserve_postcont_cost_component
-                    if np.isfinite(reserve_postcont_cost_component)
-                    else np.nan
-                ),
             }
         )
     _write_dict_rows_csv(output_paths["dispatch_impact_csv"], dispatch_rows)
@@ -1910,7 +1939,7 @@ def run_optimization(cfg: dict[str, Any], *, config_path: str | None = None):
         )
 
     dispatch_objective_value = (
-        float(np.sum(a + b * pg_opt + c * np.square(pg_opt)))
+        float(np.sum(c + b * pg_opt + a * np.square(pg_opt)))
         if np.all(np.isfinite(pg_opt))
         else np.nan
     )
@@ -1919,27 +1948,7 @@ def run_optimization(cfg: dict[str, Any], *, config_path: str | None = None):
         if np.all(np.isfinite(pg_opt))
         else np.nan
     )
-    reserve_postcont_objective_value = np.nan
-    if np.all(np.isfinite(y_opt)) and ibr_idx.size and y_ibr_idx.size and bool(enable_postcont_reserve_term):
-        reserve_postcont_objective_value = 0.0
-        for local_i, gen_i in enumerate(ibr_idx.tolist()):
-            if local_i >= int(y_ibr_idx.size):
-                break
-            out_idx = int(y_ibr_idx[local_i])
-            if out_idx < 0 or out_idx >= int(y_opt.size):
-                continue
-            reserve_postcont_objective_value += float(b_r[int(gen_i)]) * (-float(y_opt[out_idx]))
-    reserve_objective_value = (
-        reserve_up_objective_value + reserve_postcont_objective_value
-        if np.isfinite(reserve_up_objective_value) and np.isfinite(reserve_postcont_objective_value)
-        else reserve_up_objective_value
-    )
-
-    md_reg_objective_value = 0.0
-    if md_reg_weight > 0 and (m_idx or d_idx):
-        x_opt_sc = np.asarray(x.value, dtype=float).reshape(-1)
-        md_opt_sc = x_opt_sc[list(m_idx) + list(d_idx)]
-        md_reg_objective_value = float(md_reg_weight * np.sum((md_opt_sc - md_seed_sc) ** 2))
+    reserve_objective_value = reserve_up_objective_value
 
     metrics_arr = np.asarray([row["is_within_limits"] for row in pred_rows], dtype=float) if pred_rows else np.zeros(0)
     output_limits_ok = bool(np.all(metrics_arr > 0.5)) if metrics_arr.size else False
@@ -1981,12 +1990,8 @@ def run_optimization(cfg: dict[str, Any], *, config_path: str | None = None):
         "objective_dispatch_only": dispatch_objective_value if np.isfinite(dispatch_objective_value) else None,
         "objective_reserve_only": reserve_objective_value if np.isfinite(reserve_objective_value) else None,
         "objective_reserve_up_only": reserve_up_objective_value if np.isfinite(reserve_up_objective_value) else None,
-        "objective_reserve_postcont_only": (
-            reserve_postcont_objective_value if np.isfinite(reserve_postcont_objective_value) else None
-        ),
         "objective_tie_breaker": float(tie_breaker),
-        "objective_md_regularization": md_reg_objective_value,
-        "md_regularization_weight": md_reg_weight,
+        "objective_tie_breaker_configured": float(tie_breaker_cfg),
         "system_case": str(cfg["system"]["case"]),
         "model_type": str(cfg["model"].get("type", "")),
         "model_dir": str(cfg["model"].get("model_dir", cfg["model"].get("state_dict", ""))),
@@ -2098,7 +2103,7 @@ def main():
     parser = argparse.ArgumentParser(description="Final optimization problem with separated constraint blocks.")
     parser.add_argument(
         "--config",
-        default="results/thesis_optimization_results/configs/base_optimization.yaml",
+        default="configs/scheduling/base_optimization.yaml",
         help="Path to optimization config YAML.",
     )
     args = parser.parse_args()

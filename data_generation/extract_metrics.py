@@ -1,3 +1,6 @@
+# extract_metrics.py
+# Feature/target extraction utilities for simulation outputs and operating snapshots.
+
 from __future__ import annotations
 
 import re
@@ -17,7 +20,7 @@ _NON_ALNUM_RE = re.compile(r"[^0-9A-Za-z_]+")
 
 
 def _resolve_repo_path(path_str: Optional[str], default_rel: str) -> Path:
-    """Internal helper to resolve repo path."""
+    """Helper to resolve repo path."""
     path = Path(path_str) if path_str else Path(default_rel)
     if path.is_absolute():
         return path
@@ -27,7 +30,7 @@ def _resolve_repo_path(path_str: Optional[str], default_rel: str) -> Path:
 
 @lru_cache(maxsize=None)
 def load_feature_name_config(path_str: Optional[str] = None) -> Dict[str, object]:
-    """Load feature name config."""
+    """Load the feature-name configuration mapping."""
     path = _resolve_repo_path(path_str, DEFAULT_FEATURE_NAMES_PATH)
     with open(path, "r", encoding="utf-8") as f:
         payload = yaml.safe_load(f) or {}
@@ -41,7 +44,7 @@ def _schema_fields(
     section: str,
     field_key: str,
 ) -> List[str]:
-    """Internal helper to schema fields."""
+    """Helper to schema fields."""
     schema = load_feature_name_config(feature_names_path)
     section_cfg = schema.get(section, {})
     if not isinstance(section_cfg, dict):
@@ -55,7 +58,7 @@ def _schema_prefix(
     section: str,
     prefix_key: str,
 ) -> str:
-    """Internal helper to schema prefix."""
+    """Helper to schema prefix."""
     schema = load_feature_name_config(feature_names_path)
     section_cfg = schema.get(section, {})
     if not isinstance(section_cfg, dict):
@@ -70,7 +73,7 @@ def _schema_prefix(
 
 
 def _ordered_unique(values: Sequence[str]) -> List[str]:
-    """Internal helper to ordered unique."""
+    """Helper to ordered unique."""
     seen = set()
     out: List[str] = []
     for value in values:
@@ -82,7 +85,7 @@ def _ordered_unique(values: Sequence[str]) -> List[str]:
 
 
 def _as_float_array(values: Optional[Sequence[float]]) -> np.ndarray:
-    """Internal helper to as float array."""
+    """Helper to as float array."""
     if values is None:
         return np.zeros(0, dtype=float)
     arr = np.asarray(values, dtype=float).reshape(-1)
@@ -90,48 +93,48 @@ def _as_float_array(values: Optional[Sequence[float]]) -> np.ndarray:
 
 
 def _sum_or_zero(values: Optional[Sequence[float]]) -> float:
-    """Internal helper to sum or zero."""
+    """Helper to sum or zero."""
     arr = _as_float_array(values)
     return float(np.nansum(arr)) if arr.size else 0.0
 
 
 def _sum_or_nan(values: Optional[Sequence[float]]) -> float:
-    """Internal helper to sum or nan."""
+    """Helper to sum or nan."""
     arr = _as_float_array(values)
     return float(np.nansum(arr)) if arr.size else np.nan
 
 
 def _min_or_nan(values: Optional[Sequence[float]]) -> float:
-    """Internal helper to min or nan."""
+    """Helper to min or nan."""
     arr = _as_float_array(values)
     return float(np.nanmin(arr)) if arr.size else np.nan
 
 
 def _max_or_nan(values: Optional[Sequence[float]]) -> float:
-    """Internal helper to max or nan."""
+    """Helper to max or nan."""
     arr = _as_float_array(values)
     return float(np.nanmax(arr)) if arr.size else np.nan
 
 
 def _mean_or_nan(values: Optional[Sequence[float]]) -> float:
-    """Internal helper to mean or nan."""
+    """Helper to mean or nan."""
     arr = _as_float_array(values)
     return float(np.nanmean(arr)) if arr.size else np.nan
 
 
 def _std_or_nan(values: Optional[Sequence[float]]) -> float:
-    """Internal helper to std or nan."""
+    """Helper to std or nan."""
     arr = _as_float_array(values)
     return float(np.nanstd(arr)) if arr.size else np.nan
 
 
 def _to_float_or_nan(value) -> float:
-    """Internal helper to to float or nan."""
+    """Helper to float or nan."""
     return lu._to_float_or_nan(value)
 
 
 def _normalize_plotter_indices(indices) -> List[int]:
-    """Internal helper to normalize plotter indices."""
+    """Helper to normalize plotter indices."""
     if indices is None:
         return []
     if isinstance(indices, (list, tuple, np.ndarray)):
@@ -140,7 +143,7 @@ def _normalize_plotter_indices(indices) -> List[int]:
 
 
 def _plotter_channel_names(plotter, indices: Optional[Sequence[int]] = None) -> List[str]:
-    """Internal helper to plotter channel names."""
+    """Helper to plotter channel names."""
     names = [str(value) for value in list(getattr(plotter, "_uname", []))]
     if indices is None:
         return names
@@ -152,7 +155,7 @@ def _plotter_channel_names(plotter, indices: Optional[Sequence[int]] = None) -> 
 
 
 def _plotter_series_matrix(plotter, indices: Sequence[int]) -> np.ndarray:
-    """Internal helper to plotter series matrix."""
+    """Helper to plotter series matrix."""
     idx = _normalize_plotter_indices(indices)
     if not idx:
         return np.zeros((0, 0), dtype=float)
@@ -167,13 +170,13 @@ def _plotter_series_matrix(plotter, indices: Sequence[int]) -> np.ndarray:
 
 
 def _plotter_channel_indices_by_prefix(plotter, prefix: str) -> List[int]:
-    """Internal helper to plotter channel indices by prefix."""
+    """Helper to plotter channel indices by prefix."""
     names = _plotter_channel_names(plotter)
     return [i for i, name in enumerate(names) if name.startswith(prefix)]
 
 
 def _plotter_channel_indices_by_prefixes(plotter, prefixes: Sequence[str]) -> List[int]:
-    """Internal helper to plotter channel indices by prefixes."""
+    """Helper to plotter channel indices by prefixes."""
     for prefix in prefixes:
         indices = _plotter_channel_indices_by_prefix(plotter, prefix)
         if indices:
@@ -182,7 +185,7 @@ def _plotter_channel_indices_by_prefixes(plotter, prefixes: Sequence[str]) -> Li
 
 
 def _extract_numeric_suffix(name: str) -> Optional[int]:
-    """Internal helper to extract numeric suffix."""
+    """Helper to extract numeric suffix."""
     match = _NUMERIC_SUFFIX_RE.search(str(name))
     if match is None:
         return None
@@ -193,7 +196,7 @@ def _extract_numeric_suffix(name: str) -> Optional[int]:
 
 
 def _plotter_matrix_with_names(plotter) -> tuple[np.ndarray, List[str]]:
-    """Internal helper to plotter matrix with names."""
+    """Helper to plotter matrix with names."""
     names = _plotter_channel_names(plotter)
     if not names:
         return np.zeros((0, 0), dtype=float), []
@@ -213,7 +216,7 @@ def _plotter_matrix_with_names(plotter) -> tuple[np.ndarray, List[str]]:
 
 
 def _sanitize_feature_token(value: str) -> str:
-    """Internal helper to sanitize feature token."""
+    """Helper to sanitize feature token."""
     text = _NON_ALNUM_RE.sub("_", str(value)).strip("_")
     text = re.sub(r"_+", "_", text)
     if not text:
@@ -227,7 +230,7 @@ def _build_initial_state_fieldnames(
     channel_names: Sequence[str],
     feature_names_path: Optional[str] = None,
 ) -> List[str]:
-    """Internal helper to build initial state fieldnames."""
+    """Helper to build initial state fieldnames."""
     prefix = _schema_prefix(feature_names_path, "x_op", "initial_state")
     counts: Dict[str, int] = {}
     fieldnames: List[str] = []
@@ -246,7 +249,7 @@ def initial_state_fieldnames_from_plotter(
     *,
     feature_names_path: Optional[str] = None,
 ) -> List[str]:
-    """Return initial state fieldnames from plotter."""
+    """Build initial-state fieldnames from plotter channel names."""
     return _build_initial_state_fieldnames(
         _plotter_channel_names(plotter),
         feature_names_path=feature_names_path,
@@ -272,7 +275,7 @@ def extract_initial_state_metrics(
 
 
 def _sum_model_attr(ss, model_names: Sequence[str], attr_candidates: Sequence[str]) -> float:
-    """Internal helper to sum model attr."""
+    """Helper to sum model attr."""
     total = 0.0
     found = False
     for model_name in model_names:
@@ -298,7 +301,7 @@ def _selected_pq_records(
     pq_q_before: Optional[Sequence[float]] = None,
     pq_p_after: Optional[Sequence[float]] = None,
 ) -> List[Dict[str, float | str]]:
-    """Internal helper to selected pq records."""
+    """Helper to selected pq records."""
     actual_names = [str(value) for value in list(getattr(getattr(ss.PQ, "name", None), "v", []))]
     if not actual_names:
         return []
@@ -342,7 +345,7 @@ def simulation_row_fieldnames(
     include_plotter: Optional[bool] = None,
     feature_names_path: Optional[str] = None,
 ) -> List[str]:
-    """Return simulation row fieldnames."""
+    """Build CSV fieldnames for one simulation row."""
     _ = include_plotter
 
     metadata_fields = _schema_fields(feature_names_path, "metadata", "fields")
@@ -617,7 +620,7 @@ def extract_line_metrics(
 
 
 def _default_ed_metadata() -> Dict[str, float | str]:
-    """Internal helper to default ed metadata."""
+    """Helper to default ed metadata."""
     return {
         "ed_enabled": 0,
         "ed_solver": "",
@@ -727,7 +730,7 @@ def extract_x_op(
     initial_state_snapshot: Optional[Mapping[str, float]] = None,
     feature_names_path: Optional[str] = None,
 ) -> Dict[str, float]:
-    """Extract x op."""
+    """Extract x_op features."""
     pq_p_base_prefix = _schema_prefix(feature_names_path, "x_op", "pq_p_base")
     pq_q_base_prefix = _schema_prefix(feature_names_path, "x_op", "pq_q_base")
 
@@ -867,7 +870,7 @@ def extract_x_cont(
     line_metrics_snapshot: Optional[Dict[str, float]] = None,
     feature_names_path: Optional[str] = None,
 ) -> Dict[str, Dict[str, float]]:
-    """Extract x cont."""
+    """Extract x_cont features."""
     line_metrics = line_metrics_snapshot or extract_line_metrics(
         ss=ss,
         contingency=contingency,
@@ -905,7 +908,7 @@ def extract_x_cont(
 
 
 def _current_schedule_aggregates(ss) -> tuple[float, float]:
-    """Internal helper to current schedule aggregates."""
+    """Helper to current schedule aggregates."""
     gen_m = _as_float_array(getattr(getattr(ss.GENROU, "M", None), "v", None))
     gen_d = _as_float_array(getattr(getattr(ss.GENROU, "D", None), "v", None))
     ibr_m = _as_float_array(getattr(getattr(ss.REGCV1, "M", None), "v", None))
@@ -917,7 +920,7 @@ def _current_schedule_aggregates(ss) -> tuple[float, float]:
 
 
 def _derive_dispatch_vectors(ss) -> tuple[np.ndarray, np.ndarray]:
-    """Internal helper to derive dispatch vectors."""
+    """Helper to derive dispatch vectors."""
     genrou_pg = _as_float_array(getattr(ss.GENROU, "Pg", np.zeros(0)))
     if genrou_pg.size == 0 and hasattr(ss.GENROU, "p0"):
         genrou_pg = _as_float_array(ss.GENROU.p0.v)
@@ -929,7 +932,7 @@ def _derive_dispatch_vectors(ss) -> tuple[np.ndarray, np.ndarray]:
 
 
 def _model_attr_array(model, attr_candidates: Sequence[str], *, fill_value: float = np.nan) -> np.ndarray:
-    """Internal helper to model attr array."""
+    """Helper to model attr array."""
     model_n = int(getattr(model, "n", 0))
     if model_n <= 0:
         return np.zeros(0, dtype=float)
@@ -948,7 +951,7 @@ def _static_generator_attr_vector(
     attr_candidates: Sequence[str],
     fill_value: float = np.nan,
 ) -> np.ndarray:
-    """Internal helper to static generator attr vector."""
+    """Helper to static generator attr vector."""
     arrays: List[np.ndarray] = []
     for model_name in ("PV", "Slack"):
         model = getattr(ss, model_name, None)
@@ -961,7 +964,7 @@ def _static_generator_attr_vector(
 
 
 def _dispatch_ibr_positions(ss, n_dispatch: int) -> List[int]:
-    """Internal helper to dispatch ibr positions."""
+    """Helper to dispatch ibr positions."""
     gen_values = getattr(getattr(ss.REGCV1, "gen", None), "v", None)
     positions: List[int] = []
     if gen_values is not None:
@@ -980,7 +983,7 @@ def _dispatch_ibr_positions(ss, n_dispatch: int) -> List[int]:
 
 
 def _select_positions(values: np.ndarray, positions: Sequence[int], *, expected_len: int) -> np.ndarray:
-    """Internal helper to select positions."""
+    """Helper to select positions."""
     out = np.full(expected_len, np.nan, dtype=float)
     if values.size == 0 or expected_len <= 0:
         return out
@@ -991,7 +994,7 @@ def _select_positions(values: np.ndarray, positions: Sequence[int], *, expected_
 
 
 def _generator_reserve_metrics(ss) -> Dict[str, object]:
-    """Internal helper to generator reserve metrics."""
+    """Helper to generator reserve metrics."""
     p_dispatch = _static_generator_attr_vector(ss, attr_candidates=("Pg", "p", "p0"))
     p_max = _static_generator_attr_vector(ss, attr_candidates=("pmax",))
     q_dispatch = _static_generator_attr_vector(ss, attr_candidates=("Qg", "q", "q0"))
@@ -1040,7 +1043,7 @@ def extract_x_sched(
     regcv1_pg: Optional[Sequence[float]] = None,
     feature_names_path: Optional[str] = None,
 ) -> Dict[str, float]:
-    """Extract x sched."""
+    """Extract x_sched features."""
     m_prefix = _schema_prefix(feature_names_path, "x_sched", "M")
     d_prefix = _schema_prefix(feature_names_path, "x_sched", "D")
     genrou_prefix = _schema_prefix(feature_names_path, "x_sched", "p_genrou")
@@ -1340,7 +1343,7 @@ def extract_y_metrics(
     bus_numbers: Optional[Sequence[int]] = None,
     feature_names_path: Optional[str] = None,
 ) -> Dict[str, Dict[str, float]]:
-    """Extract y metrics."""
+    """Extract y-target metrics."""
     if plotter is None:
         ss.TDS.load_plotter()
         plotter = ss.TDS.plotter

@@ -1,0 +1,7 @@
+inherits: configs/model/studies/architecture/exploratory.yaml
+
+output_dir: results/thesis_model_results/outputs/architecture_comparison_exploratory_kendall_standard
+
+sweep:
+  losses: [kendall]
+  scalers: [standard]

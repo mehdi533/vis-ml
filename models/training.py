@@ -1,12 +1,20 @@
+# training.py
+# Core epoch loop, optimization, and model checkpoint persistence.
+
+from __future__ import annotations
+
 import os
+from pathlib import Path
+
 import numpy as np
 import torch
 
-import sys as _sys
-from pathlib import Path as _Path
-
 from models.losses import build_loss
 
+
+# -----------------------------
+# Training loop
+# -----------------------------
 
 def train_model(
     model,
@@ -165,7 +173,7 @@ def train_model(
             best_val_loss = val_loss
             best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
             if best_model_path:
-                best_path = _Path(best_model_path)
+                best_path = Path(best_model_path)
                 best_path.parent.mkdir(parents=True, exist_ok=True)
                 torch.save(best_state, best_model_path)
                 log(f"Saved best model to {best_model_path}")
@@ -177,6 +185,10 @@ def train_model(
 
     return model, train_losses, train_eval_losses, val_losses
 
+
+# -----------------------------
+# Checkpoint export
+# -----------------------------
 
 def save_model(model, path="model_state_dict.pt"):
     torch.save(model.state_dict(), path)

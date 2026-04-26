@@ -1,3 +1,6 @@
+# build_outputs.py
+# CLI wrapper for thesis optimization post-processing exports.
+
 from __future__ import annotations
 
 import argparse
@@ -11,11 +14,15 @@ if str(ROOT) not in sys.path:
 from results.thesis_optimization_results.src.build_outputs import build_outputs
 
 
+# -----------------------------
+# CLI entrypoint
+# -----------------------------
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Build thesis optimization tables/figures from run artifacts.")
     parser.add_argument(
         "--config",
-        default="results/thesis_optimization_results/configs/analysis/results_pack.yaml",
+        default="configs/scheduling/analysis/results_pack.yaml",
         help="Analysis config YAML.",
     )
     parser.add_argument(

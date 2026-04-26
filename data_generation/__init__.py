@@ -1,3 +1,6 @@
+# __init__.py
+# Public entrypoints for the data-generation workflow with lazy imports.
+
 from __future__ import annotations
 
 from typing import Any, Optional, Sequence

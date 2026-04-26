@@ -1,3 +1,6 @@
+# disturbance_dispatch.py
+# Disturbance planning and application helpers for load-step and line-N1 modes.
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -20,7 +23,7 @@ class DisturbanceSpec:
     meta: Dict[str, object] = field(default_factory=dict)
 
     def contingency(self) -> Optional[Dict[str, object]]:
-        """Return contingency."""
+        """Build a contingency payload for downstream feature extraction."""
         raw = self.meta.get("contingency")
         if isinstance(raw, dict):
             return dict(raw)
@@ -37,18 +40,18 @@ class DisturbanceSpec:
 
 
 class DisturbanceHandler(Protocol):
-    """Handler implementation for 'DisturbanceHandler'."""
+    """Protocol for disturbance planning and application handlers."""
     def plan(self, ss, cfg: Dict, rng: np.random.Generator) -> List[DisturbanceSpec]:
-        """Return plan."""
+        """Build disturbance plan specs."""
         ...
 
     def apply(self, ss, spec: DisturbanceSpec, cfg: Dict, rng: np.random.Generator) -> None:
-        """Return apply."""
+        """Apply one disturbance spec to the system."""
         ...
 
 
 def _sample_from_bins(bins: Sequence[Dict], rng: np.random.Generator) -> Tuple[float, str]:
-    """Internal helper to sample from bins."""
+    """Helper to sample from bins."""
     probs = np.asarray([b.get("prob", 1.0) for b in bins], dtype=float)
     probs = probs / probs.sum()
     idx = int(rng.choice(len(bins), p=probs))
@@ -67,7 +70,7 @@ def _sample_scalar(
     default_high: float,
     log_uniform: bool = False,
 ) -> float:
-    """Internal helper to sample scalar."""
+    """Helper to sample scalar."""
     low = float(range_cfg.get("low", default_low))
     high = float(range_cfg.get("high", default_high))
     if log_uniform:
@@ -82,7 +85,7 @@ def sample_value(
     default_low: float,
     default_high: float,
 ) -> Tuple[float, str]:
-    """Return sample value."""
+    """Sample a scalar value from a fixed/range/bin config."""
     if isinstance(value_cfg, (list, tuple)) and len(value_cfg) >= 2:
         value_cfg = {"low": value_cfg[0], "high": value_cfg[1]}
     if isinstance(value_cfg, (int, float)):
@@ -127,7 +130,7 @@ def select_step_targets(
 
 
 def _extract_line_records(ss) -> List[Dict[str, float | int | str]]:
-    """Internal helper to extract line records."""
+    """Helper to extract line records."""
     return SystemAdapter(ss).line_records()
 
 
@@ -162,7 +165,7 @@ def pick_line_contingencies(
 
 
 def _resolve_disturbance_configs(cfg: Dict) -> tuple[str, Dict, Dict]:
-    """Internal helper to resolve disturbance configs."""
+    """Helper to resolve disturbance configs."""
     cont_cfg = cfg.get("contingency", {}) or {}
     load_step_cfg = dict(cont_cfg.get("load_step", {}) or {})
     line_n1_cfg = dict(cont_cfg.get("line_n1", {}) or {})
@@ -202,7 +205,7 @@ def resolve_disturbance_kind(cfg: Dict) -> str:
 
 
 def _load_step_settings(cfg: Dict, load_step_cfg: Dict, rng: np.random.Generator) -> tuple[float, float, str]:
-    """Internal helper to load step settings."""
+    """Helper to load step settings."""
     load_step_time = float(load_step_cfg.get("time", cfg.get("tds", {}).get("load_step_time", 0.1)))
     load_step_scale_cfg = load_step_cfg.get("scale", cfg.get("load_step_scale", {}))
     default_low = float(load_step_scale_cfg.get("low", 1.0))
@@ -217,7 +220,7 @@ def _load_step_settings(cfg: Dict, load_step_cfg: Dict, rng: np.random.Generator
 
 
 def _apply_load_step(ss, spec: DisturbanceSpec, cfg: Dict, rng: np.random.Generator) -> None:
-    """Internal helper to apply load step."""
+    """Helper to apply load step."""
     adapter = SystemAdapter(ss)
     step_targets = select_step_targets(ss, cfg.get("load", {}), rng=rng)
     for dev in step_targets:
@@ -229,7 +232,7 @@ def _apply_load_step(ss, spec: DisturbanceSpec, cfg: Dict, rng: np.random.Genera
 
 
 def _apply_line_toggle(ss, spec: DisturbanceSpec) -> None:
-    """Internal helper to apply line toggle."""
+    """Helper to apply line toggle."""
     if spec.line_idx is None:
         return
     adapter = SystemAdapter(ss)
@@ -237,9 +240,9 @@ def _apply_line_toggle(ss, spec: DisturbanceSpec) -> None:
 
 
 class _NoneHandler:
-    """Handler implementation for 'NoneHandler'."""
+    """Handler for the disabled-disturbance mode."""
     def plan(self, ss, cfg: Dict, rng: np.random.Generator) -> List[DisturbanceSpec]:
-        """Return plan."""
+        """Build disturbance plan specs."""
         _ = ss, rng
         _, load_step_cfg, _ = _resolve_disturbance_configs(cfg)
         load_step_time = float(load_step_cfg.get("time", cfg.get("tds", {}).get("load_step_time", 0.1)))
@@ -253,14 +256,14 @@ class _NoneHandler:
         ]
 
     def apply(self, ss, spec: DisturbanceSpec, cfg: Dict, rng: np.random.Generator) -> None:
-        """Return apply."""
+        """Apply one disturbance spec to the system."""
         _ = ss, spec, cfg, rng
 
 
 class _LoadStepHandler:
-    """Handler implementation for 'LoadStepHandler'."""
+    """Handler for load-step-only disturbance mode."""
     def plan(self, ss, cfg: Dict, rng: np.random.Generator) -> List[DisturbanceSpec]:
-        """Return plan."""
+        """Build disturbance plan specs."""
         _ = ss
         _, load_step_cfg, _ = _resolve_disturbance_configs(cfg)
         load_step_time, step_scale, step_bin = _load_step_settings(cfg, load_step_cfg, rng)
@@ -274,14 +277,14 @@ class _LoadStepHandler:
         ]
 
     def apply(self, ss, spec: DisturbanceSpec, cfg: Dict, rng: np.random.Generator) -> None:
-        """Return apply."""
+        """Apply one disturbance spec to the system."""
         _apply_load_step(ss, spec, cfg, rng)
 
 
 class _LineN1Handler:
-    """Handler implementation for 'LineN1Handler'."""
+    """Handler for line-N1-only disturbance mode."""
     def plan(self, ss, cfg: Dict, rng: np.random.Generator) -> List[DisturbanceSpec]:
-        """Return plan."""
+        """Build disturbance plan specs."""
         if ss is None:
             raise ValueError("Line-N1 disturbance planning requires a loaded system.")
         _, load_step_cfg, line_n1_cfg = _resolve_disturbance_configs(cfg)
@@ -309,15 +312,15 @@ class _LineN1Handler:
         return specs
 
     def apply(self, ss, spec: DisturbanceSpec, cfg: Dict, rng: np.random.Generator) -> None:
-        """Return apply."""
+        """Apply one disturbance spec to the system."""
         _ = cfg, rng
         _apply_line_toggle(ss, spec)
 
 
 class _LinePlusLoadHandler:
-    """Handler implementation for 'LinePlusLoadHandler'."""
+    """Handler for combined line-N1 and load-step disturbance mode."""
     def plan(self, ss, cfg: Dict, rng: np.random.Generator) -> List[DisturbanceSpec]:
-        """Return plan."""
+        """Build disturbance plan specs."""
         if ss is None:
             raise ValueError("Line+load disturbance planning requires a loaded system.")
         _, load_step_cfg, line_n1_cfg = _resolve_disturbance_configs(cfg)
@@ -345,7 +348,7 @@ class _LinePlusLoadHandler:
         return specs
 
     def apply(self, ss, spec: DisturbanceSpec, cfg: Dict, rng: np.random.Generator) -> None:
-        """Return apply."""
+        """Apply one disturbance spec to the system."""
         _apply_load_step(ss, spec, cfg, rng)
         _apply_line_toggle(ss, spec)
 
@@ -361,11 +364,11 @@ HANDLERS: Dict[str, DisturbanceHandler] = {
 class DisturbanceDispatcher:
     """Plan and apply disturbances via handler registry lookup."""
     def __init__(self, handlers: Optional[Dict[str, DisturbanceHandler]] = None) -> None:
-        """Initialize this instance."""
+        """Initialize dispatcher with a disturbance-handler registry."""
         self.handlers = dict(HANDLERS if handlers is None else handlers)
 
     def plan(self, ss, cfg: Dict, rng: np.random.Generator) -> List[DisturbanceSpec]:
-        """Return plan."""
+        """Build disturbance plan specs."""
         kind = resolve_disturbance_kind(cfg)
         handler = self.handlers.get(kind)
         if handler is None:
@@ -373,7 +376,7 @@ class DisturbanceDispatcher:
         return handler.plan(ss, cfg, rng)
 
     def apply(self, ss, spec: DisturbanceSpec, cfg: Dict, rng: np.random.Generator) -> None:
-        """Return apply."""
+        """Apply one disturbance spec to the system."""
         handler = self.handlers.get(spec.kind)
         if handler is None:
             raise ValueError(f"No handler registered for disturbance kind: {spec.kind}")

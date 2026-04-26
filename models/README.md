@@ -6,14 +6,10 @@ This folder contains the surrogate-model training, evaluation, and reporting wor
 
 - `models/train_sweep.py`
   Train one or more runs from a YAML config and write a structured run directory plus sweep summaries.
-- `models/eval_on_csv.py`
-  Re-evaluate a trained run on another CSV using the saved scalers and architecture config.
-- `models/summarize_sweep.py`
+- `scripts/model/summarize_sweep.py`
   Aggregate `sweep_run_summary.csv` or `sweep_results.csv` into thesis-ready comparison tables.
 - `models/feature_relevance.py`
   Export attention-based and/or permutation-based feature relevance diagnostics.
-- `models/export_retained_model.py`
-  Copy the retained model artifacts and selection metadata into a clean bundle.
 
 ## Standard run artifacts
 
@@ -41,7 +37,7 @@ At the sweep root:
 
 ## Config notes
 
-- Default config path for `train_sweep.py` is `models/train_sweep.yaml`.
+- Default config path for `train_sweep.py` is `configs/model/train_sweep.yaml`.
 - Sweep grids can now be defined in:
   - `sweep.model`
   - `sweep.training`
@@ -61,4 +57,4 @@ sweep:
 
 ## Thesis pack
 
-See [thesis_model_results/README.md](/Users/cloud9/Desktop/ETH%20Project/Working%20folder/03_Code/vis-ml/thesis_model_results/README.md) for the curated Chapter 5 model-side experiment pack.
+See `scripts/results/model/README.md` for the curated Chapter 5 model-side experiment orchestration entrypoints.

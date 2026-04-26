@@ -55,7 +55,7 @@ figure_3_3:
   line_limit_unit: pu
 
 figure_3_6:
-  benchmark_config: configs/optimization/thesis_optimization_benchmark.yaml
+  benchmark_config: configs/scheduling/thesis_optimization_benchmark.yaml
   representative_outage_mode: highest_selected_severity
   representative_line_uid: 1
   n1_not_considered_line_ids: ["Line_22", "Line_35", "Line_36", "Line_37", "Line_40", "Line_41", "Line_42", "Line_43", "Line_44", "Line_45", "Line_46"]

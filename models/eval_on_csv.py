@@ -1,12 +1,11 @@
+# eval_on_csv.py
+# Re-evaluate a trained run directory against a new CSV dataset.
+
+from __future__ import annotations
+
 import argparse
 import json
-import sys
 from pathlib import Path
-
-if __package__ in (None, ""):
-    repo_root = Path(__file__).resolve().parent.parent
-    if str(repo_root) not in sys.path:
-        sys.path.insert(0, str(repo_root))
 
 import joblib
 import torch
@@ -15,8 +14,17 @@ from torch.utils.data import DataLoader, TensorDataset
 from models.data_utils import load_dataset
 from models.models import create_model
 from models.testing import evaluate_model
-from models.workflow_utils import build_model_kwargs, load_feature_name_registry, load_yaml, resolve_data_config
+from models.utils import (
+    build_model_kwargs,
+    load_feature_name_registry,
+    load_yaml,
+    resolve_data_config,
+)
 
+
+# -----------------------------
+# Path / schema resolution
+# -----------------------------
 
 def _resolve_state_dict_path(model_dir: Path, explicit_path: str | None) -> Path:
     if explicit_path:
@@ -70,6 +78,10 @@ def _infer_checkpoint_input_dim(state: dict) -> int | None:
             return int(tensor.shape[1])
     return None
 
+
+# -----------------------------
+# CLI entrypoint
+# -----------------------------
 
 def main():
     parser = argparse.ArgumentParser(description="Evaluate a trained model directory on another CSV.")

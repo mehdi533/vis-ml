@@ -1,6 +1,12 @@
+# losses.py
+# Loss registry and builders for single- and multi-task regression training.
+
+from __future__ import annotations
+
+from typing import Callable, List, Tuple
+
 import torch
 import torch.nn as nn
-from typing import Callable, List, Tuple
 
 
 class KendallMTLoss(nn.Module):
@@ -26,6 +32,10 @@ class KendallMTLoss(nn.Module):
             loss = loss + loss_i
         return loss
 
+
+# -----------------------------
+# Registry / factory
+# -----------------------------
 
 LOSS_FACTORY = {
     "mse": nn.MSELoss,

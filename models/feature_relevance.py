@@ -1,12 +1,11 @@
+# feature_relevance.py
+# Attention- and permutation-based feature relevance diagnostics for trained runs.
+
+from __future__ import annotations
+
 import argparse
 import json
-import sys
 from pathlib import Path
-
-if __package__ in (None, ""):
-    repo_root = Path(__file__).resolve().parent.parent
-    if str(repo_root) not in sys.path:
-        sys.path.insert(0, str(repo_root))
 
 import joblib
 import numpy as np
@@ -15,13 +14,17 @@ import torch
 
 from models.data_utils import load_dataset, split_data
 from models.models import create_model
-from models.workflow_utils import (
+from models.utils import (
     build_model_kwargs,
     load_feature_name_registry,
     load_yaml,
     resolve_data_config,
 )
 
+
+# -----------------------------
+# Path / group resolution
+# -----------------------------
 
 def _resolve_state_dict_path(model_dir: Path, explicit_path: str | None) -> Path:
     if explicit_path:
@@ -75,6 +78,10 @@ def _resolve_group_features(group_cfg: dict, feature_cols: list[str]) -> dict[st
     return resolved
 
 
+# -----------------------------
+# Inference / export utilities
+# -----------------------------
+
 def _predict_numpy(model, device, X_array: np.ndarray, batch_size: int) -> np.ndarray:
     outputs = []
     model.eval()
@@ -116,6 +123,29 @@ def _write_json(path: Path, payload: dict) -> None:
         json.dump(payload, f, indent=2)
 
 
+def _summarize_state_dict_mismatch(err: RuntimeError, model_type: str, state_path: Path) -> dict:
+    message = str(err)
+    summary = {
+        "status": "failed",
+        "failure_stage": "load_state_dict",
+        "requested_model_type": model_type,
+        "state_dict_path": str(state_path),
+        "error": message,
+        "hint": (
+            "Checkpoint architecture does not match the requested model type. "
+            "Use a matching --model-type and --state-dict pair."
+        ),
+    }
+
+    if "net.0.weight" in message and "shared.0.weight" in message:
+        summary["likely_cause"] = (
+            "An MLP model was requested, but the checkpoint looks like a multi-task shared-head model "
+            "(for example MTLSH/MTLGSH)."
+        )
+
+    return summary
+
+
 def _build_attention_rows(attn_mean: np.ndarray, feature_cols: list[str]) -> list[dict]:
     return [
         {"feature": feature, "attention_mean": float(attn_mean[idx])}
@@ -140,6 +170,10 @@ def _build_attention_group_rows(attn_mean: np.ndarray, feature_cols: list[str], 
         )
     return rows
 
+
+# -----------------------------
+# Permutation relevance
+# -----------------------------
 
 def _permutation_importance(
     model,
@@ -225,6 +259,10 @@ def _group_permutation_importance(
 
     return rows
 
+
+# -----------------------------
+# CLI entrypoint
+# -----------------------------
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Compute attention and permutation feature relevance.")
@@ -323,7 +361,25 @@ def main() -> None:
         raise FileNotFoundError(f"State dict not found: {state_path}")
 
     state = torch.load(state_path, map_location=device)
-    model.load_state_dict(state)
+    try:
+        model.load_state_dict(state)
+    except RuntimeError as err:
+        mismatch_summary = _summarize_state_dict_mismatch(err, str(model_type), state_path)
+        mismatch_summary.update(
+            {
+                "mode": args.mode,
+                "split": args.split,
+                "n_rows": int(X_norm.shape[0]),
+                "n_features": int(len(feature_cols)),
+                "n_targets": int(len(target_cols)),
+            }
+        )
+        _write_json(out_dir / "feature_relevance_summary.json", mismatch_summary)
+        print(
+            "Skipping feature relevance due to model/checkpoint mismatch. "
+            f"Summary written to {out_dir / 'feature_relevance_summary.json'}"
+        )
+        return
     model.to(device)
     model.eval()
 

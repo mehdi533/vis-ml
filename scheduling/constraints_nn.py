@@ -233,6 +233,17 @@ def build_nn_constraints(
     """
     Unified NN builder used by final optimization.
     """
+    mode = str(mode).strip().lower()
+    if mode not in {"milp", "convex"}:
+        raise ValueError(
+            f"Unsupported nn.mode='{mode}'. Allowed values are: milp, convex."
+        )
+    if mode == "convex":
+        raise ValueError(
+            "constraints.nn_mode='convex' is selected, but convex NN optimization "
+            "embeddings are not implemented in scheduling/constraints_nn.py."
+        )
+
     try:
         return _build_constraints_from_relu_model(
             model,
