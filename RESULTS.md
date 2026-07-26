@@ -129,6 +129,35 @@ the preventive policy is "usable only below a clear stress boundary."
 (Infeasible cases also solve faster — the MILP proves infeasibility early.)
 `scripts/run_ieee118_stress.py`.
 
+## 8. Regional security constraint catches what COI misses
+Embedding the worst-bus surrogate outputs as a *regional* security constraint in
+the dispatch (vs COI-only). At the COI-only optimum the predicted **worst-bus
+RoCoF is −1.32 Hz/s — violating a ±1.2 per-bus limit** — while the COI metric
+(−0.66) is comfortably "safe." So COI-only security can certify a schedule that
+locally violates. Enforcing the regional bound (worst-bus ≤ 1.2) makes the MILP
+substantially harder to solve (the constraint is far more binding than COI),
+confirming regional security is the operative constraint, not COI.
+`configs/scheduling/regional/`, `scripts/run_regional_demo.py`.
+
+## 9. Conditional (adaptive) conformal margins
+Mondrian conformal conditioned on operating stress gives per-regime margins:
+on the trained surrogate the RoCoF margin adapts ~2× (0.047 easy → 0.094 hard
+Hz/s), tighter where the surrogate is accurate while keeping the per-bin
+guarantee. Generalises the single marginal margin toward the covariate-conditional
+conformal frontier. `research/conformal/adaptive.py`.
+
+## 10. ANDES physics validation (50 Hz)
+The simulator (the surrogate's ground truth) was validated from the *actual
+generated data* on the European **50 Hz** base (data-gen, optimisation and replay
+all set `config.freq = 50`; ANDES defaults to 60):
+- 100% power-flow success, zero non-finite security metrics;
+- 100% of load-increase sims drop frequency (RoCoF < 0, Δf < 0);
+- disturbance magnitude dominates |RoCoF| (corr +0.86);
+- higher inertia reduces |RoCoF| — regression coefficient −0.0043 controlling for
+  disturbance, and a causal pipeline sweep (fixed disturbance) gives
+  M=1 → |RoCoF| 0.328 vs M=7 → 0.227 (**1.45×**).
+`scripts/validate_andes_physics.py`.
+
 ### Remaining (heavier / cluster-gated)
 - Regenerate the full dataset on the cluster → publication-grade magnitudes
   (the surrogate here is trained on a few hundred local sims).
