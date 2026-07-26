@@ -10,6 +10,7 @@ Prints a JSON summary and the chosen IBR generator idxs.
 """
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import sys
@@ -26,10 +27,19 @@ from research.systems.registry import augment_with_grid_forming_ibrs  # noqa: E4
 N_IBR = 4
 NOMINAL_M = 6.0
 NOMINAL_D = 3.0
+# Lower inertia than the round-rotor default (H=4) so the 118 grid actually
+# swings -- modelling the low-inertia condition the thesis targets.
+DEFAULT_H = 2.5
 OUT = ROOT / "data_generation" / "andes_cases" / "ieee118_ibrs.xlsx"
 
 
 def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--target-H", type=float, default=DEFAULT_H)
+    ap.add_argument("--out", default=str(OUT))
+    args = ap.parse_args()
+    out_path = Path(args.out)
+
     warnings.filterwarnings("ignore")
     andes.config_logger(stream_level=40)
     case = os.path.join(os.path.dirname(andes.__file__), "cases", "matpower", "case118.m")
@@ -43,7 +53,7 @@ def main() -> None:
     # Add a Center-of-Inertia device so the COI frequency (rocof_COI, dev_COI) is
     # produced by TDS; the synchronous machines reference it.
     ss.add("COI", param_dict={"idx": "COI_1", "name": "COI_1"})
-    dynamify_case(ss, target_H=4.0, exclude_gen_idxs=ibr_gens, coi_idx="COI_1")
+    dynamify_case(ss, target_H=args.target_H, exclude_gen_idxs=ibr_gens, coi_idx="COI_1")
     augment_with_grid_forming_ibrs(
         ss, gen_idxs=ibr_gens,
         m_values=[NOMINAL_M] * len(ibr_gens),
@@ -52,18 +62,19 @@ def main() -> None:
     ss.setup()
     pf = bool(ss.PFlow.run())
 
-    OUT.parent.mkdir(parents=True, exist_ok=True)
-    andes.io.xlsx.write(ss, str(OUT), overwrite=True)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    andes.io.xlsx.write(ss, str(out_path), overwrite=True)
 
     # Reload the saved artifact fresh and confirm it is TDS-ready.
-    ss2 = andes.load(str(OUT), setup=True, no_output=True)
+    ss2 = andes.load(str(out_path), setup=True, no_output=True)
     pf2 = bool(ss2.PFlow.run())
     ss2.TDS.config.tf = 1.0
     ss2.TDS.config.no_tqdm = 1
     ss2.TDS.run()
 
     summary = {
-        "output_case": str(OUT.relative_to(ROOT)),
+        "output_case": str(out_path.relative_to(ROOT)),
+        "target_H": args.target_H,
         "n_buses": int(ss2.Bus.n),
         "n_lines": int(ss2.Line.n),
         "n_genrou": int(ss2.GENROU.n),

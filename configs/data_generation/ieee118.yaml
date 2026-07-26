@@ -2,22 +2,22 @@ case: data_generation/andes_cases/ieee118_ibrs.xlsx
 output_dir: results/ieee118/data
 output_csv: simulation_results.csv
 feature_names_path: configs/shared/data_generation_feature_names.yaml
-seed: 11
+seed: 21
 n_sims: 40
 workers: 4
 stream_level: 50
 features:
   include_initial_state: true
 base_load_scale:
-  low: 0.6
+  low: 0.5
   high: 1.0
 contingency:
   load_step:
     enable: true
     time: 1
     scale:
-      low: 1.05
-      high: 1.35
+      low: 1.15
+      high: 1.6
   line_n1:
     enable: true
     trip_time: 1.0
