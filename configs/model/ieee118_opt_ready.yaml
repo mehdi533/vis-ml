@@ -57,7 +57,7 @@ split:
   val_fraction: 0.5
   random_state: 42
 training:
-  epochs: 15
+  epochs: 40
   lr: 0.001
   weight_decay: 0.0001
   batch_train: 64

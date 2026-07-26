@@ -2,8 +2,8 @@ case: data_generation/andes_cases/ieee118_ibrs.xlsx
 output_dir: results/ieee118/data
 output_csv: simulation_results.csv
 feature_names_path: configs/shared/data_generation_feature_names.yaml
-seed: 21
-n_sims: 40
+seed: 33
+n_sims: 100
 workers: 4
 stream_level: 50
 features:

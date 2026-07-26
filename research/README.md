@@ -54,6 +54,18 @@ build (H=2.5) swings realistically. Builder: `scripts/build_ieee118_ibrs.py`.
 `scripts/run_pareto.py`: MTLSH is Pareto-dominant — best accuracy (agg RMSE
 0.669) *and* smallest embedding (48 hidden ReLU, 1 box binary) vs MLP / MTLGSH.
 
+## `research/sampling` — boundary-focused active sampling
+`directed_walks.py`: gradient-driven Directed-Walks sampling — drive the
+schedulable M/D inputs toward a target output (the security boundary) using the
+surrogate's gradient, so generated data lands where the dispatch's active
+constraints live. On the trained MTLSH, walks focus samples ~130× closer to the
+boundary.
+
+## Safety-oriented training
+`models/losses.py` adds `pinball` (quantile) loss: with `tau > 0.5` the surrogate
+is penalised more for under-prediction, biasing it to over-state the security
+metric — conservative even before a conformal margin.
+
 ## Regional security
 `scripts/build_regional_dataset.py` + `configs/model/regional_multihead.yaml`:
 the worst individual bus sees 2.4× the COI RoCoF (up to 8×); a multi-head
