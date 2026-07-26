@@ -100,6 +100,7 @@ def main() -> None:
         d_values=[NOMINAL_D] * len(ibr_gens),
     )
     ss.setup()
+    ss.config.freq = 50.0  # European 50 Hz base (ANDES defaults to 60)
     pf = bool(ss.PFlow.run())
 
     if args.line_limits:
@@ -113,6 +114,7 @@ def main() -> None:
 
     # Reload the saved artifact fresh and confirm it is TDS-ready.
     ss2 = andes.load(str(out_path), setup=True, no_output=True)
+    ss2.config.freq = 50.0  # European 50 Hz base
     pf2 = bool(ss2.PFlow.run())
     ss2.TDS.config.tf = 1.0
     ss2.TDS.config.no_tqdm = 1
