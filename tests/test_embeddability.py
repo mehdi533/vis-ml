@@ -89,5 +89,24 @@ def test_obbt_never_wider_than_ibp():
     cmp = compare_ibp_obbt(layers, lo, hi)
     assert cmp["obbt_binaries"] <= cmp["ibp_binaries"]
     assert cmp["obbt_max_bigM"] <= cmp["ibp_max_bigM"] + 1e-6
+
+
+def test_verification_range_contains_all_samples():
+    """The certified output range must be sound: contain every forward-pass output."""
+    from research.embeddability.verify import certified_output_range
+
+    rng = np.random.default_rng(2)
+    layers = [
+        LinearLayer(rng.normal(size=(6, 3)), rng.normal(size=6)),
+        LinearLayer(rng.normal(size=(1, 6)), rng.normal(size=1)),
+    ]
+    lo, hi = np.full(3, -1.0), np.full(3, 1.0)
+    c_lo, c_hi = certified_output_range(layers, lo, hi, output_index=0, solver="SCIP")
+    assert c_lo <= c_hi
+    for _ in range(3000):
+        x = rng.uniform(-1.0, 1.0, size=3)
+        h = np.maximum(layers[0].W @ x + layers[0].b, 0.0)
+        y = float(layers[1].W @ h + layers[1].b)
+        assert c_lo - 1e-6 <= y <= c_hi + 1e-6
     with pytest.raises(ValueError):
         LinearLayer(np.ones((2, 2)), np.zeros(3))  # b shape mismatch
