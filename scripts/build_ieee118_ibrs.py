@@ -33,10 +33,50 @@ DEFAULT_H = 2.5
 OUT = ROOT / "data_generation" / "andes_cases" / "ieee118_ibrs.xlsx"
 
 
+def synthesize_line_limits(ss, factor: float = 1.4, floor_mva: float = 40.0):
+    """Set Line.rate_a from a DC base-case flow (matpower case118 ships with none).
+
+    rate_a = max(floor, factor * |DC flow|), so lines sit at ~1/factor loading at
+    base and N-1 contingencies can bind meaningfully. Returns the ratings (MVA).
+    """
+    import numpy as np
+
+    buses = list(ss.Bus.idx.v)
+    bidx = {b: i for i, b in enumerate(buses)}
+    nb = len(buses)
+    x = np.asarray(ss.Line.x.v, dtype=float)
+    f = [bidx[b] for b in ss.Line.bus1.v]
+    t = [bidx[b] for b in ss.Line.bus2.v]
+    inj = np.zeros(nb)
+    for mdl in ("PV", "Slack"):
+        m = getattr(ss, mdl, None)
+        if m and m.n:
+            for k in range(m.n):
+                inj[bidx[m.bus.v[k]]] += float(m.p0.v[k])
+    for k in range(ss.PQ.n):
+        inj[bidx[ss.PQ.bus.v[k]]] -= float(ss.PQ.p0.v[k])
+    slack = bidx[ss.Slack.bus.v[0]]
+    B = np.zeros((nb, nb))
+    for i in range(len(x)):
+        if x[i] <= 0 or not np.isfinite(x[i]):
+            continue
+        b = 1.0 / x[i]
+        B[f[i], f[i]] += b; B[t[i], t[i]] += b
+        B[f[i], t[i]] -= b; B[t[i], f[i]] -= b
+    keep = [i for i in range(nb) if i != slack]
+    theta = np.zeros(nb)
+    theta[keep] = np.linalg.solve(B[np.ix_(keep, keep)], inj[keep])
+    flow = np.array([(theta[f[i]] - theta[t[i]]) / x[i] if x[i] > 0 else 0.0 for i in range(len(x))])
+    rate = np.maximum(floor_mva, factor * np.abs(flow) * 100.0)
+    ss.Line.rate_a.v = rate
+    return rate
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--target-H", type=float, default=DEFAULT_H)
     ap.add_argument("--out", default=str(OUT))
+    ap.add_argument("--line-limits", action="store_true", help="Synthesize DC-flow line ratings.")
     args = ap.parse_args()
     out_path = Path(args.out)
 
@@ -62,6 +102,12 @@ def main() -> None:
     ss.setup()
     pf = bool(ss.PFlow.run())
 
+    if args.line_limits:
+        rates = synthesize_line_limits(ss)
+        n_rated = int((rates > 40.0).sum())
+    else:
+        n_rated = 0
+
     out_path.parent.mkdir(parents=True, exist_ok=True)
     andes.io.xlsx.write(ss, str(out_path), overwrite=True)
 
@@ -75,6 +121,7 @@ def main() -> None:
     summary = {
         "output_case": str(out_path.relative_to(ROOT)),
         "target_H": args.target_H,
+        "n_lines_rated": n_rated,
         "n_buses": int(ss2.Bus.n),
         "n_lines": int(ss2.Line.n),
         "n_genrou": int(ss2.GENROU.n),

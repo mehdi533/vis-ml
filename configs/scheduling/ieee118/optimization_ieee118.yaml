@@ -84,12 +84,12 @@ constraints:
   use_input: true
   use_output: true
   use_nn: true
-  use_line: false
-  use_n1: false
+  use_line: true
+  use_n1: true
   use_n1_redispatch: false
   exclude_islanding_critical_n1: true
   exclude_n1_line_uids: []
-  use_ed: false
+  use_ed: true
   nn_mode: milp
   y_ibr_idx:
   - 2
