@@ -2,8 +2,8 @@ case: data_generation/andes_cases/ieee39_full_ibrs.xlsx
 output_dir: results/conformal/data
 output_csv: simulation_results.csv
 feature_names_path: configs/shared/data_generation_feature_names.yaml
-seed: 99
-n_sims: 250
+seed: 55
+n_sims: 400
 workers: 4
 stream_level: 50
 features:

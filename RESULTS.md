@@ -7,15 +7,16 @@ magnitudes need the cluster dataset. Nothing here is fabricated; every number is
 reproducible from the scripts/configs noted.
 
 ## 1. Conformal margins close the RoCoF replay gap
-The embedded surrogate under-predicts the security metric near the limit ~2/3 of
-the time — quantifying the §6.2 replay gap. A split-conformal one-sided margin,
-calibrated on real held-out surrogate residuals (250 IEEE-39 sims, α=0.1, 200
-splits), lifts *safety coverage* to the 90% target:
+The embedded surrogate under-predicts the security metric near the limit roughly
+half the time (more for a weaker surrogate) — quantifying the §6.2 replay gap. A
+split-conformal one-sided margin, calibrated on real held-out surrogate residuals
+(400 IEEE-39 sims, n=60 held-out, α=0.1, 200 splits), lifts *safety coverage* to
+the 90% target:
 
 | Metric | coverage (raw) | coverage (+ conformal) | margin |
 |---|---|---|---|
-| RoCoF | 32.1% | 90.0% | 0.135 Hz/s |
-| Δf | 33.9% | 89.7% | 0.264 Hz |
+| RoCoF | 49% | 90% | 0.047 Hz/s |
+| Δf | 52% | 90% | 0.131 Hz |
 
 Distribution-free, finite-sample. `scripts/run_conformal_demo.py`.
 **Novel:** conformal calibration + exact NN embedding for virtual-inertia dispatch.
@@ -25,11 +26,14 @@ a larger (more conservative) margin:
 
 | α | coverage (after) | RoCoF margin (Hz/s) | Δf margin (Hz) |
 |---|---|---|---|
-| 0.20 | 0.80 | 0.082 | 0.166 |
-| 0.10 | 0.90 | 0.133 | 0.267 |
-| 0.05 | 0.95 | 0.251 | 0.444 |
+| 0.20 | 0.80 | 0.032 | 0.078 |
+| 0.10 | 0.90 | 0.047 | 0.131 |
+| 0.05 | 0.97 | 0.080 | 0.157 |
 
-Raw-surrogate coverage stays ~0.32 regardless of α. `apply_conformal_margins.py`
+Raw-surrogate coverage stays ~0.50 regardless of α; the margin **shrinks as the
+surrogate improves** (RoCoF 0.135 → 0.047 Hz/s going from 250 → 400 training
+sims) while coverage always meets the 1−α target — the correction is only as
+large as the surrogate needs. `apply_conformal_margins.py`
 turns a chosen α into a security-tightened optimization config automatically; when
 a margin exceeds the envelope half-width it flags that the surrogate is too
 inaccurate to certify that bound at the target coverage.
