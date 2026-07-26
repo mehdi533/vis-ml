@@ -1,0 +1,109 @@
+formulation:
+  id: regional
+  name: Regional
+  description: Regional worst-bus security embedded via multi-head surrogate.
+system:
+  case: data_generation/andes_cases/ieee39_full_ibrs.xlsx
+  frequency_hz: 50.0
+scenario:
+  base_scale: 0.6
+  step_scale: 1.1
+  load_step_time: 1.0
+seed:
+  M: 0.0
+  D: 0.0
+model:
+  type: MTLSH
+  model_dir: results/regional_lm/models/MTLSH__kendall__minmax__seed42
+  retain_reason: Smoke optimization-ready MTLSH (M_i, D_i, M_agg, D_agg only).
+  in_dim: 178
+  n_tasks: 4
+  shared_sizes:
+  - 32
+  head_sizes:
+  - 16
+  dropout: 0.0
+  convex: false
+features:
+  strict_from_system: true
+  contingency_mode: load_mismatch
+  x_features_from_registry: false
+  x_features_from_model_dir: true
+  feature_names_path: configs/shared/data_generation_feature_names.yaml
+  registry_feature_groups:
+  - x_op
+  - x_cont
+  - x_sched
+  exclude_prefixes:
+  - x0__
+  registry_filter_to_buildable: true
+  registry_align_to_model_contract: true
+  registry_include_unbuildable_model_features: false
+  missing_feature_source: none
+  fixed_source_override_non_sched: false
+  allow_missing_features: false
+  allow_constant_fill_for_unresolved_missing: false
+  missing_fill_value: 0.0
+outputs:
+  y_names:
+  - rocof_COI
+  - dev_COI
+  - rocof_worst_bus
+  - dev_worst_bus
+ibr:
+  indices:
+  - 0
+  - 5
+  - 7
+  - 8
+bounds:
+  M_bounds:
+  - 0
+  - 8.0
+  D_bounds:
+  - 0
+  - 6.0
+  y_min:
+  - -5
+  - -5
+  - -5
+  - -5
+  y_max:
+  - 5
+  - 5
+  - 5
+  - 5
+constraints:
+  use_input: true
+  use_output: true
+  use_nn: true
+  use_line: false
+  use_n1: false
+  use_n1_redispatch: false
+  exclude_islanding_critical_n1: true
+  exclude_n1_line_uids: []
+  use_ed: false
+  nn_mode: milp
+  y_ibr_idx: []
+  enforce_dispatch_output_link: false
+  tie_breaker: 0.0
+ed_costs:
+  cost_table_path: configs/shared/ieee39_regcv1_dispatch_costs.yaml
+solver:
+  name: SCIP
+  verbose: false
+  reoptimize: false
+  feasibility_checks: false
+plots:
+  enabled: false
+  dir: results/smoke/optimization/plots
+  m_d: false
+  pred_vs_opt: false
+  dispatch: false
+  network: false
+  network_layout: kamada
+output:
+  results_dir: results/regional/optimization
+  run_tag: regional
+  log_file: results/regional/optimization/regional.log
+  fail_on_infeasible: false
