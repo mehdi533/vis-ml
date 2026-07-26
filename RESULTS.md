@@ -20,6 +20,20 @@ splits), lifts *safety coverage* to the 90% target:
 Distribution-free, finite-sample. `scripts/run_conformal_demo.py`.
 **Novel:** conformal calibration + exact NN embedding for virtual-inertia dispatch.
 
+The miscoverage level α is the operator's dial — tighter α ⇒ higher coverage ⇒
+a larger (more conservative) margin:
+
+| α | coverage (after) | RoCoF margin (Hz/s) | Δf margin (Hz) |
+|---|---|---|---|
+| 0.20 | 0.80 | 0.082 | 0.166 |
+| 0.10 | 0.90 | 0.133 | 0.267 |
+| 0.05 | 0.95 | 0.251 | 0.444 |
+
+Raw-surrogate coverage stays ~0.32 regardless of α. `apply_conformal_margins.py`
+turns a chosen α into a security-tightened optimization config automatically; when
+a margin exceeds the envelope half-width it flags that the surrogate is too
+inaccurate to certify that bound at the target coverage.
+
 ## 2. Embeddability scales favorably
 Binaries in the exact ReLU-MILP encoding, over the full input domain vs. the
 schedulable (M/D-only) box, on the trained surrogates:
