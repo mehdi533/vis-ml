@@ -19,6 +19,11 @@ Candidate scale-up systems (per the research briefing): NPCC 140-bus (dynamic),
 then IEEE 118 / 300 (need dynamic-model assignment) and Nordic-44.
 """
 
+from research.systems.dynamify import (
+    STANDARD_GENROU,
+    STANDARD_TGOV1N,
+    dynamify_case,
+)
 from research.systems.registry import (
     REGCV1_TEMPLATE,
     SYSTEM_REGISTRY,
@@ -30,9 +35,12 @@ from research.systems.registry import (
 
 __all__ = [
     "REGCV1_TEMPLATE",
+    "STANDARD_GENROU",
+    "STANDARD_TGOV1N",
     "SYSTEM_REGISTRY",
     "SystemSpec",
     "augment_with_grid_forming_ibrs",
     "describe_system",
+    "dynamify_case",
     "resolve_case_path",
 ]

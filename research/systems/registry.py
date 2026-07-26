@@ -59,13 +59,22 @@ SYSTEM_REGISTRY: Dict[str, SystemSpec] = {
         ibr_gen_idxs=(1, 6, 8, 9),
         notes="Ships with REGCV1 already configured.",
     ),
+    "ieee118": SystemSpec(
+        name="ieee118",
+        case_path="andes:matpower/case118.m",
+        n_buses=118,
+        description="IEEE 118-bus (ANDES/MATPOWER). Canonical scale-up in the frequency-DNN literature (ALSNN, Zhang 2022). 3x the IEEE 39-bus scale.",
+        ibr_gen_idxs=(),  # choose after dynamify; then augment_with_grid_forming_ibrs
+        notes="Power-flow only: run research.systems.dynamify.dynamify_case to add "
+              "GENROU+TGOV1N (validated: PF + TDS converge), then add REGCV1 IBRs.",
+    ),
     "npcc140": SystemSpec(
         name="npcc140",
         case_path="andes:npcc/npcc.xlsx",
         n_buses=140,
-        description="NPCC 140-bus, 48-machine dynamic case (ANDES-bundled). 3.6x the IEEE 39-bus scale.",
+        description="NPCC 140-bus, 48-machine dynamic case (ANDES-bundled). Ships with dynamics.",
         ibr_gen_idxs=(),  # to be chosen; augment with augment_with_grid_forming_ibrs
-        notes="No REGCV1 in the base case; needs grid-forming augmentation to run VIS.",
+        notes="Has dynamics already; needs grid-forming augmentation. Non-IEEE alternative to ieee118.",
     ),
 }
 
