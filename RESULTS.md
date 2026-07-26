@@ -38,6 +38,11 @@ turns a chosen α into a security-tightened optimization config automatically; w
 a margin exceeds the envelope half-width it flags that the surrogate is too
 inaccurate to certify that bound at the target coverage.
 
+**Robustness (3 surrogate seeds):** coverage-after = 0.90 ± 0.00 (the guarantee is
+seed-invariant) and the margin is stable (RoCoF 0.044 ± 0.005 Hz/s, Δf
+0.119 ± 0.010 Hz), while *raw* coverage swings 0.37–0.61 across seeds — the raw
+surrogate's safety is luck-of-the-draw; the conformal margin makes it reliable.
+
 ## 2. Embeddability scales favorably
 Binaries in the exact ReLU-MILP encoding, over the full input domain vs. the
 schedulable (M/D-only) box, on the trained surrogates:
