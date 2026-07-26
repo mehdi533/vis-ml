@@ -136,7 +136,14 @@ def _apply_md(ss, m_opt: np.ndarray, d_opt: np.ndarray) -> None:
 
 
 def _add_load_step_contingency(ss, *, time: float, scale: float, pq_targets: list[str] | None) -> None:
-    targets = list(pq_targets) if pq_targets else list(ss.PQ.name.v)
+    # ANDES `Alter` resolves `dev` by idx, not name. On systems where PQ name !=
+    # idx (e.g. IEEE 118: name "PQ 1" vs idx "PQ_1"), passing names silently
+    # disables every event -> no disturbance. Resolve names -> idx here.
+    name_to_idx = {str(n): i for n, i in zip(ss.PQ.name.v, ss.PQ.idx.v)}
+    if pq_targets:
+        targets = [name_to_idx.get(str(t), t) for t in pq_targets]
+    else:
+        targets = list(ss.PQ.idx.v)
     for dev in targets:
         ss.add(model="Alter", param_dict=dict(t=float(time), model="PQ", dev=dev, src="Ppf", attr="v", method="*", amount=float(scale)))
         ss.add(model="Alter", param_dict=dict(t=float(time), model="PQ", dev=dev, src="Qpf", attr="v", method="*", amount=float(scale)))

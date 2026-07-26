@@ -1,0 +1,17 @@
+runs:
+- summary_json: C:/Users/Mehdi Abdallahi/Downloads/MSc/vis-ml/results/ieee118/optimization/formulations/ieee118_summary.json
+  optimization_config: C:/Users/Mehdi Abdallahi/Downloads/MSc/vis-ml/configs/scheduling/ieee118/optimization_ieee118.yaml
+contingency:
+  type: load_step
+  time: 1.0
+  scale: 1.1
+tds:
+  t_end: 10.0
+  t_step: 0.1
+  method: backeuler
+  max_iter: 35
+  tol: 0.001
+  no_tqdm: true
+output:
+  summary_csv: C:/Users/Mehdi Abdallahi/Downloads/MSc/vis-ml/results/ieee118/replay/replay_summary.csv
+  detail_csv: C:/Users/Mehdi Abdallahi/Downloads/MSc/vis-ml/results/ieee118/replay/replay_detail.csv
