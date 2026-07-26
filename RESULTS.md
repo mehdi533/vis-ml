@@ -48,6 +48,14 @@ surrogate's safety is luck-of-the-draw; the conformal margin makes it reliable.
 p.u.), reflecting the surrogate's harder ΔP channels, so those bounds cost more
 headroom to certify — an honest, actionable signal.
 
+### 1b. Safety-aware training composes with conformal
+Training the surrogate with the **pinball (quantile) loss** (τ=0.7, penalising
+under-prediction more) raises *raw* safety coverage from **0.44 → 0.59** (mean over
+the 6 outputs; improves 5 of 6). So the loss does most of the conservative work
+and the conformal margin only certifies the remainder — the two are complementary.
+(RoCoF is the one exception, a scaled-space sign case → motivates per-target τ.)
+`configs/model/pinball_opt_ready.yaml`.
+
 ## 2. Embeddability scales favorably
 Binaries in the exact ReLU-MILP encoding, over the full input domain vs. the
 schedulable (M/D-only) box, on the trained surrogates:
