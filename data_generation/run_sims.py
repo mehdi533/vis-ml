@@ -16,6 +16,11 @@ import numpy as np
 import yaml
 import andes
 
+# Silence the pandas FutureWarnings from ANDES's pandapower interop so
+# data-generation logs stay readable. Scoped to that module only, so it does not
+# mask warnings from our own code.
+warnings.filterwarnings("ignore", category=FutureWarning, module=r"andes\.interop\.pandapower")
+
 from data_generation.debug_tools import save_coi_trace_csv, save_debug_coi_plot
 from data_generation.disturbance_dispatch import DisturbanceDispatcher, resolve_disturbance_kind, sample_value
 from data_generation.extract_metrics import (
