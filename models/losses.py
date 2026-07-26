@@ -33,6 +33,28 @@ class KendallMTLoss(nn.Module):
         return loss
 
 
+class PinballLoss(nn.Module):
+    """Quantile (pinball) regression loss.
+
+    For quantile ``tau`` and error ``e = target - pred``:
+        L = mean( max(tau * e, (tau - 1) * e) ).
+    With ``tau > 0.5`` under-prediction (pred < target) is penalised more, so the
+    model is biased to predict higher values -- a conservative, safety-oriented
+    surrogate that errs toward over-stating the security metric even before a
+    conformal margin is applied. ``tau = 0.5`` recovers (scaled) L1.
+    """
+
+    def __init__(self, tau: float = 0.7):
+        super().__init__()
+        if not (0.0 < tau < 1.0):
+            raise ValueError(f"tau must be in (0, 1), got {tau}.")
+        self.tau = float(tau)
+
+    def forward(self, preds: torch.Tensor, targets: torch.Tensor) -> torch.Tensor:
+        e = targets - preds
+        return torch.mean(torch.maximum(self.tau * e, (self.tau - 1.0) * e))
+
+
 # -----------------------------
 # Registry / factory
 # -----------------------------
@@ -43,6 +65,7 @@ LOSS_FACTORY = {
     "smooth_l1": nn.SmoothL1Loss,
     "huber": nn.HuberLoss,
     "kendall": KendallMTLoss,
+    "pinball": PinballLoss,
 }
 
 LOSS_CATALOG = sorted(LOSS_FACTORY.keys())
