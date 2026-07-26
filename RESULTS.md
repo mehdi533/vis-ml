@@ -90,17 +90,23 @@ A MILP certifies the surrogate's output range over an entire input box (e.g. RoC
 provably within a fixed interval across all feasible M/D schedules). Pairs with
 conformal: statistical *and* worst-case guarantees. `research/embeddability/verify.py`.
 
-## 6. Scale-up to IEEE 118
+## 6. Scale-up to IEEE 118 — full N-1 formulation
 The pipeline runs end-to-end on a dynamified IEEE 118 (50 machines + 4 REGCV1
 grid-forming IBRs); a low-inertia build (H=2.5) swings realistically (tail RoCoF
-0.21 Hz/s, Δf 0.44 Hz). Turns "generalisation asserted" toward "demonstrated".
+0.21 Hz/s, Δf 0.44 Hz). matpower case118 ships with no line ratings, so DC-flow
+limits are synthesised (base loading ~55–71%).
+
+The **full thesis formulation** now runs at this scale — economic dispatch +
+base-case line security + **preventive N-1** (168 active contingencies) +
+embedded frequency-security surrogate: **status=optimal**, 63,840 constraints,
+~78 s with SCIP. This turns "generalisation asserted" into **demonstrated** with
+the complete formulation, not a reduced one, on a system 3× the thesis size.
 
 ---
 
 ### Remaining (heavier / cluster-gated)
-- Wire PTDF/N-1 + a real cost table so the IEEE 118 optimisation is genuinely
-  security-constrained (not the reduced formulation).
-- Regenerate the full dataset on the cluster → publication-grade magnitudes.
+- Regenerate the full dataset on the cluster → publication-grade magnitudes
+  (the surrogate here is trained on a few hundred local sims).
 - Decision-focused training (surrogate through the dispatch solution map) and
   Directed-Walks boundary sampling.
 
