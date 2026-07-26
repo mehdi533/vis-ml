@@ -67,5 +67,27 @@ def test_input_validation():
     layer = [LinearLayer(np.ones((2, 2)), np.zeros(2))]
     with pytest.raises(ValueError):
         propagate_interval_bounds(layer, x_lo=[1.0, 1.0], x_hi=[0.0, 0.0])  # lo > hi
+
+
+def test_obbt_never_wider_than_ibp():
+    """OBBT must tighten (or match) IBP bounds, and never increase binaries/big-M."""
+    from research.embeddability.bounds import propagate_interval_bounds
+    from research.embeddability.obbt import compare_ibp_obbt, obbt_bounds
+
+    rng = np.random.default_rng(1)
+    layers = [
+        LinearLayer(rng.normal(size=(6, 4)), rng.normal(size=6)),
+        LinearLayer(rng.normal(size=(4, 6)), rng.normal(size=4)),
+        LinearLayer(rng.normal(size=(1, 4)), rng.normal(size=1)),
+    ]
+    lo, hi = np.full(4, -0.5), np.full(4, 0.5)
+    ibp = propagate_interval_bounds(layers, lo, hi)
+    obbt = obbt_bounds(layers, lo, hi)
+    for (il, ih), (ol, oh) in zip(ibp, obbt):
+        assert np.all(ol >= il - 1e-6)   # OBBT lower bound no lower than IBP
+        assert np.all(oh <= ih + 1e-6)   # OBBT upper bound no higher than IBP
+    cmp = compare_ibp_obbt(layers, lo, hi)
+    assert cmp["obbt_binaries"] <= cmp["ibp_binaries"]
+    assert cmp["obbt_max_bigM"] <= cmp["ibp_max_bigM"] + 1e-6
     with pytest.raises(ValueError):
         LinearLayer(np.ones((2, 2)), np.zeros(3))  # b shape mismatch
