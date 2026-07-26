@@ -43,11 +43,29 @@ from models.utils import (
 # Sweep / logging helpers
 # -----------------------------
 
-def _set_seed(seed: int) -> None:
+def _set_seed(seed: int, deterministic: bool = False) -> None:
+    """Seed all RNGs used in training for reproducibility.
+
+    Seeds Python's ``random``, NumPy and torch (CPU + CUDA). With
+    ``deterministic=True`` also pins cuDNN and requests deterministic algorithms
+    so a fixed seed reproduces run-to-run (at some speed cost).
+    """
+    import os
+    import random
+
+    os.environ["PYTHONHASHSEED"] = str(seed)
+    random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+    if deterministic:
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+        try:
+            torch.use_deterministic_algorithms(True, warn_only=True)
+        except Exception:
+            pass
 
 
 def _write_csv_header(path: Path, fieldnames: Sequence[str]) -> None:

@@ -49,6 +49,21 @@ from scheduling.utils import (
 )
 
 
+from scheduling.artifacts import (
+    _default_output_paths,
+    _save_results_csv,
+    _summary_row_from_payload,
+    _write_dict_rows_csv,
+    _write_json,
+)
+from scheduling.solve_utils import (
+    _build_solver_kwargs,
+    _problem_stats,
+    _scalar_constraint_count,
+    _variable_type_counts,
+)
+
+
 def _sanitize_token(value: str) -> str:
     safe = re.sub(r"[^A-Za-z0-9_]+", "_", str(value)).strip("_")
     return safe or "default"
@@ -433,185 +448,6 @@ def _set_feature_scaled_bounds(
     hi_sc = (float(hi_raw) * float(x_scaler.scale_[idx])) + float(x_scaler.min_[idx])
     x_min_sc[idx] = min(lo_sc, hi_sc)
     x_max_sc[idx] = max(lo_sc, hi_sc)
-
-
-def _save_results_csv(
-    path: Path,
-    *,
-    status: str,
-    objective: float | None,
-    pg: np.ndarray,
-    m: np.ndarray,
-    d: np.ndarray,
-):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    header = (
-        ["status", "objective"]
-        + [f"pg_{i + 1}" for i in range(pg.size)]
-        + [f"M_{i + 1}" for i in range(m.size)]
-        + [f"D_{i + 1}" for i in range(d.size)]
-    )
-    row = [status, "" if objective is None else float(objective)] + pg.tolist() + m.tolist() + d.tolist()
-    with path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        writer.writerow(header)
-        writer.writerow(row)
-
-
-def _problem_stats(prob: cp.Problem, solver_name: str) -> tuple[int, int | None]:
-    metrics = prob.size_metrics
-    n_constraints = int(metrics.num_scalar_eq_constr + metrics.num_scalar_leq_constr)
-
-    nnz_total: int | None = None
-    try:
-        data, _, _ = prob.get_problem_data(solver_name)
-        nnz = 0
-        for value in data.values():
-            if hasattr(value, "nnz"):
-                nnz += int(value.nnz)
-            elif isinstance(value, np.ndarray):
-                nnz += int(np.count_nonzero(value))
-        nnz_total = nnz
-    except Exception:
-        nnz_total = None
-    return n_constraints, nnz_total
-
-
-def _scalar_constraint_count(constraints: list[cp.Constraint]) -> int:
-    total = 0
-    for cons in constraints:
-        size = getattr(cons, "size", None)
-        if size is None:
-            shape = getattr(cons, "shape", ())
-            size = int(np.prod(shape)) if shape else 1
-        total += int(size)
-    return int(total)
-
-
-def _variable_type_counts(prob: cp.Problem) -> dict[str, int]:
-    n_binary = 0
-    n_integer = 0
-    n_total = 0
-    for var in prob.variables():
-        n = int(np.prod(var.shape))
-        n_total += n
-        attrs = getattr(var, "attributes", {})
-        if bool(attrs.get("boolean", False)):
-            n_binary += n
-        elif bool(attrs.get("integer", False)):
-            n_integer += n
-    n_cont = n_total - n_binary - n_integer
-    return {
-        "n_variables_total": int(n_total),
-        "n_variables_continuous": int(n_cont),
-        "n_variables_binary": int(n_binary),
-        "n_variables_integer_nonbinary": int(n_integer),
-    }
-
-
-def _build_solver_kwargs(cfg: Mapping[str, Any], solver_name: str, verbose: bool, reoptimize: bool) -> dict[str, Any]:
-    solver_cfg = cfg.get("solver", {}) if isinstance(cfg, Mapping) else {}
-    solver_name_u = str(solver_name).upper()
-    kwargs: dict[str, Any] = {
-        "solver": solver_name,
-        "verbose": bool(verbose),
-    }
-    if solver_name_u == "GUROBI":
-        kwargs["reoptimize"] = bool(reoptimize)
-
-    extra = solver_cfg.get("extra_kwargs", {})
-    if isinstance(extra, Mapping):
-        kwargs.update(dict(extra))
-
-    alias_map = {
-        "time_limit": "TimeLimit",
-        "mip_gap": "MIPGap",
-        "threads": "Threads",
-    }
-    for key, target in alias_map.items():
-        if key in solver_cfg and target not in kwargs:
-            kwargs[target] = solver_cfg[key]
-
-    # Keep GUROBI-specific knobs out of non-GUROBI solver calls (e.g. OSQP).
-    if solver_name_u != "GUROBI":
-        for bad_key in ("reoptimize", "TimeLimit", "MIPGap", "Threads"):
-            kwargs.pop(bad_key, None)
-    return kwargs
-
-
-def _default_output_paths(output_cfg: Mapping[str, Any], formulation_id: str) -> dict[str, Path]:
-    results_csv = Path(str(output_cfg.get("results_csv", "results/thesis_optimization_results/results/optimization_results.csv")))
-    run_tag = str(output_cfg.get("run_tag", formulation_id)).strip() or formulation_id
-    results_dir = Path(str(output_cfg.get("results_dir", results_csv.parent)))
-    results_dir.mkdir(parents=True, exist_ok=True)
-
-    def _p(name: str, default: Path) -> Path:
-        raw = output_cfg.get(name)
-        return Path(str(raw)) if raw else default
-
-    return {
-        "results_csv": _p("results_csv", results_dir / f"{run_tag}_decisions.csv"),
-        "summary_json": _p("summary_json", results_dir / f"{run_tag}_summary.json"),
-        "summary_csv": _p("summary_csv", results_dir / f"{run_tag}_summary.csv"),
-        "predicted_metrics_csv": _p("predicted_metrics_csv", results_dir / f"{run_tag}_predicted_metrics.csv"),
-        "dispatch_impact_csv": _p("dispatch_impact_csv", results_dir / f"{run_tag}_dispatch_impact.csv"),
-        "constraint_blocks_csv": _p("constraint_blocks_csv", results_dir / f"{run_tag}_constraint_blocks.csv"),
-    }
-
-
-def _write_json(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8") as f:
-        json.dump(payload, f, indent=2, sort_keys=False, ensure_ascii=False)
-
-
-def _write_dict_rows_csv(path: Path, rows: list[dict[str, Any]]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    if not rows:
-        with path.open("w", newline="", encoding="utf-8") as f:
-            writer = csv.writer(f)
-            writer.writerow(["empty"])
-        return
-    headers: list[str] = []
-    seen = set()
-    for row in rows:
-        for key in row.keys():
-            if key not in seen:
-                headers.append(key)
-                seen.add(key)
-    with path.open("w", newline="", encoding="utf-8") as f:
-        writer = csv.DictWriter(f, fieldnames=headers)
-        writer.writeheader()
-        for row in rows:
-            writer.writerow(row)
-
-
-def _summary_row_from_payload(payload: dict[str, Any]) -> dict[str, Any]:
-    solver_stats = payload.get("solver_stats", {})
-    problem_size = payload.get("problem_size", {})
-    return {
-        "run_id": payload.get("run_id"),
-        "formulation_id": payload.get("formulation_id"),
-        "formulation_name": payload.get("formulation_name"),
-        "scenario_id": payload.get("scenario_id"),
-        "scenario_name": payload.get("scenario_name"),
-        "status": payload.get("status"),
-        "objective": payload.get("objective"),
-        "objective_dispatch_only": payload.get("objective_dispatch_only"),
-        "objective_reserve_only": payload.get("objective_reserve_only"),
-        "objective_reserve_up_only": payload.get("objective_reserve_up_only"),
-        "solve_time_sec": solver_stats.get("solve_time_sec"),
-        "num_iters": solver_stats.get("num_iters"),
-        "n_variables_total": problem_size.get("n_variables_total"),
-        "n_variables_binary": problem_size.get("n_variables_binary"),
-        "n_constraints_total": problem_size.get("n_constraints_total"),
-        "n_constraints_scalar_total": problem_size.get("n_constraints_scalar_total"),
-        "nnz_total": problem_size.get("nnz_total"),
-        "system_case": payload.get("system_case"),
-        "model_type": payload.get("model_type"),
-        "nn_mode": payload.get("nn_mode"),
-        "solver_modeling_mode": payload.get("solver_modeling_mode"),
-    }
 
 
 def _build_dispatch_objective_expr(
@@ -1969,7 +1805,7 @@ def run_optimization(cfg: dict[str, Any], *, config_path: str | None = None):
     solver_stats = {
         "solver_name": solver.name,
         "status": status,
-        "solve_time_sec": float(getattr(prob.solver_stats, "solve_time", np.nan)),
+        "solve_time_sec": float(getattr(prob.solver_stats, "solve_time", None)) if getattr(prob.solver_stats, "solve_time", None) is not None else float(solve_wall_sec),
         "solve_wall_time_sec": float(solve_wall_sec),
         "num_iters": int(getattr(prob.solver_stats, "num_iters", -1)) if getattr(prob.solver_stats, "num_iters", None) is not None else -1,
         "solver_kwargs": {k: v for k, v in solver_kwargs.items() if k != "solver"},

@@ -1,0 +1,65 @@
+# Smoke optimization-ready MTLSH: same feature contract as
+# optimization_ready_mtlsh.yaml (x_op + x_cont + {M_i,D_i,M_agg,D_agg}) so the
+# scheduler can consume it, but trained tiny/fast on the smoke dataset.
+
+output_dir: results/smoke/models_opt_ready
+skip_if_exists: false
+seed: 42
+
+model:
+  shared_sizes: [32]
+  head_sizes: [16]
+  activation: relu
+  dropout: 0.0
+
+data:
+  csv_path: results/smoke/data/simulation_results.csv
+  feature_names_path: configs/shared/data_generation_feature_names.yaml
+  use_registry_feature_allowlist: true
+  registry_feature_groups: [x_op, x_cont, x_sched]
+  registry_group_overrides:
+    x_sched:
+      drop_fields: [P_GENROU_TOTAL, P_REGCV1_TOTAL, P_DISPATCH_TOTAL, P_REGCV1_SHARE]
+      keep_fields: [M_agg, D_agg]
+      keep_prefix_keys: [M, D]
+  drop_metadata_fields: true
+  drop_diagnostic_fields: true
+  drop_unused_y_fields: true
+  drop_cols: [line_name, plotter_csv, is_bridge, n_components_after_trip, reserve_p_genrou, reserve_p_ibr, reserve_q_genrou, reserve_q_ibr]
+  drop_prefixes: [x0__]
+  ignore_missing_drop_cols: true
+  target_cols:
+    - rocof_COI
+    - dev_COI
+    - Delta_P_IBR_1
+    - Delta_P_IBR_2
+    - Delta_P_IBR_3
+    - Delta_P_IBR_4
+  use_recommended_scalers: false
+
+split:
+  test_size: 0.3
+  val_fraction: 0.5
+  random_state: 42
+
+training:
+  epochs: 20
+  lr: 0.001
+  weight_decay: 0.0001
+  batch_train: 64
+  batch_eval: 128
+  loss_weights: []
+  use_lr_scheduler: true
+  lr_scheduler_patience: 8
+  lr_scheduler_factor: 0.5
+  lr_scheduler_min_lr: 1e-7
+  save_test_predictions: true
+
+sweep:
+  models: [MTLSH]
+  losses: [kendall]
+  scalers: [minmax]
+  seeds: [42]
+  model: {}
+  training: {}
+  data: {}

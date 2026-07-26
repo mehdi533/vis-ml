@@ -256,7 +256,7 @@ class MTLGroupedSharedHeads(nn.Module):
 
         self.heads = nn.ModuleList()
         for dim in head_input_dims:
-            self.heads.append(self._make_head(dim, head_sizes, 0.1))
+            self.heads.append(self._make_head(dim, head_sizes, dropout))
 
         self.n_tasks = n_tasks
 
@@ -350,7 +350,7 @@ class MTLGroupedSharedHeadsAttn(nn.Module):
 
         self.heads = nn.ModuleList()
         for dim in head_input_dims:
-            self.heads.append(self._make_head(dim, head_sizes, 0.1))
+            self.heads.append(self._make_head(dim, head_sizes, dropout))
 
         self.n_tasks = n_tasks
 
@@ -450,7 +450,7 @@ class MTLGroupedSharedHeadsKANShared(nn.Module):
 
         self.heads = nn.ModuleList()
         for dim in head_input_dims:
-            self.heads.append(self._make_head(dim, head_sizes, 0.1))
+            self.heads.append(self._make_head(dim, head_sizes, dropout))
 
         self.n_tasks = n_tasks
 
