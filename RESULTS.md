@@ -43,6 +43,11 @@ seed-invariant) and the margin is stable (RoCoF 0.044 ± 0.005 Hz/s, Δf
 0.119 ± 0.010 Hz), while *raw* coverage swings 0.37–0.61 across seeds — the raw
 surrogate's safety is luck-of-the-draw; the conformal margin makes it reliable.
 
+**All six embedded outputs:** the lift holds uniformly — raw coverage 0.31–0.51 →
+90% target for every metric. The converter-power margins are larger (~0.76–0.95
+p.u.), reflecting the surrogate's harder ΔP channels, so those bounds cost more
+headroom to certify — an honest, actionable signal.
+
 ## 2. Embeddability scales favorably
 Binaries in the exact ReLU-MILP encoding, over the full input domain vs. the
 schedulable (M/D-only) box, on the trained surrogates:

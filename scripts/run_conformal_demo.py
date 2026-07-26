@@ -27,7 +27,10 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 from research.conformal.calibration import conformal_margin, empirical_coverage  # noqa: E402
 
-SECURITY_METRICS = ["rocof_COI", "dev_COI"]
+SECURITY_METRICS = [
+    "rocof_COI", "dev_COI",
+    "Delta_P_IBR_1", "Delta_P_IBR_2", "Delta_P_IBR_3", "Delta_P_IBR_4",
+]
 
 
 def main() -> None:
