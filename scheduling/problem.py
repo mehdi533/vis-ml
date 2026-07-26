@@ -10,10 +10,16 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+import warnings
+
 import andes
 import cvxpy as cp
 import numpy as np
 import yaml
+
+# Silence the pandas FutureWarnings from ANDES's pandapower interop (scoped to
+# that module; does not mask warnings from our own code).
+warnings.filterwarnings("ignore", category=FutureWarning, module=r"andes\.interop\.pandapower")
 
 # Support both:
 # - python -m scheduling.problem
