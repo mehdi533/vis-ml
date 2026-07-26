@@ -18,6 +18,11 @@ References (verify before formal citation):
   Inference for Regression, JASA 2018.
 """
 
+from research.conformal.adaptive import (
+    MondrianConformal,
+    conditional_coverage,
+    marginal_vs_mondrian,
+)
 from research.conformal.calibration import (
     ConformalMargins,
     conformal_margin,
@@ -27,7 +32,10 @@ from research.conformal.calibration import (
 
 __all__ = [
     "ConformalMargins",
+    "MondrianConformal",
+    "conditional_coverage",
     "conformal_margin",
     "empirical_coverage",
+    "marginal_vs_mondrian",
     "min_calibration_size",
 ]
