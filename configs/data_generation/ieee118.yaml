@@ -1,0 +1,158 @@
+case: data_generation/andes_cases/ieee118_ibrs.xlsx
+output_dir: results/ieee118/data
+output_csv: simulation_results.csv
+feature_names_path: configs/shared/data_generation_feature_names.yaml
+seed: 11
+n_sims: 40
+workers: 4
+stream_level: 50
+features:
+  include_initial_state: true
+base_load_scale:
+  low: 0.6
+  high: 1.0
+contingency:
+  load_step:
+    enable: true
+    time: 1
+    scale:
+      low: 1.05
+      high: 1.35
+  line_n1:
+    enable: true
+    trip_time: 1.0
+    max_lines: 1
+ibr:
+  model: REGCV1
+  n_ibr: 4
+  indices: []
+  M_range:
+  - 0.0
+  - 8.0
+  D_range:
+  - 0.0
+  - 6.0
+load:
+  pq_names:
+  - PQ 1
+  - PQ 2
+  - PQ 3
+  - PQ 4
+  - PQ 6
+  - PQ 7
+  - PQ 8
+  - PQ 11
+  - PQ 12
+  - PQ 13
+  - PQ 14
+  - PQ 15
+  - PQ 16
+  - PQ 17
+  - PQ 18
+  - PQ 19
+  - PQ 20
+  - PQ 21
+  - PQ 22
+  - PQ 23
+  - PQ 24
+  - PQ 27
+  - PQ 28
+  - PQ 29
+  - PQ 31
+  - PQ 32
+  - PQ 33
+  - PQ 34
+  - PQ 35
+  - PQ 36
+  - PQ 39
+  - PQ 40
+  - PQ 41
+  - PQ 42
+  - PQ 43
+  - PQ 44
+  - PQ 45
+  - PQ 46
+  - PQ 47
+  - PQ 48
+  - PQ 49
+  - PQ 50
+  - PQ 51
+  - PQ 52
+  - PQ 53
+  - PQ 54
+  - PQ 55
+  - PQ 56
+  - PQ 57
+  - PQ 58
+  - PQ 59
+  - PQ 60
+  - PQ 62
+  - PQ 66
+  - PQ 67
+  - PQ 70
+  - PQ 72
+  - PQ 73
+  - PQ 74
+  - PQ 75
+  - PQ 76
+  - PQ 77
+  - PQ 78
+  - PQ 79
+  - PQ 80
+  - PQ 82
+  - PQ 83
+  - PQ 84
+  - PQ 85
+  - PQ 86
+  - PQ 88
+  - PQ 90
+  - PQ 91
+  - PQ 92
+  - PQ 93
+  - PQ 94
+  - PQ 95
+  - PQ 96
+  - PQ 97
+  - PQ 98
+  - PQ 99
+  - PQ 100
+  - PQ 101
+  - PQ 102
+  - PQ 103
+  - PQ 104
+  - PQ 105
+  - PQ 106
+  - PQ 107
+  - PQ 108
+  - PQ 109
+  - PQ 110
+  - PQ 112
+  - PQ 113
+  - PQ 114
+  - PQ 115
+  - PQ 116
+  - PQ 117
+  - PQ 118
+  pq_bus_ids: []
+  scale_pv: true
+  owners: []
+ed:
+  enable: false
+  ibr_idx: []
+  cost_table_path: configs/shared/ieee39_regcv1_dispatch_costs.yaml
+  solver: OSQP
+  verbose: false
+  line_limits_enable: false
+tds:
+  t_end: 10.0
+  t_step: 0.1
+  method: backeuler
+  max_iter: 35
+  tol: 0.001
+  honest: 1
+  fixt: 0
+  shrinkt: 1
+  criteria: 0
+  no_tqdm: true
+debug:
+  save_coi_plots: false

@@ -53,15 +53,22 @@ def dynamify_case(
     target_H: float = 4.0,
     sn_floor: float = 100.0,
     sn_headroom: float = 1.3,
+    exclude_gen_idxs=None,
+    coi_idx=None,
 ) -> Dict[str, List]:
     """Attach GENROU + TGOV1N to every static generator of ``ss`` (setup=False).
 
     Call before ``ss.setup()``. Machine MVA base is ``max(sn_floor, existing Sn,
     sn_headroom * |Pg|_MW)``; inertia constant ``M = 2 * target_H``.
 
+    ``exclude_gen_idxs`` lists static-generator idxs to skip -- use it for buses
+    that will instead carry a grid-forming REGCV1 (a bus cannot sensibly hold both
+    a synchronous GENROU and a grid-forming converter).
+
     Returns ``{"GENROU": [...idx], "TGOV1N": [...idx]}``.
     """
     base_mva = _base_mva(ss)
+    exclude = set(exclude_gen_idxs or [])
     created: Dict[str, List] = {"GENROU": [], "TGOV1N": []}
 
     gens = []
@@ -74,15 +81,20 @@ def dynamify_case(
         p0 = list(getattr(m, "p0").v) if hasattr(m, "p0") else [0.0] * len(idxs)
         sn_ex = list(getattr(m, "Sn").v) if hasattr(m, "Sn") else [sn_floor] * len(idxs)
         for k in range(len(idxs)):
+            if idxs[k] in exclude:
+                continue
             pg_mw = abs(float(p0[k])) * base_mva
             sn = max(float(sn_floor), float(sn_ex[k]) if sn_ex[k] else 0.0, sn_headroom * pg_mw)
             gens.append((idxs[k], buses[k], sn))
 
     for i, (gidx, bus, sn) in enumerate(gens, start=1):
-        g_idx = ss.add("GENROU", param_dict=dict(
+        genrou_params = dict(
             STANDARD_GENROU, idx=f"GENROU_D{i}", name=f"GENROU_D{i}",
             gen=gidx, bus=bus, Sn=sn, M=2.0 * float(target_H),
-        ))
+        )
+        if coi_idx is not None:
+            genrou_params["coi"] = coi_idx
+        g_idx = ss.add("GENROU", param_dict=genrou_params)
         created["GENROU"].append(g_idx)
         t_idx = ss.add("TGOV1N", param_dict=dict(
             STANDARD_TGOV1N, idx=f"TGOV1N_D{i}", name=f"TGOV1N_D{i}", syn=g_idx,
