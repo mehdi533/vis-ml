@@ -112,6 +112,23 @@ the complete formulation, not a reduced one, on a system 3× the thesis size.
 
 ---
 
+## 7. N-1 feasibility cliff on IEEE 118
+Sweeping the base load with the full preventive-N-1 formulation maps the
+security-cost boundary:
+
+| base load | status | objective | solve (s) |
+|---|---|---|---|
+| 0.6 | optimal | 6374 | 79 |
+| 0.8 | optimal | 6459 | 77 |
+| 1.0 | **infeasible** | — | 50 |
+| 1.15 | **infeasible** | — | 48 |
+
+Preventive N-1 VIS is feasible up to ~80% load and infeasible at ≥100% — a clear
+prefault-stress boundary, demonstrating on IEEE 118 the thesis's observation that
+the preventive policy is "usable only below a clear stress boundary."
+(Infeasible cases also solve faster — the MILP proves infeasibility early.)
+`scripts/run_ieee118_stress.py`.
+
 ### Remaining (heavier / cluster-gated)
 - Regenerate the full dataset on the cluster → publication-grade magnitudes
   (the surrogate here is trained on a few hundred local sims).
