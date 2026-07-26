@@ -56,11 +56,18 @@ Same data, three architectures. MTLSH is Pareto-dominant:
 
 | Model | agg RMSE ↓ | hidden ReLU ↓ | box binaries ↓ |
 |---|---|---|---|
-| **MTLSH** | **0.669** | **48** | **1** |
-| MLP | 0.685 | 96 | 7 |
-| MTLGSH | 0.713 | 96 | 13 |
+| **MTLSH** (ReLU) | **0.669** | 48 | 1 |
+| MLP (ReLU) | 0.685 | 96 | 7 |
+| MTLGSH (ReLU) | 0.713 | 96 | 13 |
+| FICNN (convex) | 6.43 | 0 | 0 |
+| PICNN (convex) | 13.88 | 0 | 0 |
 
-Quantifies the thesis's headline finding and backs the choice of MTLSH.
+The convex families embed for free (0 binaries) but are **10–20× less accurate**
+on this non-convex response surface — far off the useful part of the front. The
+ReLU multitask families occupy the useful region, and MTLSH is Pareto-dominant
+within it. This is the quantitative form of the thesis's "most accurate ≠ largest
+embedding" finding and its choice of MTLSH. (Convex accuracy may improve with more
+capacity, but the structural gap is large and consistent with the thesis.)
 
 ## 4. COI hides the worst bus (regional security)
 The worst individual bus sees **2.38× the COI RoCoF on average (up to 7.98×)**.
