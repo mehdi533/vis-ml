@@ -23,7 +23,8 @@ sys.path.insert(0, str(ROOT))
 from models.models import create_model  # noqa: E402
 from research.embeddability import LinearLayer, propagate_interval_bounds, relu_stability  # noqa: E402
 
-SWEEP_DIR = ROOT / "results/pareto/models"
+SWEEP_DIRS = [ROOT / "results/pareto/models", ROOT / "results/pareto/convex"]
+CONVEX_TYPES = {"FICNN", "PICNN", "PICNN_MTLSH"}
 
 
 def _linears(seq):
@@ -46,7 +47,10 @@ def _path_layers(model):
 
 def main() -> None:
     rows = []
-    for run_cfg in sorted(glob.glob(str(SWEEP_DIR / "**/run_config.yaml"), recursive=True)):
+    run_cfgs = []
+    for sd in SWEEP_DIRS:
+        run_cfgs += sorted(glob.glob(str(sd / "**/run_config.yaml"), recursive=True))
+    for run_cfg in run_cfgs:
         d = Path(run_cfg).parent
         rc = yaml.safe_load(Path(run_cfg).read_text(encoding="utf-8"))
         fc = rc["resolved"]["feature_cols"]
@@ -54,6 +58,14 @@ def main() -> None:
         mtype = str(rc.get("model", {}).get("type") or d.name.split("__")[0])
         metrics = json.loads((d / "metrics_summary.json").read_text(encoding="utf-8"))
         agg_rmse = float(metrics.get("agg_rmse_mean") or metrics.get("rmse_mean") or np.nan)
+
+        # Convex families (ICNN) embed via convex constraints -> no ReLU binaries.
+        if mtype in CONVEX_TYPES:
+            rows.append({
+                "model": mtype, "family": "convex", "agg_rmse": round(agg_rmse, 4),
+                "hidden_relu_neurons": 0, "binaries_full_domain": 0, "binaries_schedulable_box": 0,
+            })
+            continue
 
         model, _ = create_model(
             mtype, in_dim=n, out_dim=6,
@@ -75,6 +87,7 @@ def main() -> None:
 
         rows.append({
             "model": mtype,
+            "family": "relu",
             "agg_rmse": round(agg_rmse, 4),
             "n_parameters": int(metrics.get("n_parameters_total", 0) or 0),
             "hidden_relu_neurons": sum(s.n_total for s in full),
