@@ -1,0 +1,174 @@
+% ===========================================================================
+% Overleaf-ready technical note — grid-forming converter model choice for VIS.
+% Self-contained (manual bibliography); compile: pdflatex model_choice (x2).
+% ===========================================================================
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{siunitx}
+\usepackage{xcolor}
+\usepackage[colorlinks=true,allcolors=blue]{hyperref}
+\usepackage{cleveref}
+\usepackage{enumitem}
+
+\title{\textbf{Which ANDES Converter Model for Virtual Inertia Scheduling?}\\[2pt]
+\large REGCV1 vs.\ the REGF Grid-Forming Family --- a Model-Selection Note}
+\author{Mehdi Abdallahi \\ \small RRE, ETH Zurich / EPFL}
+\date{\today}
+
+\newcommand{\model}[1]{\texttt{#1}}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\noindent Virtual inertia scheduling (VIS) co-optimises generation dispatch with
+the \emph{virtual inertia} $M$ and \emph{damping} $D$ provided by grid-forming
+inverters. The choice of converter dynamic model therefore determines whether the
+scheduler's decision variables even exist in the simulator. This note compares the
+seven renewable/converter models in ANDES~1.9.3 and concludes---from the model
+equations, the physical (swing-equation) requirement, and comparability with the
+foundational VIS literature---that \textbf{\model{REGCV1}} is the correct model for
+this study. \model{REGCV2} is an equivalent alternative; the EPRI grid-forming
+\model{REGF2} (VSM) is the natural realism upgrade for a robustness study;
+\model{REGCA1} (grid-following) and \model{REGF1}/\model{REGF3} (droop/dVOC) are
+unsuitable because they do not expose a schedulable inertia constant.
+\end{abstract}
+
+\section{The requirement: what VIS actually schedules}
+VIS treats the emulated inertia $M$ and damping $D$ of each grid-forming IBR as
+\emph{decision variables}, alongside generation dispatch, under frequency-security
+limits. The physical target being emulated is the synchronous-machine swing
+equation (per unit, $\omega$ in p.u.):
+\begin{equation}
+2H\,\frac{d\omega}{dt} = P_m - P_e - D(\omega-1),
+\label{eq:swing}
+\end{equation}
+whose immediate consequence, for an imbalance $\Delta P$, is the
+rate-of-change-of-frequency
+\begin{equation}
+\dot f_0 = \frac{f_0\,\Delta P}{2H} = \frac{f_0\,\Delta P}{M},\qquad M \equiv 2H.
+\label{eq:rocof}
+\end{equation}
+A suitable model must therefore (i) be \emph{grid-forming} (a controlled voltage
+source that sets frequency, not a current source that follows it), and (ii)
+expose an explicit \emph{inertia constant} $M{=}2H$ (and damping $D$) as a
+tunable parameter. Droop gain alone is not inertia: it shapes the steady-state
+power split, not the $d\omega/dt$ transient that \eqref{eq:rocof} governs.
+
+\section{The ANDES model landscape}
+ANDES~1.9.3 provides seven models in the \texttt{RenGen} group. \Cref{tab:models}
+classifies them by control paradigm and, crucially, by whether an inertia
+constant is an explicit parameter.
+
+\begin{table}[h]
+\centering\small
+\caption{Renewable/converter models in ANDES 1.9.3 (\texttt{RenGen} group).}
+\label{tab:models}
+\begin{tabular}{@{}lllc@{}}
+\toprule
+Model & Control paradigm & Origin & Schedulable $M{=}2H$?\\
+\midrule
+\model{REGCA1} & Grid-\emph{following} (current src.) & WECC/PSS/E REGC\_A & \textcolor{red}{no}\\
+\model{REGCP1} & Grid-forming (power/droop) & ANDES & \textcolor{red}{no ($M$)}\\
+\model{REGCV1} & \textbf{Grid-forming VSG (swing eq.)} & ANDES (CURENT) & \textcolor{green!45!black}{\textbf{yes ($M$,$D$)}}\\
+\model{REGCV2} & Grid-forming VSG (lag inner loop) & ANDES & \textcolor{green!45!black}{yes ($M$,$D$)}\\
+\model{REGF1} & Grid-forming droop & EPRI GFM & \textcolor{red}{no}\\
+\model{REGF2} & Grid-forming VSM & EPRI GFM & partial ($m_f$)\\
+\model{REGF3} & Grid-forming dVOC & EPRI GFM & \textcolor{red}{no}\\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{What REGCV1 actually solves}
+\model{REGCV1} is documented as a ``voltage-controlled VSC with VSG control:
+double-loop PI control and swing-equation-based VSG control.'' Its dynamic core
+(from the ANDES source) is, for the virtual rotor speed deviation
+$\Delta\omega$ and angle $\delta$,
+\begin{align}
+M\,\frac{d\,\Delta\omega}{dt} &= P_{\mathrm{ref}}' - P_e - D\,\Delta\omega,
+& P_{\mathrm{ref}}' &= P_{\mathrm{ref}} - k_\omega\,\Delta\omega, \label{eq:regcv1_swing}\\
+\frac{d\delta}{dt} &= 2\pi f_n\,\Delta\omega, & \omega &= 1 + \Delta\omega,
+\end{align}
+with an inner double-loop PI voltage/current controller
+($V_d,V_q\!\to\!I_d,I_q$ through $r_a,x_s$) closing the electrical dynamics. The
+ANDES parameters carry the exact physical meaning we need: \model{M} = ``emulated
+startup time constant ($M{=}2H$)'' (\si{\second}) and \model{D} = ``emulated
+damping coefficient'' (p.u.), with $k_\omega$ the active-power (speed) droop.
+
+Equation~\eqref{eq:regcv1_swing} is \eqref{eq:swing} with $M{=}2H$: at the instant
+of an imbalance, $d\Delta\omega/dt|_{0^+}=\Delta P/M$, reproducing
+\eqref{eq:rocof}. Thus \emph{the scheduler's decision variable $M$ is literally
+the inertia constant in the simulator's swing equation}, and the surrogate learns
+the physically-grounded map $M\!\uparrow\,\Rightarrow\,|\dot f|\!\downarrow$. We
+verified this causally in the pipeline: with a fixed disturbance, raising the
+IBR inertia from $M{=}1$ to $M{=}7$ reduced $|\mathrm{RoCoF}|$ by $1.45\times$,
+consistent with \eqref{eq:rocof}.
+
+\section{Why not the alternatives}
+\begin{description}[leftmargin=1.4em,style=nextline]
+\item[\model{REGCA1} (grid-following).] A current source synchronised by a PLL; it
+has no swing state and no inertia parameter (its parameters are current-limit and
+low-voltage logic). It \emph{cannot} provide schedulable inertia and is therefore
+unusable for VIS. It is, however, the right \emph{grid-following baseline} if one
+later wants a GFM-vs-GFL comparison.
+\item[\model{REGF1} (droop), \model{REGF3} (dVOC).] Grid-forming but inertia-free:
+\model{REGF1} exposes droop gains ($w_{drp},Q_{drp}$), \model{REGF3} an oscillator.
+Neither has an $M{=}2H$ parameter, so ``scheduling virtual inertia'' is undefined
+for them. They address a different control question (droop/oscillator sharing),
+not inertia allocation.
+\item[\model{REGF2} (EPRI VSM).] The strongest alternative: a virtual synchronous
+machine with an inertia-like coefficient $m_f$, damping $d_d$, a PLL, and explicit
+current/power limits ($P_{\max},Q_{\max}$, \texttt{PQFLAG}). It is more
+standards-aligned (EPRI/UNIFI GFM) and more realistic. We nonetheless retain
+\model{REGCV1} as the primary model because: (a)~its $M{=}2H$ maps
+\emph{directly and cleanly} to the VIS decision variable and to \eqref{eq:swing},
+whereas $m_f$ requires an extra mapping; (b)~its smaller state set and absence of
+hard current-limit switching keep the exact ReLU--MILP surrogate embedding
+cleaner; and (c)~it preserves comparability with the foundational VIS work of
+She~\emph{et al.} (2024), from the same CURENT/ANDES group, which uses this model.
+\model{REGF2} is the appropriate model for a future \emph{realism robustness
+study}---in particular to add explicit converter current-limit dynamics as a
+predicted metric.
+\item[\model{REGCV2} (VSG, lag inner loop).] Physically equivalent to
+\model{REGCV1} with the inner current PI replaced by lag transfer functions; it
+carries the same $M,D$. It is an acceptable substitute; \model{REGCV1} is the
+canonical, slightly simpler choice and the one used upstream.
+\end{description}
+
+\section{Recommendation}
+\begin{enumerate}[nosep]
+\item \textbf{Primary model: \model{REGCV1}.} Decision-variable match ($M{=}2H$,
+$D$), swing-equation transparency \eqref{eq:regcv1_swing}$\equiv$\eqref{eq:swing},
+clean embeddability, and comparability with the reference VIS literature. This is
+the model used throughout the current pipeline and case files
+(\texttt{ieee39\_full\_ibrs.xlsx}), and the physics has been validated on the 50\,Hz
+base.
+\item \textbf{Robustness study (future): \model{REGF2}.} Re-run a subset with the
+EPRI VSM to confirm the conclusions are not model-specific and to introduce
+converter current-limit dynamics.
+\item \textbf{Baseline (optional): \model{REGCA1}.} For an explicit
+grid-forming-vs-grid-following inertia comparison.
+\end{enumerate}
+\textbf{Bottom line:} no model change is needed before the cluster campaign;
+\model{REGCV1} is the correct and defensible choice for virtual inertia
+scheduling.
+
+\begin{thebibliography}{9}
+\small
+\bibitem{she2024} B.~She, F.~Li, H.~Cui, J.~Wang, Q.~Zhang, R.~Bo,
+``Virtual Inertia Scheduling (VIS) for Real-Time Economic Dispatch of
+IBR-Penetrated Power Systems,'' \emph{IEEE Trans. Sustain. Energy}, 15(2), 2024.
+\bibitem{andes} H.~Cui, F.~Li, K.~Tomsovic, ``Hybrid Symbolic-Numeric Framework
+for Power System Modeling and Analysis,'' \emph{IEEE Trans. Power Syst.}, 36(2),
+2021. ANDES documentation: \url{https://docs.andes.app}.
+\bibitem{milano} F.~Milano, F.~D\"orfler, G.~Hug, D.~J.~Hill, G.~Verbi\v{c},
+``Foundations and Challenges of Low-Inertia Systems,'' \emph{PSCC}, 2018.
+\bibitem{unifi} UNIFI Consortium, ``Specifications for Grid-Forming Inverter-Based
+Resources, v2,'' NREL, 2024.
+\bibitem{epri} EPRI, ``Grid-Forming Inverter Modeling (REGF1/2/3),'' EPRI
+Memorandum (as implemented in ANDES).
+\end{thebibliography}
+
+\end{document}
