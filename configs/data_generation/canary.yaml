@@ -1,0 +1,67 @@
+# Canary dataset: SMALL, fast validation run to prove the simulations are
+# physically correct BEFORE launching the 120k-sim full campaign.
+# Mirrors the physics of the full load-mismatch + line-N-1 scenarios.
+
+case: "data_generation/andes_cases/ieee39_full_ibrs.xlsx"
+output_dir: "results/canary/data"
+output_csv: "simulation_results.csv"
+feature_names_path: "configs/shared/data_generation_feature_names.yaml"
+seed: 2024
+n_sims: 300
+workers: 8
+stream_level: 50
+
+features:
+  include_initial_state: true
+
+base_load_scale:
+  low: 0.5
+  high: 1.0
+
+contingency:
+  load_step:
+    enable: true
+    time: 1
+    scale:
+      low: 1.05
+      high: 1.4
+  line_n1:
+    enable: true
+    trip_time: 1.0
+    max_lines: 1
+
+ibr:
+  model: "REGCV1"
+  n_ibr: 4
+  indices: [0, 5, 7, 8]
+  M_range: [0.0, 8.0]
+  D_range: [0.0, 6.0]
+
+load:
+  pq_names: ["PQ_1", "PQ_2", "PQ_3", "PQ_4", "PQ_5", "PQ_6", "PQ_7", "PQ_8", "PQ_9", "PQ_10", "PQ_11", "PQ_12", "PQ_13", "PQ_14", "PQ_15", "PQ_16", "PQ_17", "PQ_18", "PQ_19"]
+  pq_bus_ids: []
+  scale_pv: true
+  owners: []
+
+ed:
+  enable: true
+  ibr_idx: [0, 5, 7, 8]
+  cost_table_path: "configs/shared/ieee39_regcv1_dispatch_costs.yaml"
+  solver: "OSQP"
+  verbose: false
+  line_limits_enable: true
+
+tds:
+  t_end: 10.0
+  t_step: 0.1
+  method: "backeuler"
+  max_iter: 35
+  tol: 1.0e-3
+  honest: 1
+  fixt: 0
+  shrinkt: 1
+  criteria: 0
+  no_tqdm: true
+
+debug:
+  save_coi_plots: false
